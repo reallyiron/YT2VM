@@ -1065,7 +1065,7 @@ class ChatPlaysApp:
             ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=9, column=0, columnspan=2, sticky="w", pady=6)
 
             tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=10, column=0, sticky="e", pady=10, padx=(0, 20))
-            self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "C2VM", "YCPV", "YTPVM"], width=30, state="readonly", font=("Segoe UI", 11))
+            self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "c2vm", "ycpv", "ytpvm"], width=30, state="readonly", font=("Segoe UI", 11))
             self.cb_app_name.grid(row=10, column=1, sticky="w", pady=10)
             self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
             
@@ -1533,7 +1533,7 @@ class ChatPlaysApp:
                     cmd = self.command_prefix + cmd[1:]
                     
                 self.log("[console]", cmd, "user", is_mod=True, is_owner=True)
-                self.parse_queue(cmd, "[console]", is_mod=True, is_owner=True)
+                self.parse_command(cmd, "[console]", is_mod=True, is_owner=True)
                 self.entry_cmd.delete(0, 'end')
         except Exception as e:
             self.log("[system]", f"[error] manual cmd error: {e}", "err")
@@ -1623,7 +1623,7 @@ class ChatPlaysApp:
                 f.write(f"{url}|{mode}|{layout}")
         except: pass
 
-    def parse_queue(self, msg, user, is_mod=False, is_owner=False):
+    def parse_command(self, msg, user, is_mod=False, is_owner=False):
         global TOTAL_COMMANDS_EXECUTED
         self.last_command_time = time.time()
         if not msg.startswith(self.command_prefix): return
@@ -1631,7 +1631,7 @@ class ChatPlaysApp:
         first_word = msg.split()[0].lower()
         if first_word in self.custom_commands:
             macro_chain = self.custom_commands[first_word]
-            self.parse_queue(macro_chain.get("value", macro_chain), user, is_mod, is_owner)
+            self.parse_command(macro_chain.get("value", macro_chain), user, is_mod, is_owner)
             return
             
         clean_user = user.replace("@", "").lower().strip()
@@ -1953,7 +1953,7 @@ class ChatPlaysApp:
                             
                             if self.listening_to_chat:
                                 try:
-                                    self.parse_queue(c.message, c.author.name, is_mod, is_owner)
+                                    self.parse_command(c.message, c.author.name, is_mod, is_owner)
                                 except Exception as parse_err:
                                     console_log("ERROR", f"command parsing error: {parse_err}\n{traceback.format_exc()}")
                                     self.log("[system]", f"[error] command parsing error: {parse_err}", "err")
@@ -2963,4 +2963,175 @@ class ChatPlaysApp:
                             self.vm_frozen_since = None
                             self._kill_vbox_tasks()
                             if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-                            subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEV
+                            subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            time.sleep(15)
+                            set_obs_scene(OBS_SCENE_MAIN)
+                            self.watchdog_action_level = 0
+            else:
+                if getattr(self, 'vm_frozen_since', None) is not None:
+                    self.log("[system]", "virtualbox ui recovered.", "sysmsg")
+                    self.vm_frozen_since = None
+                    self.watchdog_action_level = 0
+                    self.revert_disabled = False
+
+            if getattr(self, 'consecutive_failures', 0) >= 10 and (time.time() - getattr(self, 'last_success_time', time.time())) >= 20:
+                time_since_last_api_action = time.time() - getattr(self, 'last_api_watchdog_action_time', 0)
+                
+                if time_since_last_api_action > 120:
+                    self.api_watchdog_level = 0
+
+                if getattr(self, 'api_watchdog_level', 0) == 0:
+                    self.log("[system]", "[error] virtualbox api unresponsive! auto-reverting...", "sysmsg")
+                    self.api_watchdog_level = 1
+                    self.last_api_watchdog_action_time = time.time()
+                    self.last_success_time = time.time()
+                    self.consecutive_failures = 0
+                    self.revert_disabled = True
+                    self.trigger_command(("revert", "", "watchdog"))
+                else:
+                    self.log("[system]", "[error] virtualbox api still dead! killing tasks...", "sysmsg")
+                    self.api_watchdog_level = 2
+                    self.last_api_watchdog_action_time = time.time()
+                    self.last_success_time = time.time()
+                    self.consecutive_failures = 0
+                    self._kill_vbox_tasks()
+                    if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
+                    subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(15)
+                    set_obs_scene(OBS_SCENE_MAIN)
+                    self.revert_disabled = False
+                    self.api_watchdog_level = 0
+
+            api_frozen_timeout = (time.time() - getattr(self, 'executor_tick', time.time())) > 25
+            if api_frozen_timeout and not self.vm_maintenance:
+                if getattr(self, 'vm_frozen_since', None) is None:
+                    self.vm_frozen_since = time.time()
+                    self.revert_disabled = True
+                    self.log("[system]", "[warn] virtualbox com api hanging. watchdog active...", "sysmsg")
+
+            time.sleep(1.0)
+
+    def start_app_threads(self):
+        try:
+            curr = time.time()
+            if not hasattr(self, 'listener_thread') or not self.listener_thread.is_alive() or curr - getattr(self, 'listener_tick', curr) > 120:
+                self.listener_tick = curr
+                self.listener_id = getattr(self, 'listener_id', 0) + 1
+                self.listener_thread = threading.Thread(target=self.chat_listener_loop, args=(self.listener_id,), daemon=True)
+                self.listener_thread.start()
+            if not hasattr(self, 'executor_thread') or not self.executor_thread.is_alive() or curr - getattr(self, 'executor_tick', curr) > 120:
+                self.executor_tick = curr
+                self.executor_id = getattr(self, 'executor_id', 0) + 1
+                self.executor_thread = threading.Thread(target=self.executor_loop, args=(self.executor_id,), daemon=True)
+                self.executor_thread.start()
+            if not hasattr(self, 'error_watcher_thread') or not self.error_watcher_thread.is_alive():
+                self.error_watcher_thread = threading.Thread(target=self.error_watcher_loop, daemon=True)
+                self.error_watcher_thread.start()
+            if FLASK_AVAILABLE and (not hasattr(self, 'flask_thread') or not self.flask_thread.is_alive()):
+                self.flask_thread = threading.Thread(target=start_flask, daemon=True)
+                self.flask_thread.start()
+            if not hasattr(self, 'bot_thread') or not self.bot_thread.is_alive():
+                self.bot_thread = threading.Thread(target=self.bot_worker_loop, args=(self.executor_id,), daemon=True)
+                self.bot_thread.start()
+        except Exception as e:
+            console_log("ERROR", f"start threads crashed: {e}\n{traceback.format_exc()}")
+            self.log("[system]", f"[error] start threads crashed: {e}", "err")
+
+    def start_stats_thread(self):
+        if hasattr(self, 'stats_thread') and self.stats_thread.is_alive():
+            return
+        self.stats_thread = threading.Thread(target=self.stats_loop, daemon=True)
+        self.stats_thread.start()
+
+    def stats_loop(self):
+        global CURRENT_VIEWERS, CURRENT_LIKES
+        api_cooldown_until = 0
+        while self.running:
+            try:
+                stats_interval = max(3, int(self.config.get("stats_interval", 5)))
+            except:
+                stats_interval = 5
+                
+            current_time = time.time()
+            if self.active_url and "[DEBUG_MODE]" not in self.active_url:
+                vid = self.resolve_live_video_id(self.active_url)
+                if not vid:
+                    time.sleep(stats_interval)
+                    continue
+                api_success = False
+                if current_time > api_cooldown_until:
+                    try:
+                        api_key_to_use = self.config.get("youtube_api_key", YOUTUBE_API_KEY).strip()
+                        api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics%2CliveStreamingDetails&id={vid}&key={api_key_to_use}"
+                        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            data = json.loads(response.read().decode())
+                            if "error" in data:
+                                raise Exception("api quota error")
+                            if "items" in data and len(data["items"]) > 0:
+                                item = data["items"][0]
+                                stats = item.get("statistics", {})
+                                live = item.get("liveStreamingDetails", {})
+                                new_viewers = live.get("concurrentViewers")
+                                new_likes = stats.get("likeCount")
+                                if new_viewers: CURRENT_VIEWERS = str(new_viewers)
+                                if new_likes: CURRENT_LIKES = str(new_likes)
+                                api_success = True
+                    except urllib.error.HTTPError as e:
+                        if e.code in [403, 429]: 
+                            api_cooldown_until = current_time + 3600 
+                    except Exception: 
+                        pass 
+                
+                if not api_success:
+                    try:
+                        req = urllib.request.Request(f"https://www.youtube.com/watch?v={vid}", headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            html = response.read().decode('utf-8')
+                        
+                        v_match = re.search(r'"concurrentViewers":\s*\{\s*"simpleText":\s*"([^"]+)"', html)
+                        if not v_match:
+                            v_match = re.search(r'"concurrentViewers"\s*:\s*\{\s*"simpleText"\s*:\s*"([\d,]+)"', html)
+                        if not v_match:
+                            v_match = re.search(r'([\d,]+)\s*watching now', html, re.IGNORECASE)
+                        if v_match:
+                            num = ''.join(filter(str.isdigit, v_match.group(1)))
+                            if num: CURRENT_VIEWERS = num
+                            
+                        l_match = re.search(r'"likeCount":\s*"(\d+)"', html)
+                        if not l_match:
+                            l_match = re.search(r'"label":\s*"([\d,]+)\s+likes"', html)
+                        if l_match:
+                            num = ''.join(filter(str.isdigit, l_match.group(1)))
+                            if num: CURRENT_LIKES = num
+                    except urllib.error.HTTPError as e:
+                        if e.code == 429:
+                            time.sleep(60) 
+                    except Exception: 
+                        pass
+            if self.active_url == "[DEBUG_MODE]":
+                 if random.random() < 0.1:
+                      CURRENT_VIEWERS = str(random.randint(100, 5000))
+                      CURRENT_LIKES = str(random.randint(10, 500))
+            save_stats()
+            time.sleep(stats_interval)
+
+if __name__ == "__main__":
+    try:
+        main_ui_root = tk.Tk()
+        main_gui_application = ChatPlaysApp(main_ui_root)
+        main_ui_root.mainloop()
+    except Exception as fatal_error:
+        print("\n" + "="*60)
+        print("script crashed:")
+        print("="*60)
+        traceback.print_exc()
+        print("="*60 + "\n")
+        try:
+            err_root = tk.Tk()
+            err_root.withdraw()
+            messagebox.showerror("error", f"crashed during startup.\n\nerror: {fatal_error}\n\ncheck black console for exact line.")
+            err_root.destroy()
+        except:
+            pass
+        input("press enter to exit...")

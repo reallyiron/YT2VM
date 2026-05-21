@@ -10,3 +10,8 @@ ill say that soon
 # e
 eeeeeeeeee
 # I WILL NEVER STOP UPDATEING MY SCRIPT EVER
+# Is this script malware?
+no its not check full source code theres no malware or stealer
+# Do i need for yt api?
+no the yt api isnt needed at all
+it can run without it its just for my stats so i desided to also release that one

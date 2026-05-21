@@ -19,6 +19,7 @@ from ctypes import wintypes
 import collections
 import math
 import gc
+import queue
 
 try:
     import obsws_python as obs
@@ -35,44 +36,6 @@ try:
     YT_BOT_AVAILABLE = True
 except ImportError:
     YT_BOT_AVAILABLE = False
-
-class QueueEmpty(Exception): pass
-class QueueFull(Exception): pass
-
-class CustomQueue:
-    def __init__(self, maxsize=0):
-        self.queue = collections.deque()
-        self.maxsize = maxsize
-        self.lock = threading.Lock()
-        
-    def put(self, item):
-        self.put_nowait(item)
-
-    def put_nowait(self, item):
-        with self.lock:
-            if self.maxsize > 0 and len(self.queue) >= self.maxsize:
-                raise QueueFull("queue full")
-            self.queue.append(item)
-
-    def get(self, timeout=None):
-        start_time = time.time()
-        while True:
-            with self.lock:
-                if self.queue:
-                    return self.queue.popleft()
-            if timeout is not None and (time.time() - start_time) > timeout:
-                raise QueueEmpty("queue empty")
-            time.sleep(0.01)
-
-    def get_nowait(self):
-        with self.lock:
-            if self.queue:
-                return self.queue.popleft()
-            raise QueueEmpty("queue empty")
-
-    def empty(self):
-        with self.lock:
-            return len(self.queue) == 0
 
 INSTANCE_ID = 1
 for arg in sys.argv:
@@ -130,7 +93,7 @@ OBS_SCENE_STARTING = "starting2" if IS_MULTISTREAM else "starting"
 ADMINS = [] 
 OWNERS = []
 
-GUI_LOG_QUEUE = CustomQueue(maxsize=300)
+GUI_LOG_QUEUE = queue.Queue(maxsize=300)
 LOG_LOCK = threading.Lock()
 
 def safe_json_dump(filename, data):
@@ -198,7 +161,7 @@ def console_log(level, msg):
     log_line = f"[{timestamp}] [{level.lower()}] {msg.lower()}"
     print(log_line, flush=True)
     try: GUI_LOG_QUEUE.put_nowait((level, log_line))
-    except QueueFull: pass
+    except queue.Full: pass
     try:
         with LOG_LOCK:
             with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -644,8 +607,9 @@ class ChatPlaysApp:
             self.command_prefix = self.config.get("command_prefix", "!")
             YOUTUBE_API_KEY = self.config.get("youtube_api_key", YOUTUBE_API_KEY)
             self.custom_commands = self.config.get("custom_commands", {})
+            self.app_name = self.config.get("app_name", "YT2VM")
 
-            self.root.title(f"chat control {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
+            self.root.title(f"{self.app_name} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             x_cood = int((screen_width/2) - (1150/2))
@@ -673,9 +637,9 @@ class ChatPlaysApp:
             
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
             
-            self.log_queue = CustomQueue(maxsize=300)
-            self.connect_queue = CustomQueue()
-            self.bot_msg_queue = CustomQueue(maxsize=100)
+            self.log_queue = queue.Queue(maxsize=300)
+            self.connect_queue = queue.Queue()
+            self.bot_msg_queue = queue.Queue(maxsize=100)
             self.yt_bot_service = None
             self.yt_bot_chat_id = None
             self.running = True
@@ -700,7 +664,7 @@ class ChatPlaysApp:
             self.shared_session = None
             self.vbox_mouse_btns = 0
             
-            self.input_lock = threading.Lock()
+            self.input_lock = threading.RLock()
             self.vm_maintenance = False
 
             self.current_snapshot = ""
@@ -767,6 +731,7 @@ class ChatPlaysApp:
             "mouse_delay": 0.005,
             "max_wait_time": 20.0,
             "enable_starting_scene": True,
+            "app_name": "YT2VM",
             "custom_commands": {}
         }
         if os.path.exists(SETTINGS_FILE):
@@ -920,7 +885,7 @@ class ChatPlaysApp:
             status_card = create_card(dash_left, "VIRTUALBOX STATUS")
             self.lbl_status = tk.Label(status_card, text="BOOTING...", font=("Segoe UI", 16, "bold"), bg="#18181B", fg="#10B981")
             self.lbl_status.pack(anchor="w", padx=15, pady=(0, 5))
-            self.btn_vm = tk.Button(status_card, text=f"Target: {VM_NAME}", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=self.cycle_vm)
+            self.btn_vm = tk.Button(status_card, text=f"target: {VM_NAME}", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=self.cycle_vm)
             self.btn_vm.pack(fill="x", padx=15, pady=(5, 15), ipady=5)
 
             stats_card = create_card(dash_left, "LIVE STATS")
@@ -945,7 +910,7 @@ class ChatPlaysApp:
             self.lbl_likes_val.grid(row=3, column=1, sticky="e", pady=4)
 
             actions_card = create_card(dash_left, "SYSTEM CONTROLS")
-            def quick_cmd(c, a=""): self.trigger_command((c, a, "[CONSOLE]"))
+            def quick_cmd(c, a=""): self.trigger_command((c, a, "[console]"))
             btn_grid = tk.Frame(actions_card, bg="#18181B")
             btn_grid.pack(fill="x", padx=10, pady=(0, 15))
             btn_grid.columnconfigure(0, weight=1)
@@ -1098,6 +1063,11 @@ class ChatPlaysApp:
 
             self.var_strict_live = tk.BooleanVar(value=self.config.get("strict_live_check", True))
             ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=9, column=0, columnspan=2, sticky="w", pady=6)
+
+            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=10, column=0, sticky="e", pady=10, padx=(0, 20))
+            self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "C2VM", "YCPV", "YTPVM"], width=30, state="readonly", font=("Segoe UI", 11))
+            self.cb_app_name.grid(row=10, column=1, sticky="w", pady=10)
+            self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
             
             tk.Label(sett_right, text="PERFORMANCE & TIMINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg="#10B981").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
 
@@ -1322,6 +1292,7 @@ class ChatPlaysApp:
         self.config["youtube_api_key"] = self.entry_api_key_new.get().strip()
         self.config["enable_starting_scene"] = self.var_starting_scene.get()
         self.config["strict_live_check"] = self.var_strict_live.get()
+        self.config["app_name"] = self.cb_app_name.get()
         
         try: self.config["stats_interval"] = float(self.entry_stats_int.get())
         except: self.config["stats_interval"] = 15
@@ -1348,6 +1319,8 @@ class ChatPlaysApp:
         self.twenty_four_seven_mode = self.config["auto_start"]
         YOUTUBE_API_KEY = self.config["youtube_api_key"]
         self.max_wait_time = float(self.config["max_wait_time"])
+        self.app_name = self.config["app_name"]
+        self.root.title(f"{self.app_name} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
         console_log("SYSTEM", "general settings & timings saved!")
 
     def update_gui_console(self):
@@ -1429,7 +1402,7 @@ class ChatPlaysApp:
             
         self.config["vm_name"] = VM_NAME
         self.save_settings()
-        self.root.title(f"chat control {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
+        self.root.title(f"{self.config.get('app_name', 'YT2VM')} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
         if hasattr(self, 'btn_vm'):
             self.btn_vm.configure(text=f"target: {VM_NAME}")
 
@@ -1615,7 +1588,7 @@ class ChatPlaysApp:
                     msg_type, data = self.log_queue.get_nowait()
                     if msg_type == "status":
                         self.update_status_display(data, "broke" in data)
-                except QueueEmpty: 
+                except queue.Empty: 
                     break
                 except Exception:
                     pass
@@ -2168,7 +2141,7 @@ class ChatPlaysApp:
                             elif "401" in err_lower or "unauthorized" in err_lower:
                                 self.yt_bot_chat_id = None 
                                 
-            except QueueEmpty:
+            except queue.Empty:
                 pass
             except Exception as e:
                 err_str = str(e)
@@ -2477,9 +2450,10 @@ class ChatPlaysApp:
             def press_scancodes_vbox(kb_obj, codes, delay=base_key_del):
                 if not kb_obj: return
                 self.log("[system]", f"[debug] pressing: {codes}", "debugmsg")
-                safe_put_scancodes(kb_obj, codes)
-                time.sleep(delay * lm) 
-                safe_put_scancodes(kb_obj, get_release_codes(codes))
+                with self.input_lock:
+                    safe_put_scancodes(kb_obj, codes)
+                    time.sleep(delay * lm) 
+                    safe_put_scancodes(kb_obj, get_release_codes(codes))
 
             def type_char_smart(kb_obj, char, type_delay=base_type_spd):
                 if not kb_obj: return
@@ -2487,27 +2461,28 @@ class ChatPlaysApp:
                 if base_code == [0]: 
                     self.log("[system]", f"[error] char '{char}' not on layout.", "sysmsg")
                     return
-                for mod in modifiers:
-                    safe_put_scancodes(kb_obj, mod)
-                    time.sleep(0.005 * lm) 
-                press_scancodes_vbox(kb_obj, base_code, delay=type_delay)
-                for mod in reversed(modifiers):
-                    time.sleep(0.005 * lm)
-                    if mod == [0x2A]: safe_put_scancodes(kb_obj, [0xAA])
-                    elif mod == [0xE0, 0x38]: safe_put_scancodes(kb_obj, [0xE0, 0xB8])
-                    else: safe_put_scancodes(kb_obj, get_release_codes(mod))
-                    time.sleep(0.002 * lm)
-                    
-                dead_keys = {
-                    "DANISH": ['~', '^', '`', '´', '¨'],
-                    "GERMAN": ['^', '`', '´'],
-                    "FRENCH": ['^', '¨'],
-                    "TURKISH": ['~', '^', '`', '´', '¨'],
-                    "UK": ['`']
-                }
-                if char in dead_keys.get(KEYBOARD_LAYOUT, []):
-                    time.sleep(0.01 * lm)
-                    press_scancodes_vbox(kb_obj, [0x39], delay=type_delay)
+                with self.input_lock:
+                    for mod in modifiers:
+                        safe_put_scancodes(kb_obj, mod)
+                        time.sleep(0.005 * lm) 
+                    press_scancodes_vbox(kb_obj, base_code, delay=type_delay)
+                    for mod in reversed(modifiers):
+                        time.sleep(0.005 * lm)
+                        if mod == [0x2A]: safe_put_scancodes(kb_obj, [0xAA])
+                        elif mod == [0xE0, 0x38]: safe_put_scancodes(kb_obj, [0xE0, 0xB8])
+                        else: safe_put_scancodes(kb_obj, get_release_codes(mod))
+                        time.sleep(0.002 * lm)
+                        
+                    dead_keys = {
+                        "DANISH": ['~', '^', '`', '´', '¨'],
+                        "GERMAN": ['^', '`', '´'],
+                        "FRENCH": ['^', '¨'],
+                        "TURKISH": ['~', '^', '`', '´', '¨'],
+                        "UK": ['`']
+                    }
+                    if char in dead_keys.get(KEYBOARD_LAYOUT, []):
+                        time.sleep(0.01 * lm)
+                        press_scancodes_vbox(kb_obj, [0x39], delay=type_delay)
 
             def safe_put_mouse_event(mouse_obj, dx, dy, dz, dw, button_state):
                 if not mouse_obj: return
@@ -2538,40 +2513,42 @@ class ChatPlaysApp:
             def do_mouse_click(btn_code, count_str):
                 count = 1
                 if count_str.isdigit(): count = int(count_str)
-                for _ in range(min(count, 50)):
-                    safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
-                    time.sleep(base_mouse_del * lm)
-                    safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
-                    time.sleep(base_mouse_del * lm)
+                with self.input_lock:
+                    for _ in range(min(count, 50)):
+                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
+                        time.sleep(base_mouse_del * lm)
+                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
+                        time.sleep(base_mouse_del * lm)
 
             def run_windows_command(command_str, is_admin=False):
-                safe_put_scancodes(kb, SCANCODES.get('win', [224, 91]))
-                time.sleep(0.2 * lm)
-                type_char_smart(kb, 'r', type_delay=base_type_spd)
-                time.sleep(0.2 * lm)
-                safe_put_scancodes(kb, get_release_codes(SCANCODES.get('win', [224, 91])))
-                time.sleep(0.5 * lm) 
-                
-                full_cmd = f"cmd /c {command_str}" if is_admin else command_str
-                for char in full_cmd:
-                    type_char_smart(kb, char, type_delay=base_type_spd)
-                    time.sleep(0.005 * lm) 
-                time.sleep(0.1 * lm) 
-                
-                if is_admin:
-                    safe_put_scancodes(kb, SCANCODES['lctrl'])
-                    safe_put_scancodes(kb, SCANCODES['lshift'])
-                    time.sleep(0.1 * lm)
-                    press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
-                    time.sleep(0.1 * lm)
-                    safe_put_scancodes(kb, get_release_codes(SCANCODES['lshift']))
-                    safe_put_scancodes(kb, get_release_codes(SCANCODES['lctrl']))
-                    time.sleep(0.5 * lm)
-                    press_scancodes_vbox(kb, SCANCODES['left'], delay=base_key_del)
-                    time.sleep(0.1 * lm)
+                with self.input_lock:
+                    safe_put_scancodes(kb, SCANCODES.get('win', [224, 91]))
+                    time.sleep(0.2 * lm)
+                    type_char_smart(kb, 'r', type_delay=base_type_spd)
+                    time.sleep(0.2 * lm)
+                    safe_put_scancodes(kb, get_release_codes(SCANCODES.get('win', [224, 91])))
+                    time.sleep(0.5 * lm) 
                     
-                press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
-                time.sleep(0.5 * lm)
+                    full_cmd = f"cmd /c {command_str}" if is_admin else command_str
+                    for char in full_cmd:
+                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        time.sleep(0.005 * lm) 
+                    time.sleep(0.1 * lm) 
+                    
+                    if is_admin:
+                        safe_put_scancodes(kb, SCANCODES['lctrl'])
+                        safe_put_scancodes(kb, SCANCODES['lshift'])
+                        time.sleep(0.1 * lm)
+                        press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                        time.sleep(0.1 * lm)
+                        safe_put_scancodes(kb, get_release_codes(SCANCODES['lshift']))
+                        safe_put_scancodes(kb, get_release_codes(SCANCODES['lctrl']))
+                        time.sleep(0.5 * lm)
+                        press_scancodes_vbox(kb, SCANCODES['left'], delay=base_key_del)
+                        time.sleep(0.1 * lm)
+                        
+                    press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                    time.sleep(0.5 * lm)
 
             if core_cmd == "wait":
                 try:
@@ -2660,39 +2637,42 @@ class ChatPlaysApp:
 
             elif core_cmd == "type":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
-                for char in arg: 
-                    type_char_smart(kb, char, type_delay=base_type_spd)
-                    time.sleep(0.005 * lm) 
+                with self.input_lock:
+                    for char in arg: 
+                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        time.sleep(0.005 * lm) 
 
             elif core_cmd == "send":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
-                for char in arg: 
-                    type_char_smart(kb, char, type_delay=base_type_spd)
-                    time.sleep(0.005 * lm) 
-                time.sleep(0.1 * lm)
-                press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                with self.input_lock:
+                    for char in arg: 
+                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        time.sleep(0.005 * lm) 
+                    time.sleep(0.1 * lm)
+                    press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
 
             elif core_cmd == "combo":
                 keys = arg.split("+")
-                pressed_codes = []
-                valid_combo = True
-                for k in keys:
-                    k = k.strip()
-                    if k.lower() in SCANCODES:
-                        codes = SCANCODES[k.lower()]
-                        safe_put_scancodes(kb, codes)
-                        pressed_codes.append(codes)
+                with self.input_lock:
+                    pressed_codes = []
+                    valid_combo = True
+                    for k in keys:
+                        k = k.strip()
+                        if k.lower() in SCANCODES:
+                            codes = SCANCODES[k.lower()]
+                            safe_put_scancodes(kb, codes)
+                            pressed_codes.append(codes)
+                            time.sleep(0.1 * lm) 
+                        else:
+                            self.log("[system]", f"[error] key '{k}' not found.", "sysmsg")
+                            valid_combo = False
+                            break
+                    if valid_combo:
                         time.sleep(0.1 * lm) 
-                    else:
-                        self.log("[system]", f"[error] key '{k}' not found.", "sysmsg")
-                        valid_combo = False
-                        break
-                if valid_combo:
-                    time.sleep(0.1 * lm) 
-                for codes in reversed(pressed_codes):
-                    safe_put_scancodes(kb, get_release_codes(codes))
-                    time.sleep(0.02 * lm) 
-                time.sleep(0.5 * lm)
+                    for codes in reversed(pressed_codes):
+                        safe_put_scancodes(kb, get_release_codes(codes))
+                        time.sleep(0.02 * lm) 
+                    time.sleep(0.5 * lm)
 
             elif core_cmd == "keydown":
                 if arg.lower() in SCANCODES:
@@ -2707,16 +2687,17 @@ class ChatPlaysApp:
                     self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
 
             elif core_cmd == "key":
-                if arg.lower() in SCANCODES:
-                    safe_put_scancodes(kb, SCANCODES[arg.lower()])
-                    time.sleep(max(0.1, base_key_del * lm))
-                    safe_put_scancodes(kb, get_release_codes(SCANCODES[arg.lower()]))
-                    if arg.lower() in ['win', 'lwin', 'rwin', 'cmd', 'super', 'menu', 'esc', 'enter', 'return']:
-                        time.sleep(0.5 * lm)
-                elif len(arg) == 1: 
-                    type_char_smart(kb, arg, type_delay=base_type_spd)
-                else:
-                    self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
+                with self.input_lock:
+                    if arg.lower() in SCANCODES:
+                        safe_put_scancodes(kb, SCANCODES[arg.lower()])
+                        time.sleep(max(0.1, base_key_del * lm))
+                        safe_put_scancodes(kb, get_release_codes(SCANCODES[arg.lower()]))
+                        if arg.lower() in ['win', 'lwin', 'rwin', 'cmd', 'super', 'menu', 'esc', 'enter', 'return']:
+                            time.sleep(0.5 * lm)
+                    elif len(arg) == 1: 
+                        type_char_smart(kb, arg, type_delay=base_type_spd)
+                    else:
+                        self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
             
             elif core_cmd == "click": 
                 do_mouse_click(0x01, arg)
@@ -2735,7 +2716,8 @@ class ChatPlaysApp:
                         amt = int(args[1])
                         dx = -amt if dir == "left" else (amt if dir == "right" else 0)
                         dy = -amt if dir == "up" else (amt if dir == "down" else 0)
-                        safe_put_mouse_event(mouse, dx, dy, 0, 0, self.vbox_mouse_btns)
+                        with self.input_lock:
+                            safe_put_mouse_event(mouse, dx, dy, 0, 0, self.vbox_mouse_btns)
                     except ValueError: pass
 
             elif core_cmd == "abs":
@@ -2744,7 +2726,8 @@ class ChatPlaysApp:
                     try:
                         x = int(args[0])
                         y = int(args[1])
-                        safe_put_mouse_event_absolute(mouse, x, y, 0, 0, self.vbox_mouse_btns)
+                        with self.input_lock:
+                            safe_put_mouse_event_absolute(mouse, x, y, 0, 0, self.vbox_mouse_btns)
                     except ValueError: pass
                     
             elif core_cmd == "drag":
@@ -2752,26 +2735,28 @@ class ChatPlaysApp:
                 if len(args) == 2:
                     try:
                         dx, dy = int(args[0]), int(args[1])
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | 0x01)
-                        time.sleep(base_mouse_del * lm)
-                        steps = 5
-                        for i in range(1, steps + 1):
-                            step_x = dx // steps
-                            step_y = dy // steps
-                            safe_put_mouse_event(mouse, step_x, step_y, 0, 0, self.vbox_mouse_btns | 0x01)
+                        with self.input_lock:
+                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | 0x01)
                             time.sleep(base_mouse_del * lm)
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~0x01)
+                            steps = 5
+                            for i in range(1, steps + 1):
+                                step_x = dx // steps
+                                step_y = dy // steps
+                                safe_put_mouse_event(mouse, step_x, step_y, 0, 0, self.vbox_mouse_btns | 0x01)
+                                time.sleep(base_mouse_del * lm)
+                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~0x01)
                     except ValueError: pass
                     
             elif core_cmd == "scroll":
                 try:
                     amt = int(arg)
                     btn = 8 if amt > 0 else 16
-                    for _ in range(min(abs(amt), 50)):
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn)
-                        time.sleep(base_mouse_del * lm)
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn)
-                        time.sleep(base_mouse_del * lm)
+                    with self.input_lock:
+                        for _ in range(min(abs(amt), 50)):
+                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn)
+                            time.sleep(base_mouse_del * lm)
+                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn)
+                            time.sleep(base_mouse_del * lm)
                 except ValueError: pass
 
             self.consecutive_failures = 0
@@ -2978,175 +2963,4 @@ class ChatPlaysApp:
                             self.vm_frozen_since = None
                             self._kill_vbox_tasks()
                             if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-                            subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            time.sleep(15)
-                            set_obs_scene(OBS_SCENE_MAIN)
-                            self.watchdog_action_level = 0
-            else:
-                if getattr(self, 'vm_frozen_since', None) is not None:
-                    self.log("[system]", "virtualbox ui recovered.", "sysmsg")
-                    self.vm_frozen_since = None
-                    self.watchdog_action_level = 0
-                    self.revert_disabled = False
-
-            if getattr(self, 'consecutive_failures', 0) >= 10 and (time.time() - getattr(self, 'last_success_time', time.time())) >= 20:
-                time_since_last_api_action = time.time() - getattr(self, 'last_api_watchdog_action_time', 0)
-                
-                if time_since_last_api_action > 120:
-                    self.api_watchdog_level = 0
-
-                if getattr(self, 'api_watchdog_level', 0) == 0:
-                    self.log("[system]", "[error] virtualbox api unresponsive! auto-reverting...", "sysmsg")
-                    self.api_watchdog_level = 1
-                    self.last_api_watchdog_action_time = time.time()
-                    self.last_success_time = time.time()
-                    self.consecutive_failures = 0
-                    self.revert_disabled = True
-                    self.trigger_command(("revert", "", "watchdog"))
-                else:
-                    self.log("[system]", "[error] virtualbox api still dead! killing tasks...", "sysmsg")
-                    self.api_watchdog_level = 2
-                    self.last_api_watchdog_action_time = time.time()
-                    self.last_success_time = time.time()
-                    self.consecutive_failures = 0
-                    self._kill_vbox_tasks()
-                    if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-                    subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    time.sleep(15)
-                    set_obs_scene(OBS_SCENE_MAIN)
-                    self.revert_disabled = False
-                    self.api_watchdog_level = 0
-
-            api_frozen_timeout = (time.time() - getattr(self, 'executor_tick', time.time())) > 25
-            if api_frozen_timeout and not self.vm_maintenance:
-                if getattr(self, 'vm_frozen_since', None) is None:
-                    self.vm_frozen_since = time.time()
-                    self.revert_disabled = True
-                    self.log("[system]", "[warn] virtualbox com api hanging. watchdog active...", "sysmsg")
-
-            time.sleep(1.0)
-
-    def start_app_threads(self):
-        try:
-            curr = time.time()
-            if not hasattr(self, 'listener_thread') or not self.listener_thread.is_alive() or curr - getattr(self, 'listener_tick', curr) > 120:
-                self.listener_tick = curr
-                self.listener_id = getattr(self, 'listener_id', 0) + 1
-                self.listener_thread = threading.Thread(target=self.chat_listener_loop, args=(self.listener_id,), daemon=True)
-                self.listener_thread.start()
-            if not hasattr(self, 'executor_thread') or not self.executor_thread.is_alive() or curr - getattr(self, 'executor_tick', curr) > 120:
-                self.executor_tick = curr
-                self.executor_id = getattr(self, 'executor_id', 0) + 1
-                self.executor_thread = threading.Thread(target=self.executor_loop, args=(self.executor_id,), daemon=True)
-                self.executor_thread.start()
-            if not hasattr(self, 'error_watcher_thread') or not self.error_watcher_thread.is_alive():
-                self.error_watcher_thread = threading.Thread(target=self.error_watcher_loop, daemon=True)
-                self.error_watcher_thread.start()
-            if FLASK_AVAILABLE and (not hasattr(self, 'flask_thread') or not self.flask_thread.is_alive()):
-                self.flask_thread = threading.Thread(target=start_flask, daemon=True)
-                self.flask_thread.start()
-            if not hasattr(self, 'bot_thread') or not self.bot_thread.is_alive():
-                self.bot_thread = threading.Thread(target=self.bot_worker_loop, args=(self.executor_id,), daemon=True)
-                self.bot_thread.start()
-        except Exception as e:
-            console_log("ERROR", f"start threads crashed: {e}\n{traceback.format_exc()}")
-            self.log("[system]", f"[error] start threads crashed: {e}", "err")
-
-    def start_stats_thread(self):
-        if hasattr(self, 'stats_thread') and self.stats_thread.is_alive():
-            return
-        self.stats_thread = threading.Thread(target=self.stats_loop, daemon=True)
-        self.stats_thread.start()
-
-    def stats_loop(self):
-        global CURRENT_VIEWERS, CURRENT_LIKES
-        api_cooldown_until = 0
-        while self.running:
-            try:
-                stats_interval = max(3, int(self.config.get("stats_interval", 5)))
-            except:
-                stats_interval = 5
-                
-            current_time = time.time()
-            if self.active_url and "[DEBUG_MODE]" not in self.active_url:
-                vid = self.resolve_live_video_id(self.active_url)
-                if not vid:
-                    time.sleep(stats_interval)
-                    continue
-                api_success = False
-                if current_time > api_cooldown_until:
-                    try:
-                        api_key_to_use = self.config.get("youtube_api_key", YOUTUBE_API_KEY).strip()
-                        api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics%2CliveStreamingDetails&id={vid}&key={api_key_to_use}"
-                        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                        with urllib.request.urlopen(req, timeout=5) as response:
-                            data = json.loads(response.read().decode())
-                            if "error" in data:
-                                raise Exception("api quota error")
-                            if "items" in data and len(data["items"]) > 0:
-                                item = data["items"][0]
-                                stats = item.get("statistics", {})
-                                live = item.get("liveStreamingDetails", {})
-                                new_viewers = live.get("concurrentViewers")
-                                new_likes = stats.get("likeCount")
-                                if new_viewers: CURRENT_VIEWERS = str(new_viewers)
-                                if new_likes: CURRENT_LIKES = str(new_likes)
-                                api_success = True
-                    except urllib.error.HTTPError as e:
-                        if e.code in [403, 429]: 
-                            api_cooldown_until = current_time + 3600 
-                    except Exception: 
-                        pass 
-                
-                if not api_success:
-                    try:
-                        req = urllib.request.Request(f"https://www.youtube.com/watch?v={vid}", headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                        with urllib.request.urlopen(req, timeout=5) as response:
-                            html = response.read().decode('utf-8')
-                        
-                        v_match = re.search(r'"concurrentViewers":\s*\{\s*"simpleText":\s*"([^"]+)"', html)
-                        if not v_match:
-                            v_match = re.search(r'"concurrentViewers"\s*:\s*\{\s*"simpleText"\s*:\s*"([\d,]+)"', html)
-                        if not v_match:
-                            v_match = re.search(r'([\d,]+)\s*watching now', html, re.IGNORECASE)
-                        if v_match:
-                            num = ''.join(filter(str.isdigit, v_match.group(1)))
-                            if num: CURRENT_VIEWERS = num
-                            
-                        l_match = re.search(r'"likeCount":\s*"(\d+)"', html)
-                        if not l_match:
-                            l_match = re.search(r'"label":\s*"([\d,]+)\s+likes"', html)
-                        if l_match:
-                            num = ''.join(filter(str.isdigit, l_match.group(1)))
-                            if num: CURRENT_LIKES = num
-                    except urllib.error.HTTPError as e:
-                        if e.code == 429:
-                            time.sleep(60) 
-                    except Exception: 
-                        pass
-            if self.active_url == "[DEBUG_MODE]":
-                 if random.random() < 0.1:
-                      CURRENT_VIEWERS = str(random.randint(100, 5000))
-                      CURRENT_LIKES = str(random.randint(10, 500))
-            save_stats()
-            time.sleep(stats_interval)
-
-if __name__ == "__main__":
-    try:
-        main_ui_root = tk.Tk()
-        main_gui_application = ChatPlaysApp(main_ui_root)
-        main_ui_root.mainloop()
-    except Exception as fatal_error:
-        print("\n" + "="*60)
-        print("script crashed:")
-        print("="*60)
-        traceback.print_exc()
-        print("="*60 + "\n")
-        try:
-            err_root = tk.Tk()
-            err_root.withdraw()
-            messagebox.showerror("error", f"crashed during startup.\n\nerror: {fatal_error}\n\ncheck black console for exact line.")
-            err_root.destroy()
-        except:
-            pass
-        input("press enter to exit...")
+                            subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEV

@@ -23,78 +23,74 @@ import queue
 
 try:
     import obsws_python as obs
-    OBS_AVAILABLE = True
+    obs_available = True
 except ImportError:
-    OBS_AVAILABLE = False
+    obs_available = False
 
 try:
-    import pickle
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    from google.auth.transport.requests import Request
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    YT_BOT_AVAILABLE = True
+    import virtualbox
+    vbox_available = True
 except ImportError:
-    YT_BOT_AVAILABLE = False
+    vbox_available = False
 
-INSTANCE_ID = 1
+try:
+    from flask import Flask, jsonify, render_template_string
+    import logging as flask_logging
+    flask_available = True
+except ImportError: 
+    flask_available = False
+
+try:
+    import pytchat
+    pytchat_available = True
+except ImportError: 
+    pytchat_available = False
+
+instance_id = 1
 for arg in sys.argv:
     if arg == "--multistream":
-        INSTANCE_ID = 2
+        instance_id = 2
     elif arg.startswith("--multistream") and arg != "--multistream":
         try:
-            INSTANCE_ID = int(arg.replace("--multistream", "")) + 1
+            instance_id = int(arg.replace("--multistream", "")) + 1
         except Exception: pass
 
-IS_MULTISTREAM = INSTANCE_ID > 1
-HYPERVISOR_TYPE = "VirtualBox"
-FLASK_PORT = 5000 + INSTANCE_ID - 1
-VERSION = "v19.23.public"
+is_multistream = instance_id > 1
+hypervisor_type = "virtualbox"
+flask_port = 5000 + instance_id - 1
+version = "v20.0.ultra"
 
-SUFFIX = f"_multi{INSTANCE_ID-1}" if INSTANCE_ID > 2 else ("_multi" if INSTANCE_ID == 2 else "")
-SETTINGS_FILE = f"settings{SUFFIX}.json"
-STATS_FILE = f"stats{SUFFIX}.json"
-LOG_FILE = f"server_log{SUFFIX}.txt"
-SNAP_FILE = f"snapshot{SUFFIX}.txt"
-SESSION_FILE = f"session{SUFFIX}.txt"
-LOGS_FILE = f"logs{SUFFIX}.json"
-MODLOGS_FILE = f"modlogsandownerlogs{SUFFIX}.json"
-TOKEN_FILE = f"token{SUFFIX}.pickle"
-ALLMSGLOGS_FILE = f"allmsglogs{SUFFIX}.json"
-VOTESLOGS_FILE = f"voteslogs{SUFFIX}.json"
+suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
+settings_file = f"settings{suffix}.json"
+stats_file = f"stats{suffix}.json"
+log_file = f"server_log{suffix}.txt"
+snap_file = f"snapshot{suffix}.txt"
+session_file = f"session{suffix}.txt"
+logs_file = f"logs{suffix}.json"
+modlogs_file = f"modlogsandownerlogs{suffix}.json"
+allmsglogs_file = f"allmsglogs{suffix}.json"
+voteslogs_file = f"voteslogs{suffix}.json"
 
-YT_CLIENT_CONFIG = {
-    "installed": {
-        "client_id": "your_client_id_here.apps.googleusercontent.com",
-        "project_id": "your_project_id_here",
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_secret": "your_client_secret_here",
-        "redirect_uris": ["http://localhost"]
-    }
-}
+refresh_rate = 100  
+keyboard_layout = "US" 
+available_layouts = ["US", "UK", "DANISH", "TURKISH", "GERMAN", "FRENCH"]
+vote_timeout = 60
+youtube_api_key = "your_api_key_here"
 
-REFRESH_RATE = 100  
-KEYBOARD_LAYOUT = "US" 
-AVAILABLE_LAYOUTS = ["US", "UK", "DANISH", "TURKISH", "GERMAN", "FRENCH"]
-VOTE_TIMEOUT = 60
-YOUTUBE_API_KEY = "your_api_key_here"
+obs_host = "localhost"
+obs_port = 4454 + instance_id  
+obs_password = ""  
+obs_scene_main = "main2" if is_multistream else "main"
+obs_scene_revert = "revert2" if is_multistream else "revert"
+obs_scene_error = "serverdown2" if is_multistream else "serverdown"
+obs_scene_changevm = "changevm2" if is_multistream else "changevm"
+obs_scene_starting = "starting2" if is_multistream else "starting"
 
-OBS_HOST = "localhost"
-OBS_PORT = 4454 + INSTANCE_ID  
-OBS_PASSWORD = ""  
-OBS_SCENE_MAIN = "main2" if IS_MULTISTREAM else "main"
-OBS_SCENE_REVERT = "revert2" if IS_MULTISTREAM else "revert"
-OBS_SCENE_ERROR = "serverdown2" if IS_MULTISTREAM else "serverdown"
-OBS_SCENE_CHANGEVM = "changevm2" if IS_MULTISTREAM else "changevm"
-OBS_SCENE_STARTING = "starting2" if IS_MULTISTREAM else "starting"
+admins = [] 
+owners = []
 
-ADMINS = [] 
-OWNERS = []
-
-GUI_LOG_QUEUE = queue.Queue(maxsize=300)
-LOG_LOCK = threading.Lock()
+gui_log_queue = queue.Queue(maxsize=300)
+log_lock = threading.Lock()
 
 def safe_json_dump(filename, data):
     tmp_file = filename + ".tmp"
@@ -111,7 +107,7 @@ def safe_json_dump(filename, data):
 
 def append_to_json_log(filename, user, command):
     try:
-        with LOG_LOCK:
+        with log_lock:
             entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "username": user, "command": command}
             logs = []
             if os.path.exists(filename):
@@ -127,15 +123,15 @@ def append_to_json_log(filename, user, command):
 
 def append_to_all_msgs_log(user, msg):
     try:
-        with LOG_LOCK:
+        with log_lock:
             entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "username": user, "message": msg}
-            with open(ALLMSGLOGS_FILE, "a", encoding="utf-8") as f:
+            with open(allmsglogs_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
     except Exception: pass
 
 def log_vote_action(action, user, vote_type, target, current_votes=0):
     try:
-        with LOG_LOCK:
+        with log_lock:
             entry = {
                 "time": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "action": action.lower(),
@@ -144,15 +140,15 @@ def log_vote_action(action, user, vote_type, target, current_votes=0):
                 "progress": f"{current_votes}/{target}" if current_votes else str(target)
             }
             logs = []
-            if os.path.exists(VOTESLOGS_FILE):
+            if os.path.exists(voteslogs_file):
                 try:
-                    with open(VOTESLOGS_FILE, "r", encoding="utf-8") as f:
+                    with open(voteslogs_file, "r", encoding="utf-8") as f:
                         logs = json.load(f)
                 except Exception: pass
             logs.append(entry)
             if len(logs) > 1000:
                 logs = logs[-1000:]
-            safe_json_dump(VOTESLOGS_FILE, logs)
+            safe_json_dump(voteslogs_file, logs)
     except Exception: pass
 
 def console_log(level, msg):
@@ -160,11 +156,11 @@ def console_log(level, msg):
     date_stamp = time.strftime("%Y-%m-%d")
     log_line = f"[{timestamp}] [{level.lower()}] {msg.lower()}"
     print(log_line, flush=True)
-    try: GUI_LOG_QUEUE.put_nowait((level, log_line))
+    try: gui_log_queue.put_nowait((level, log_line))
     except queue.Full: pass
     try:
-        with LOG_LOCK:
-            with open(LOG_FILE, "a", encoding="utf-8") as f:
+        with log_lock:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"[{date_stamp} {timestamp}] [{level.lower()}] {msg.lower()}\n")
     except Exception:
         pass
@@ -177,10 +173,10 @@ possible_paths = [
     "/usr/local/bin/VBoxManage",
     "VBoxManage"
 ]
-VBOX_MANAGE_CMD = "VBoxManage"
+vbox_manage_cmd = "VBoxManage"
 for path in possible_paths:
     if os.path.exists(path):
-        VBOX_MANAGE_CMD = path
+        vbox_manage_cmd = path
         break
 
 def get_all_vbox_vms(vbox_path="VBoxManage"):
@@ -207,43 +203,20 @@ def get_vbox_snapshots(vbox_path, vm_name):
         pass
     return snaps
 
-AVAILABLE_VMS = get_all_vbox_vms(VBOX_MANAGE_CMD)
-VM_NAME = "Windows10ChatVm"
-if AVAILABLE_VMS:
-    if len(AVAILABLE_VMS) >= INSTANCE_ID:
-        VM_NAME = AVAILABLE_VMS[INSTANCE_ID - 1]
+available_vms = get_all_vbox_vms(vbox_manage_cmd)
+vm_name = "Windows10ChatVm"
+if available_vms:
+    if len(available_vms) >= instance_id:
+        vm_name = available_vms[instance_id - 1]
     else:
-        VM_NAME = AVAILABLE_VMS[0]
+        vm_name = available_vms[0]
 
-DEFAULT_BLOCKED_TERMS = [] 
-BANNED_WORDS = []
-CUSTOM_COMMANDS = {}
+default_blocked_terms = [] 
+banned_words = []
+custom_commands = {}
 
-FLASK_AVAILABLE = False
-VBOX_AVAILABLE = False
-PYTCHAT_AVAILABLE = False
-
-try:
-    from flask import Flask, jsonify, render_template_string
-    import logging as flask_logging
-    FLASK_AVAILABLE = True
-except ImportError: 
-    pass
-
-try:
-    from vboxapi import VirtualBoxManager
-    VBOX_AVAILABLE = True
-except ImportError: 
-    pass
-
-try:
-    import pytchat
-    PYTCHAT_AVAILABLE = True
-except ImportError: 
-    pass
-
-SCANCODES_FILE = "keycodes.json"
-DEFAULT_KEYDATA = {
+scancodes_file = "keycodes.json"
+default_keydata = {
     "RAW": {
         "esc": [1], "1": [2], "2": [3], "3": [4], "4": [5], "5": [6], "6": [7], "7": [8], "8": [9], "9": [10], "0": [11], 
         "-": [12], "=": [13], "backspace": [14], "tab": [15], "q": [16], "w": [17], "e": [18], "r": [19], "t": [20], "y": [21], 
@@ -296,47 +269,47 @@ DEFAULT_KEYDATA = {
 }
 
 _needs_update = False
-if os.path.exists(SCANCODES_FILE):
+if os.path.exists(scancodes_file):
     try:
-        with open(SCANCODES_FILE, "r", encoding="utf-8") as f:
+        with open(scancodes_file, "r", encoding="utf-8") as f:
             _loaded_data = json.load(f)
         if "LAYOUTS" not in _loaded_data or "RAW" not in _loaded_data:
             _needs_update = True
             old_keys = _loaded_data.copy()
-            _loaded_data = DEFAULT_KEYDATA.copy()
+            _loaded_data = default_keydata.copy()
             for k, v in old_keys.items():
                 if isinstance(v, list) and k not in _loaded_data["RAW"]:
                     _loaded_data["RAW"][k] = v
         else:
-            for lang, layout_dict in DEFAULT_KEYDATA["LAYOUTS"].items():
+            for lang, layout_dict in default_keydata["LAYOUTS"].items():
                 if lang not in _loaded_data["LAYOUTS"]:
                     _loaded_data["LAYOUTS"][lang] = layout_dict
                     _needs_update = True
-            for key, key_data in DEFAULT_KEYDATA["RAW"].items():
+            for key, key_data in default_keydata["RAW"].items():
                 if key not in _loaded_data["RAW"]:
                     _loaded_data["RAW"][key] = key_data
                     _needs_update = True
     except Exception:
-        _loaded_data = DEFAULT_KEYDATA.copy()
+        _loaded_data = default_keydata.copy()
         _needs_update = True
 else:
-    _loaded_data = DEFAULT_KEYDATA.copy()
+    _loaded_data = default_keydata.copy()
     _needs_update = True
 
 if _needs_update:
     try:
-        with open(SCANCODES_FILE, "w", encoding="utf-8") as f:
+        with open(scancodes_file, "w", encoding="utf-8") as f:
             json.dump(_loaded_data, f, indent=4, ensure_ascii=False)
     except Exception: pass
 
-SCANCODES = _loaded_data["RAW"]
-_LAYOUTS = _loaded_data["LAYOUTS"]
+scancodes = _loaded_data["RAW"]
+_layouts = _loaded_data["LAYOUTS"]
 
 def get_typed_codes(char, layout="US"):
     SHIFT = [[0x2A]]
     ALTGR = [[0x1D], [0xE0, 0x38]]
     
-    target = _LAYOUTS.get(layout, _LAYOUTS["US"])
+    target = _layouts.get(layout, _layouts["US"])
     active_no = target.get("noshift", {})
     active_sh = target.get("shift", {})
     active_al = target.get("altgr", {})
@@ -350,7 +323,7 @@ def get_typed_codes(char, layout="US"):
     if char_lower != char and char_lower in active_no: return (SHIFT, active_no[char_lower])
     if char_lower in active_no: return ([], active_no[char_lower])
 
-    us = _LAYOUTS["US"]
+    us = _layouts["US"]
     if char in us["shift"]: return (SHIFT, us["shift"][char])
     if char in us["noshift"]: return ([], us["noshift"][char])
     if char.isupper() and char_lower in us["noshift"]: return (SHIFT, us["noshift"][char_lower])
@@ -358,112 +331,51 @@ def get_typed_codes(char, layout="US"):
 
     return ([], [0])
 
-GLOBAL_MSG_ID = 0
-WEB_CHAT_HISTORY = collections.deque(maxlen=50)
-HISTORY_LOCK = threading.Lock()
-MESSAGES_BUFFER = collections.deque(maxlen=200)
-BUFFER_LOCK = threading.Lock()
+global_msg_id = 0
+web_chat_history = collections.deque(maxlen=50)
+history_lock = threading.Lock()
+messages_buffer = collections.deque(maxlen=200)
+buffer_lock = threading.Lock()
 
-SCRIPT_START_TIME = time.time()
-TOTAL_COMMANDS_EXECUTED = 0
-TOTAL_COMMANDS_FAILED = 0
-STATS_LOCK = threading.Lock()
+script_start_time = time.time()
+total_commands_executed = 0
+total_commands_failed = 0
+stats_lock = threading.Lock()
 
 try:
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, "r") as f:
+    if os.path.exists(stats_file):
+        with open(stats_file, "r") as f:
             _saved = json.load(f)
-            TOTAL_COMMANDS_EXECUTED = _saved.get("commands", 0)
-            TOTAL_COMMANDS_FAILED = _saved.get("failed", 0)
-            SCRIPT_START_TIME = time.time() - _saved.get("uptime", 0)
+            total_commands_executed = _saved.get("commands", 0)
+            total_commands_failed = _saved.get("failed", 0)
+            script_start_time = time.time() - _saved.get("uptime", 0)
 except Exception:
     pass
 
 def save_stats():
     try:
-        uptime = int(time.time() - SCRIPT_START_TIME)
-        with STATS_LOCK:
-            tmp_file = STATS_FILE + ".tmp"
+        uptime = int(time.time() - script_start_time)
+        with stats_lock:
+            tmp_file = stats_file + ".tmp"
             with open(tmp_file, "w") as f:
                 json.dump({
                     "uptime": uptime, 
-                    "commands": TOTAL_COMMANDS_EXECUTED,
-                    "failed": TOTAL_COMMANDS_FAILED,
+                    "commands": total_commands_executed,
+                    "failed": total_commands_failed,
                     "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
                 }, f)
-            os.replace(tmp_file, STATS_FILE)
+            os.replace(tmp_file, stats_file)
     except Exception:
         pass
 
-CURRENT_STATUS = "initializing..."
-CURRENT_VOTE_INFO = {"active": False, "text": ""}
-CURRENT_VIEWERS = "0"
-CURRENT_LIKES = "0"
-OVERLAY_CHAT_VISIBLE = True
-SPLIT_OVERLAY_MODE = False
+current_status = "initializing..."
+current_vote_info = {"active": False, "text": ""}
+current_viewers = "0"
+current_likes = "0"
+overlay_chat_visible = True
+split_overlay_mode = False
 
-def set_obs_scene(scene_name):
-    if not OBS_AVAILABLE:
-        console_log("ERROR", f"[obs] cannot switch to '{scene_name}'. 'obsws-python' is not installed!")
-        return
-    def _switch():
-        try:
-            console_log("SYSTEM", f"[obs] attempting to switch scene to '{scene_name}' on port {OBS_PORT}...")
-            if OBS_PASSWORD:
-                cl = obs.ReqClient(host=OBS_HOST, port=OBS_PORT, password=OBS_PASSWORD, timeout=3)
-            else:
-                cl = obs.ReqClient(host=OBS_HOST, port=OBS_PORT, timeout=3)
-            cl.set_current_program_scene(scene_name)
-            console_log("SYSTEM", f"[obs] successfully switched to '{scene_name}'!")
-        except Exception as e:
-            console_log("ERROR", f"[obs] scene switch failed on port {OBS_PORT}: {e}")
-    threading.Thread(target=_switch, daemon=True).start()
-
-def handle_exception(exc_type, exc_value, exc_traceback):
-    if issubclass(exc_type, KeyboardInterrupt):
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-        return
-    print("\n" + "="*50)
-    print("critical script error encountered:")
-    print("="*50)
-    traceback.print_exception(exc_type, exc_value, exc_traceback)
-    print("="*50 + "\n")
-    try:
-        with open("crash_log.txt", "w") as f:
-            traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
-    except Exception:
-        pass
-    set_obs_scene(OBS_SCENE_ERROR)
-
-sys.excepthook = handle_exception
-
-def clean_text(text):
-    if not isinstance(text, str): return str(text)
-    return ''.join(c for c in text if c <= '\uFFFF')
-
-def escape_html(text):
-    if not isinstance(text, str): return str(text)
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
-
-def add_to_history(user, msg, tag, is_mod=False, is_owner=False):
-    global GLOBAL_MSG_ID
-    GLOBAL_MSG_ID += 1
-    safe_user = escape_html(user)
-    safe_msg = escape_html(msg)
-    msg_obj = {
-        "id": GLOBAL_MSG_ID,
-        "u": safe_user, 
-        "m": safe_msg, 
-        "t": tag, 
-        "is_admin": is_mod, 
-        "is_owner": is_owner
-    }
-    with BUFFER_LOCK:
-        MESSAGES_BUFFER.append(msg_obj)
-    with HISTORY_LOCK:
-        WEB_CHAT_HISTORY.append(msg_obj)
-
-if FLASK_AVAILABLE:
+if flask_available:
     obs_web_overlay_app = Flask(__name__)
     flask_log = flask_logging.getLogger('werkzeug')
     flask_log.setLevel(flask_logging.ERROR)
@@ -473,38 +385,38 @@ if FLASK_AVAILABLE:
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
-    HTML_INDEX = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>🚀 CHAT SERVER ACTIVE</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
-    HTML_TEMPLATE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[SYSTEM]'||u==='system'){u="[SYSTEM]";nameClass="sys-text";msgClass=m.includes("[ERR]")?"err-text":"sys-msg-text";}else if(u==='[CONSOLE]'||u==='[ANNOUNCEMENT]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
-    HTML_TEMPLATE_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
-    HTML_TEMPLATE_NEW = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[SYSTEM]'&&!m.includes('VOTE')&&!m.includes('[ERR]')&&!m.includes('Waiting')&&!m.includes('ready')&&!m.includes('Chat listener')&&!m.includes('Running')&&!m.includes('[BAN]')&&!m.includes('[WARN]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[CONSOLE]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[ANNOUNCEMENT]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[SYSTEM]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[VOTE]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[ERR]')||m.includes('[BAN]')||m.includes('[WARN]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('Running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    HTML_TEMPLATE_OLDNEW = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[SYSTEM]'&&!m.includes('VOTE')&&!m.includes('[ERR]')&&!m.includes('Waiting')&&!m.includes('ready')&&!m.includes('Chat listener')&&!m.includes('Running')&&!m.includes('[BAN]')&&!m.includes('[WARN]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[CONSOLE]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[ANNOUNCEMENT]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[SYSTEM]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[VOTE]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[ERR]')||m.includes('[BAN]')||m.includes('[WARN]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('Running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    HTML_DEBUGCHAT = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[CONSOLE]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[ANNOUNCEMENT]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[SYSTEM]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[VOTE]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[ERR]')||m.includes('[BAN]')||m.includes('[WARN]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('Running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[DEBUG]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    HTML_STATS = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>🚀 CHAT SERVER ACTIVE</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
+    html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
+    html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
+    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_debugchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_stats = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
 
     @obs_web_overlay_app.route('/')
-    def index_page(): return render_template_string(HTML_INDEX)
+    def index_page(): return render_template_string(html_index)
 
     @obs_web_overlay_app.route('/obs')
-    def obs_overlay(): return render_template_string(HTML_TEMPLATE, padding=10)
+    def obs_overlay(): return render_template_string(html_template, padding=10)
 
     @obs_web_overlay_app.route('/obs2')
-    def obs_overlay2(): return render_template_string(HTML_TEMPLATE_2)
+    def obs_overlay2(): return render_template_string(html_template_2)
 
     @obs_web_overlay_app.route('/obsnew')
-    def obs_overlay_new(): return render_template_string(HTML_TEMPLATE_NEW)
+    def obs_overlay_new(): return render_template_string(html_template_new)
 
     @obs_web_overlay_app.route('/oldobsnew')
-    def obs_overlay_oldnew(): return render_template_string(HTML_TEMPLATE_OLDNEW)
+    def obs_overlay_oldnew(): return render_template_string(html_template_oldnew)
     
     @obs_web_overlay_app.route('/debugchat')
-    def obs_overlay_debugchat(): return render_template_string(HTML_DEBUGCHAT)
+    def obs_overlay_debugchat(): return render_template_string(html_debugchat)
 
     @obs_web_overlay_app.route('/stats')
-    def stats_overlay(): return render_template_string(HTML_STATS, version=VERSION)
+    def stats_overlay(): return render_template_string(html_stats, version=version)
 
     @obs_web_overlay_app.route('/stats_data')
     def get_stats_data(): 
-        uptime_sec = int(time.time() - SCRIPT_START_TIME)
+        uptime_sec = int(time.time() - script_start_time)
         d, r = divmod(uptime_sec, 86400)
         h, r = divmod(r, 3600)
         m, s = divmod(r, 60)
@@ -512,44 +424,44 @@ if FLASK_AVAILABLE:
         else: uptime_str = f"{h}h {m}m {s}s"
         return jsonify({
             "uptime": uptime_str, 
-            "commands": TOTAL_COMMANDS_EXECUTED, 
-            "failed": TOTAL_COMMANDS_FAILED,
-            "viewers": CURRENT_VIEWERS,
-            "likes": CURRENT_LIKES
+            "commands": total_commands_executed, 
+            "failed": total_commands_failed,
+            "viewers": current_viewers,
+            "likes": current_likes
         })
 
     @obs_web_overlay_app.route('/updates')
     def get_updates(): 
-        with BUFFER_LOCK:
-            data = list(MESSAGES_BUFFER)
-            MESSAGES_BUFFER.clear()
+        with buffer_lock:
+            data = list(messages_buffer)
+            messages_buffer.clear()
         return jsonify(data)
         
     @obs_web_overlay_app.route('/history')
     def get_history(): 
-        with HISTORY_LOCK:
-            return jsonify(list(WEB_CHAT_HISTORY))
+        with history_lock:
+            return jsonify(list(web_chat_history))
 
     @obs_web_overlay_app.route('/status_update')
     def get_status_update(): 
         return jsonify({
-            "status": CURRENT_STATUS,
-            "vote": CURRENT_VOTE_INFO,
-            "viewers": CURRENT_VIEWERS,
-            "likes": CURRENT_LIKES,
-            "chat_visible": OVERLAY_CHAT_VISIBLE,
-            "split_mode": SPLIT_OVERLAY_MODE
+            "status": current_status,
+            "vote": current_vote_info,
+            "viewers": current_viewers,
+            "likes": current_likes,
+            "chat_visible": overlay_chat_visible,
+            "split_mode": split_overlay_mode
         })
 
 def start_flask():
-    global FLASK_PORT
-    if FLASK_AVAILABLE:
+    global flask_port
+    if flask_available:
         try: 
             import sys
             if 'flask.cli' in sys.modules:
                 sys.modules['flask.cli'].show_server_banner = lambda *x: None
             if platform.system() == "Windows":
-                port_to_clear = FLASK_PORT
+                port_to_clear = flask_port
                 try:
                     out = subprocess.check_output("netstat -ano", shell=True).decode()
                     for line in out.splitlines():
@@ -560,9 +472,9 @@ def start_flask():
                                 time.sleep(0.5) 
                 except Exception:
                     pass
-            for port in range(FLASK_PORT, FLASK_PORT + 10):
+            for port in range(flask_port, flask_port + 10):
                 try:
-                    FLASK_PORT = port
+                    flask_port = port
                     try:
                         obs_web_overlay_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
                     except Exception:
@@ -577,8 +489,9 @@ class ChatPlaysApp:
     def __init__(self, root):
         try:
             self.root = root
+            self.root.overrideredirect(True)
             self.vm_crashed = False
-            self.is_multistream = IS_MULTISTREAM
+            self.is_multistream = is_multistream
             self.changevm_enabled = not self.is_multistream
             self.last_gc_time = time.time()
             self.last_vbox_refresh = time.time()
@@ -599,17 +512,18 @@ class ChatPlaysApp:
             self.config = self.load_settings()
             
             self.use_local_creds = self.config.get("use_local_creds", False)
+            self.ultra_speed = self.config.get("ultra_speed", False)
             
-            global VM_NAME, KEYBOARD_LAYOUT, VBOX_MANAGE_CMD, YOUTUBE_API_KEY
-            VM_NAME = self.config.get("vm_name", VM_NAME)
-            KEYBOARD_LAYOUT = self.config.get("keyboard_layout", KEYBOARD_LAYOUT)
-            VBOX_MANAGE_CMD = self.config.get("vbox_path", VBOX_MANAGE_CMD)
+            global vm_name, keyboard_layout, vbox_manage_cmd, youtube_api_key
+            vm_name = self.config.get("vm_name", vm_name)
+            keyboard_layout = self.config.get("keyboard_layout", keyboard_layout)
+            vbox_manage_cmd = self.config.get("vbox_path", vbox_manage_cmd)
             self.command_prefix = self.config.get("command_prefix", "!")
-            YOUTUBE_API_KEY = self.config.get("youtube_api_key", YOUTUBE_API_KEY)
+            youtube_api_key = self.config.get("youtube_api_key", youtube_api_key)
             self.custom_commands = self.config.get("custom_commands", {})
             self.app_name = self.config.get("app_name", "YT2VM")
 
-            self.root.title(f"{self.app_name} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
+            self.root.title(f"{self.app_name} {version}: {vm_name} (virtualbox){' [multi]' if self.is_multistream else ''}")
             screen_width = self.root.winfo_screenwidth()
             screen_height = self.root.winfo_screenheight()
             x_cood = int((screen_width/2) - (1150/2))
@@ -619,6 +533,19 @@ class ChatPlaysApp:
 
             self.accent_main = "#8B5CF6" if self.is_multistream else "#00E5FF"
             self.accent_hover = "#7C3AED" if self.is_multistream else "#00B3CC"
+
+            if platform.system() == "Windows":
+                try:
+                    hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                    dwmwa_window_corner_preference = 33
+                    dwmwcp_round = 2
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, dwmwa_window_corner_preference, ctypes.byref(ctypes.c_int(dwmwcp_round)), ctypes.sizeof(ctypes.c_int))
+                except Exception: pass
+
+            self.root.option_add('*TCombobox*Listbox.background', '#18181B')
+            self.root.option_add('*TCombobox*Listbox.foreground', 'white')
+            self.root.option_add('*TCombobox*Listbox.selectBackground', self.accent_main)
+            self.root.option_add('*TCombobox*Listbox.selectForeground', 'black')
 
             style = ttk.Style()
             if "clam" in style.theme_names():
@@ -635,23 +562,25 @@ class ChatPlaysApp:
             style.configure("Toggle.TCheckbutton", background="#18181B", foreground="#D4D4D8", font=("Segoe UI", 10), indicatorcolor="#27272A", padding=5)
             style.map("Toggle.TCheckbutton", indicatorcolor=[("selected", "#10B981")])
             
+            style.configure("TCombobox", fieldbackground="#09090B", background="#27272A", foreground="white", bordercolor="#27272A", arrowcolor="white")
+            style.map("TCombobox", fieldbackground=[("readonly", "#09090B")], foreground=[("readonly", "white")])
+            
+            self.build_custom_titlebar()
+
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
             
             self.log_queue = queue.Queue(maxsize=300)
             self.connect_queue = queue.Queue()
-            self.bot_msg_queue = queue.Queue(maxsize=100)
-            self.yt_bot_service = None
-            self.yt_bot_chat_id = None
             self.running = True
             self.active_url = self.config.get("youtube_url", "")
             self.listening_to_chat = self.config.get("enable_chat", True)
             self.disabled_commands = set()
             self.say_admin_only = True
-            self.blocked_terms = list(DEFAULT_BLOCKED_TERMS)
+            self.blocked_terms = list(default_blocked_terms)
             self.twenty_four_seven_mode = self.config.get("auto_start", False)
             self.blacklisted_users = set()
             self.active_votes = {}
-            self.VOTE_LOCK = threading.Lock()
+            self.vote_lock = threading.Lock()
             self.processed_msg_ids = set()
             self.last_command_time = time.time()
             self.listener_id = 0
@@ -668,9 +597,9 @@ class ChatPlaysApp:
             self.vm_maintenance = False
 
             self.current_snapshot = ""
-            if os.path.exists(SNAP_FILE):
+            if os.path.exists(snap_file):
                 try:
-                    with open(SNAP_FILE, "r") as f:
+                    with open(snap_file, "r") as f:
                         saved_snap = f.read().strip()
                         if saved_snap:
                             self.current_snapshot = saved_snap
@@ -678,53 +607,88 @@ class ChatPlaysApp:
                     pass
 
             if not self.current_snapshot:
-                snaps_found = get_vbox_snapshots(VBOX_MANAGE_CMD, VM_NAME)
+                snaps_found = get_vbox_snapshots(vbox_manage_cmd, vm_name)
                 if snaps_found:
                     self.current_snapshot = snaps_found[-1]
 
-            self.mgr = None
             self.vbox = None
 
-            if VBOX_AVAILABLE:
+            if vbox_available:
                 try:
-                    self.mgr = VirtualBoxManager(None, None)
-                    self.vbox = self.mgr.getVirtualBox()
+                    self.vbox = virtualbox.VirtualBox()
                 except Exception:
                     pass
 
-            set_obs_scene(OBS_SCENE_MAIN) 
+            try:
+                set_obs_scene(obs_scene_main) 
+            except Exception:
+                pass
+                
             self.build_unified_dashboard()
             
             self.start_app_threads()
             if self.twenty_four_seven_mode and self.active_url:
                 self.go_live()
-            self.root.after(REFRESH_RATE, self.process_ui_queue)
+            self.root.after(refresh_rate, self.process_ui_queue)
         except Exception as e:
             err_msg = f"[error] init crashed: {e}"
             print(err_msg + f"\n{traceback.format_exc()}")
             try: messagebox.showerror("error", err_msg)
             except: pass
 
+    def build_custom_titlebar(self):
+        self.title_bar = tk.Frame(self.root, bg="#000000", relief="flat", bd=0, height=35)
+        self.title_bar.pack(expand=0, fill="x", side="top")
+        self.title_bar.pack_propagate(False)
+        
+        self.title_label = tk.Label(self.title_bar, text=f"{self.app_name} {version}", bg="#000000", fg=self.accent_main, font=("segoe ui", 10, "bold"))
+        self.title_label.pack(side="left", pady=4, padx=15)
+
+        self.close_btn = tk.Button(self.title_bar, text="✕", bg="#000000", fg="white", activebackground="#ef4444", activeforeground="white", bd=0, relief="flat", font=("segoe ui", 12), command=self.on_closing, width=5)
+        self.close_btn.pack(side="right", fill="y")
+        self.close_btn.bind("<Enter>", lambda e: self.close_btn.config(bg="#ef4444"))
+        self.close_btn.bind("<Leave>", lambda e: self.close_btn.config(bg="#000000"))
+        
+        self.min_btn = tk.Button(self.title_bar, text="—", bg="#000000", fg="white", activebackground="#3f3f46", activeforeground="white", bd=0, relief="flat", font=("segoe ui", 12), command=self.minimize, width=5)
+        self.min_btn.pack(side="right", fill="y")
+        self.min_btn.bind("<Enter>", lambda e: self.min_btn.config(bg="#3f3f46"))
+        self.min_btn.bind("<Leave>", lambda e: self.min_btn.config(bg="#000000"))
+        
+        self.title_bar.bind("<B1-Motion>", self.move_window)
+        self.title_bar.bind("<Button-1>", self.get_pos)
+        self.title_label.bind("<B1-Motion>", self.move_window)
+        self.title_label.bind("<Button-1>", self.get_pos)
+
+    def get_pos(self, event):
+        self.xwin = event.x
+        self.ywin = event.y
+
+    def move_window(self, event):
+        self.root.geometry(f"+{event.x_root - self.xwin}+{event.y_root - self.ywin}")
+
+    def minimize(self):
+        self.root.iconify()
+
     def load_settings(self):
-        all_vms = get_all_vbox_vms(VBOX_MANAGE_CMD)
+        all_vms = get_all_vbox_vms(vbox_manage_cmd)
         default_vm = "Windows10ChatVm"
         if all_vms:
-            if len(all_vms) >= INSTANCE_ID:
-                default_vm = all_vms[INSTANCE_ID - 1]
+            if len(all_vms) >= instance_id:
+                default_vm = all_vms[instance_id - 1]
             else:
                 default_vm = all_vms[0]
                 
         default_config = {
             "youtube_url": "",
             "vm_name": default_vm,
-            "vbox_path": VBOX_MANAGE_CMD,
+            "vbox_path": vbox_manage_cmd,
             "auto_start": False,
             "enable_chat": True,
             "strict_live_check": True,
             "keyboard_layout": "US",
             "command_prefix": "!",
             "use_local_creds": False,
-            "youtube_api_key": YOUTUBE_API_KEY,
+            "youtube_api_key": youtube_api_key,
             "stats_interval": 15,
             "typing_speed": 0.015,
             "key_delay": 0.015,
@@ -732,11 +696,12 @@ class ChatPlaysApp:
             "max_wait_time": 20.0,
             "enable_starting_scene": True,
             "app_name": "YT2VM",
+            "ultra_speed": False,
             "custom_commands": {}
         }
-        if os.path.exists(SETTINGS_FILE):
+        if os.path.exists(settings_file):
             try:
-                with open(SETTINGS_FILE, "r") as f:
+                with open(settings_file, "r") as f:
                     loaded = json.load(f)
                     default_config.update(loaded)
             except Exception: 
@@ -745,10 +710,10 @@ class ChatPlaysApp:
 
     def save_settings(self):
         try:
-            tmp_file = SETTINGS_FILE + ".tmp"
+            tmp_file = settings_file + ".tmp"
             with open(tmp_file, "w") as f:
                 json.dump(self.config, f, indent=4)
-            os.replace(tmp_file, SETTINGS_FILE)
+            os.replace(tmp_file, settings_file)
         except Exception:
             pass
 
@@ -771,10 +736,7 @@ class ChatPlaysApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def clear_commands(self):
-        with self.input_lock:
-            while not self.bot_msg_queue.empty():
-                try: self.bot_msg_queue.get_nowait()
-                except Exception: pass
+        pass 
 
     def on_closing(self):
         self.running = False
@@ -785,7 +747,7 @@ class ChatPlaysApp:
 
     def extract_all_msgs(self):
         try:
-            if not os.path.exists(ALLMSGLOGS_FILE):
+            if not os.path.exists(allmsglogs_file):
                 messagebox.showinfo("extract", "no messages logged yet.")
                 return
             save_path = filedialog.asksaveasfilename(defaultextension=".txt", initialfile="extracted_messages.txt", title="save extracted messages", filetypes=[("text files", "*.txt")])
@@ -793,7 +755,7 @@ class ChatPlaysApp:
             
             count = 0
             with open(save_path, "w", encoding="utf-8") as out_f:
-                with open(ALLMSGLOGS_FILE, "r", encoding="utf-8") as in_f:
+                with open(allmsglogs_file, "r", encoding="utf-8") as in_f:
                     for line in in_f:
                         line = line.strip()
                         if not line or line in ["[", "]"]: continue
@@ -843,9 +805,6 @@ class ChatPlaysApp:
 
     def build_unified_dashboard(self):
         try:
-            top_header = tk.Frame(self.root, bg=self.accent_main, height=4)
-            top_header.pack(fill="x", side="top")
-
             self.tabview = ttk.Notebook(self.root, style="TNotebook")
             self.tabview.pack(fill="both", expand=True, padx=10, pady=(10, 10))
 
@@ -879,13 +838,13 @@ class ChatPlaysApp:
             self.entry_url = tk.Entry(conn_card, font=("Consolas", 12), bg="#09090B", fg="#F4F4F5", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor=self.accent_main, justify="center")
             self.entry_url.pack(fill="x", padx=15, pady=(5, 15), ipady=8)
             self.entry_url.insert(0, self.config.get("youtube_url", "@yourchannel"))
-            self.btn_connect = tk.Button(conn_card, text="Connect Bot & Chat", font=("Segoe UI", 10, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.go_live)
+            self.btn_connect = tk.Button(conn_card, text="Connect Chat", font=("Segoe UI", 10, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.go_live)
             self.btn_connect.pack(fill="x", padx=15, pady=(0, 15), ipady=6)
 
             status_card = create_card(dash_left, "VIRTUALBOX STATUS")
             self.lbl_status = tk.Label(status_card, text="BOOTING...", font=("Segoe UI", 16, "bold"), bg="#18181B", fg="#10B981")
             self.lbl_status.pack(anchor="w", padx=15, pady=(0, 5))
-            self.btn_vm = tk.Button(status_card, text=f"target: {VM_NAME}", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=self.cycle_vm)
+            self.btn_vm = tk.Button(status_card, text=f"target: {vm_name}", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=self.cycle_vm)
             self.btn_vm.pack(fill="x", padx=15, pady=(5, 15), ipady=5)
 
             stats_card = create_card(dash_left, "LIVE STATS")
@@ -955,7 +914,7 @@ class ChatPlaysApp:
             path_frame.grid(row=0, column=1, sticky="w", pady=15)
             self.entry_vbox_new = tk.Entry(path_frame, width=55, font=("Consolas", 11), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor=self.accent_main)
             self.entry_vbox_new.pack(side="left", ipady=7, padx=(0, 10))
-            self.entry_vbox_new.insert(0, self.config.get("vbox_path", VBOX_MANAGE_CMD))
+            self.entry_vbox_new.insert(0, self.config.get("vbox_path", vbox_manage_cmd))
             def browse_vbox():
                 fp = filedialog.askopenfilename(title="select vboxmanage.exe", filetypes=[("executable", "*.exe")])
                 if fp:
@@ -979,7 +938,7 @@ class ChatPlaysApp:
             def refresh_snaps(event=None):
                 current_vm = self.cb_vm_new.get()
                 if not current_vm: return
-                snaps = get_vbox_snapshots(self.entry_vbox_new.get().strip() or VBOX_MANAGE_CMD, current_vm)
+                snaps = get_vbox_snapshots(self.entry_vbox_new.get().strip() or vbox_manage_cmd, current_vm)
                 if not snaps:
                     self.cb_snap_new['values'] = [""]
                     self.cb_snap_new.set("")
@@ -992,7 +951,7 @@ class ChatPlaysApp:
             tk.Button(snap_frame, text="Refresh", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=refresh_snaps).pack(side="left", ipady=5, ipadx=15)
 
             def refresh_vms():
-                vms = get_all_vbox_vms(self.entry_vbox_new.get().strip() or VBOX_MANAGE_CMD)
+                vms = get_all_vbox_vms(self.entry_vbox_new.get().strip() or vbox_manage_cmd)
                 if vms:
                     self.cb_vm_new['values'] = vms
                     current_conf = self.config.get("vm_name")
@@ -1034,9 +993,9 @@ class ChatPlaysApp:
             self.entry_prefix_new.insert(0, str(self.config.get("command_prefix", "!")))
             
             tk.Label(sett_left, text="Keyboard Layout", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
-            self.cb_layout_new = ttk.Combobox(sett_left, values=AVAILABLE_LAYOUTS, width=30, state="readonly", font=("Segoe UI", 11))
+            self.cb_layout_new = ttk.Combobox(sett_left, values=available_layouts, width=30, state="readonly", font=("Segoe UI", 11))
             self.cb_layout_new.grid(row=2, column=1, sticky="w", pady=10)
-            if self.config.get("keyboard_layout") in AVAILABLE_LAYOUTS:
+            if self.config.get("keyboard_layout") in available_layouts:
                 self.cb_layout_new.set(self.config["keyboard_layout"])
             else:
                 self.cb_layout_new.set("US")
@@ -1044,56 +1003,56 @@ class ChatPlaysApp:
             tk.Label(sett_left, text="YouTube Data API Key", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_api_key_new = tk.Entry(sett_left, width=35, font=("Consolas", 11), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor=self.accent_main, justify="center")
             self.entry_api_key_new.grid(row=3, column=1, sticky="w", pady=10, ipady=5)
-            self.entry_api_key_new.insert(0, str(self.config.get("youtube_api_key", YOUTUBE_API_KEY)))
+            self.entry_api_key_new.insert(0, str(self.config.get("youtube_api_key", youtube_api_key)))
 
             self.var_auto_new = tk.BooleanVar(value=self.config.get("auto_start", False))
             ttk.Checkbutton(sett_left, text="Auto-start VM on launch", variable=self.var_auto_new, style="Toggle.TCheckbutton").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
 
             self.var_chat_new = tk.BooleanVar(value=self.config.get("enable_chat", True))
             ttk.Checkbutton(sett_left, text="Enable chat listener", variable=self.var_chat_new, style="Toggle.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
-
-            self.var_local_creds_new = tk.BooleanVar(value=self.config.get("use_local_creds", False))
-            ttk.Checkbutton(sett_left, text="Use Local YouTube Creds (client_secrets.json)", variable=self.var_local_creds_new, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
             
             self.say_admin_var = tk.BooleanVar(value=self.say_admin_only)
-            ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
             
             self.var_starting_scene = tk.BooleanVar(value=self.config.get("enable_starting_scene", True))
-            ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
 
             self.var_strict_live = tk.BooleanVar(value=self.config.get("strict_live_check", True))
-            ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=9, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
 
-            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=10, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=9, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "c2vm", "ycpv", "ytpvm"], width=30, state="readonly", font=("Segoe UI", 11))
-            self.cb_app_name.grid(row=10, column=1, sticky="w", pady=10)
+            self.cb_app_name.grid(row=9, column=1, sticky="w", pady=10)
             self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
             
             tk.Label(sett_right, text="PERFORMANCE & TIMINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg="#10B981").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
 
-            tk.Label(sett_right, text="Stats Update Interval (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=1, column=0, sticky="e", pady=10, padx=(0, 20))
+            self.var_ultra_speed = tk.BooleanVar(value=self.config.get("ultra_speed", False))
+            ttk.Checkbutton(sett_right, text="ULTRA SPEED MODE (Zero Delay)", variable=self.var_ultra_speed, style="Toggle.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+            tk.Label(sett_right, text="Stats Update Interval (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_stats_int = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
-            self.entry_stats_int.grid(row=1, column=1, sticky="w", pady=10, ipady=5)
+            self.entry_stats_int.grid(row=2, column=1, sticky="w", pady=10, ipady=5)
             self.entry_stats_int.insert(0, str(self.config.get("stats_interval", 15)))
 
-            tk.Label(sett_right, text="Typing Speed (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_right, text="Typing Speed (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_type_spd = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
-            self.entry_type_spd.grid(row=2, column=1, sticky="w", pady=10, ipady=5)
+            self.entry_type_spd.grid(row=3, column=1, sticky="w", pady=10, ipady=5)
             self.entry_type_spd.insert(0, str(self.config.get("typing_speed", 0.015)))
 
-            tk.Label(sett_right, text="Key Press Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_right, text="Key Press Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=4, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_key_del = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
-            self.entry_key_del.grid(row=3, column=1, sticky="w", pady=10, ipady=5)
+            self.entry_key_del.grid(row=4, column=1, sticky="w", pady=10, ipady=5)
             self.entry_key_del.insert(0, str(self.config.get("key_delay", 0.015)))
 
-            tk.Label(sett_right, text="Mouse Click Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=4, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_right, text="Mouse Click Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=5, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_mouse_del = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
-            self.entry_mouse_del.grid(row=4, column=1, sticky="w", pady=10, ipady=5)
+            self.entry_mouse_del.grid(row=5, column=1, sticky="w", pady=10, ipady=5)
             self.entry_mouse_del.insert(0, str(self.config.get("mouse_delay", 0.005)))
             
-            tk.Label(sett_right, text="Max !wait Time (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=5, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_right, text="Max !wait Time (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=6, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_max_wait = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
-            self.entry_max_wait.grid(row=5, column=1, sticky="w", pady=10, ipady=5)
+            self.entry_max_wait.grid(row=6, column=1, sticky="w", pady=10, ipady=5)
             self.entry_max_wait.insert(0, str(self.config.get("max_wait_time", 20.0)))
 
             btn_save_frame = tk.Frame(sett_content, bg="#18181B")
@@ -1118,13 +1077,13 @@ class ChatPlaysApp:
             tk.Label(extra_content, text="MULTI-STREAMING SETUP", font=("Segoe UI", 12, "bold"), bg="#18181B", fg=self.accent_main).pack(anchor="w", pady=(0, 5))
             tk.Label(extra_content, text="Launch secondary instances. They will automatically increment the web server ports (5001, 5002, 5003...).", font=("Segoe UI", 10), bg="#18181B", fg="#A1A1AA").pack(anchor="w", pady=(0, 20))
             
-            if INSTANCE_ID == 1:
+            if instance_id == 1:
                 tk.Button(extra_content, text="Spawn Multi-Stream 1 (Port 5001)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
                 tk.Button(extra_content, text="Spawn Multi-Stream 2 (Port 5002)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("2")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
                 tk.Button(extra_content, text="Spawn Multi-Stream 3 (Port 5003)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("3")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
                 tk.Button(extra_content, text="Spawn Multi-Stream 4 (Port 5004)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("4")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
             else:
-                tk.Label(extra_content, text=f"🟢 This is currently Multi-Stream {INSTANCE_ID-1} running on Port {FLASK_PORT}.", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#8B5CF6").pack(anchor="w", pady=10)
+                tk.Label(extra_content, text=f"🟢 This is currently Multi-Stream {instance_id-1} running on Port {flask_port}.", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#8B5CF6").pack(anchor="w", pady=10)
         except Exception as e:
             self.log("[system]", f"[error] extra tab build error: {e}", "err")
             console_log("ERROR", f"[error] extra tab build error: {e}\n{traceback.format_exc()}")
@@ -1156,7 +1115,9 @@ class ChatPlaysApp:
                 "!startvm\n   Boots the selected VM.\n\n"
                 "!restartvm\n   Force restarts the VM.\n\n"
                 "!shutdown\n   Power offs the VM.\n\n"
-                "!revert\n   Restores target snapshot.\n"
+                "!revert\n   Restores target snapshot.\n\n"
+                "!roll\n   Rolls a random number 1-100.\n\n"
+                "!coinflip\n   Flips heads or tails.\n"
             )
             ht = scrolledtext.ScrolledText(left_col, font=("Consolas", 10), bg="#09090B", fg="#D4D4D8", bd=0, highlightthickness=1, highlightbackground="#27272A")
             ht.pack(fill="both", expand=True, padx=15, pady=(0, 15))
@@ -1247,16 +1208,16 @@ class ChatPlaysApp:
 
     def auto_refresh_vbox_ui(self):
         try:
-            vms = get_all_vbox_vms(self.entry_vbox_new.get().strip() or VBOX_MANAGE_CMD)
+            vms = get_all_vbox_vms(self.entry_vbox_new.get().strip() or vbox_manage_cmd)
             if vms:
                 current_vm_val = self.cb_vm_new.get()
                 self.cb_vm_new['values'] = vms
-                if current_vm_val not in vms and VM_NAME in vms:
-                    self.cb_vm_new.set(VM_NAME)
+                if current_vm_val not in vms and vm_name in vms:
+                    self.cb_vm_new.set(vm_name)
 
             active_vm = self.cb_vm_new.get()
             if active_vm:
-                snaps = get_vbox_snapshots(self.entry_vbox_new.get().strip() or VBOX_MANAGE_CMD, active_vm)
+                snaps = get_vbox_snapshots(self.entry_vbox_new.get().strip() or vbox_manage_cmd, active_vm)
                 self.cb_snap_new['values'] = snaps if snaps else [""]
                 if self.current_snapshot not in snaps and snaps:
                     self.current_snapshot = snaps[-1]
@@ -1272,15 +1233,15 @@ class ChatPlaysApp:
         self.config["vbox_path"] = self.entry_vbox_new.get()
         self.current_snapshot = self.cb_snap_new.get()
         try:
-            with open(SNAP_FILE, "w") as f:
+            with open(snap_file, "w") as f:
                 f.write(self.current_snapshot)
         except Exception: pass
         self.save_settings()
-        global VM_NAME, VBOX_MANAGE_CMD
-        VM_NAME = self.config["vm_name"]
-        VBOX_MANAGE_CMD = self.config["vbox_path"]
-        self.root.title(f"{self.config.get('app_name', 'YT2VM')} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
-        self.btn_vm.configure(text=f"target: {VM_NAME}")
+        global vm_name, vbox_manage_cmd
+        vm_name = self.config["vm_name"]
+        vbox_manage_cmd = self.config["vbox_path"]
+        self.title_label.configure(text=f"{self.config.get('app_name', 'YT2VM')} {version}")
+        self.btn_vm.configure(text=f"target: {vm_name}")
         console_log("SYSTEM", "virtualbox settings saved!")
 
     def save_general_settings(self):
@@ -1293,6 +1254,7 @@ class ChatPlaysApp:
         self.config["enable_starting_scene"] = self.var_starting_scene.get()
         self.config["strict_live_check"] = self.var_strict_live.get()
         self.config["app_name"] = self.cb_app_name.get()
+        self.config["ultra_speed"] = self.var_ultra_speed.get()
         
         try: self.config["stats_interval"] = float(self.entry_stats_int.get())
         except: self.config["stats_interval"] = 15
@@ -1311,22 +1273,23 @@ class ChatPlaysApp:
 
         self.save_settings()
         
-        global KEYBOARD_LAYOUT, YOUTUBE_API_KEY
-        KEYBOARD_LAYOUT = self.config["keyboard_layout"]
+        global keyboard_layout, youtube_api_key
+        keyboard_layout = self.config["keyboard_layout"]
         self.command_prefix = self.config["command_prefix"]
         self.use_local_creds = self.config["use_local_creds"]
         self.listening_to_chat = self.config["enable_chat"]
         self.twenty_four_seven_mode = self.config["auto_start"]
-        YOUTUBE_API_KEY = self.config["youtube_api_key"]
+        youtube_api_key = self.config["youtube_api_key"]
         self.max_wait_time = float(self.config["max_wait_time"])
         self.app_name = self.config["app_name"]
-        self.root.title(f"{self.app_name} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
+        self.ultra_speed = self.config["ultra_speed"]
+        self.title_label.configure(text=f"{self.app_name} {version}")
         console_log("SYSTEM", "general settings & timings saved!")
 
     def update_gui_console(self):
         try:
-            while not GUI_LOG_QUEUE.empty():
-                level, msg = GUI_LOG_QUEUE.get_nowait()
+            while not gui_log_queue.empty():
+                level, msg = gui_log_queue.get_nowait()
                 self.console_text.configure(state='normal')
                 if level in ["SYSTEM", "ERROR", "EXEC", "CHAT"]:
                     self.console_text.insert(tk.END, msg + "\n", level)
@@ -1346,19 +1309,19 @@ class ChatPlaysApp:
             pass
 
     def update_status_display(self, text, is_error=False):
-        global CURRENT_STATUS
-        if CURRENT_STATUS != text:
-            CURRENT_STATUS = text 
+        global current_status
+        if current_status != text:
+            current_status = text 
             if hasattr(self, 'lbl_status'):
                 self.lbl_status.configure(text=text.upper(), fg="#EF4444" if is_error else "#10B981")
 
     def toggle_overlay_chat(self):
-        global OVERLAY_CHAT_VISIBLE
-        OVERLAY_CHAT_VISIBLE = not OVERLAY_CHAT_VISIBLE
+        global overlay_chat_visible
+        overlay_chat_visible = not overlay_chat_visible
 
     def toggle_split_overlay(self):
-        global SPLIT_OVERLAY_MODE
-        SPLIT_OVERLAY_MODE = not SPLIT_OVERLAY_MODE
+        global split_overlay_mode
+        split_overlay_mode = not split_overlay_mode
 
     def toggle_247(self):
         self.twenty_four_seven_mode = not self.twenty_four_seven_mode
@@ -1371,40 +1334,40 @@ class ChatPlaysApp:
         self.save_settings()
 
     def cycle_layout(self):
-        global KEYBOARD_LAYOUT
+        global keyboard_layout
         try:
-            current_index = AVAILABLE_LAYOUTS.index(KEYBOARD_LAYOUT)
-            next_index = (current_index + 1) % len(AVAILABLE_LAYOUTS)
+            current_index = available_layouts.index(keyboard_layout)
+            next_index = (current_index + 1) % len(available_layouts)
         except ValueError:
             next_index = 0
-        KEYBOARD_LAYOUT = AVAILABLE_LAYOUTS[next_index]
+        keyboard_layout = available_layouts[next_index]
 
     def cycle_vm(self):
-        global VM_NAME, AVAILABLE_VMS
+        global vm_name, available_vms
         try:
-            res = subprocess.run([VBOX_MANAGE_CMD, "list", "vms"], capture_output=True, text=True, timeout=2)
+            res = subprocess.run([vbox_manage_cmd, "list", "vms"], capture_output=True, text=True, timeout=2)
             fresh_vms = [line.split('"')[1] for line in res.stdout.splitlines() if '"' in line]
             if fresh_vms:
-                AVAILABLE_VMS = fresh_vms
+                available_vms = fresh_vms
         except: pass
         try:
-            current_index = AVAILABLE_VMS.index(VM_NAME)
-            next_index = (current_index + 1) % len(AVAILABLE_VMS)
+            current_index = available_vms.index(vm_name)
+            next_index = (current_index + 1) % len(available_vms)
         except ValueError:
             next_index = 0
-        VM_NAME = AVAILABLE_VMS[next_index]
+        vm_name = available_vms[next_index]
         
-        snaps = get_vbox_snapshots(VBOX_MANAGE_CMD, VM_NAME)
+        snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
         if snaps:
             self.current_snapshot = snaps[-1]
         else:
             self.current_snapshot = ""
             
-        self.config["vm_name"] = VM_NAME
+        self.config["vm_name"] = vm_name
         self.save_settings()
-        self.root.title(f"{self.config.get('app_name', 'YT2VM')} {VERSION}: {VM_NAME} (virtualbox){' [multi]' if self.is_multistream else ''}")
+        self.title_label.configure(text=f"{self.config.get('app_name', 'YT2VM')} {version}")
         if hasattr(self, 'btn_vm'):
-            self.btn_vm.configure(text=f"target: {VM_NAME}")
+            self.btn_vm.configure(text=f"target: {vm_name}")
 
     def go_live(self):
         try:
@@ -1416,8 +1379,6 @@ class ChatPlaysApp:
                 self.force_connect = True
                 self.config["youtube_url"] = url
                 self.save_settings() 
-                try: self.bot_msg_queue.put_nowait("testing bot typeing...")
-                except Exception: pass
         except Exception as e:
             self.log("[system]", f"[error] go live error: {e}", "err")
             console_log("ERROR", f"[error] go live error: {e}\n{traceback.format_exc()}")
@@ -1480,7 +1441,7 @@ class ChatPlaysApp:
             self.log("[system]", "[warn] vm is processing commands. votes paused.", "sysmsg")
             return
             
-        with self.VOTE_LOCK:
+        with self.vote_lock:
             if vote_type in self.active_votes:
                 vote = self.active_votes[vote_type]
                 if target < vote["target"]: vote["target"] = target
@@ -1562,14 +1523,14 @@ class ChatPlaysApp:
         try:
             self.update_gui_console()
             
-            uptime_sec = int(time.time() - SCRIPT_START_TIME)
+            uptime_sec = int(time.time() - script_start_time)
             m, s = divmod(uptime_sec, 60)
             h, m = divmod(m, 60)
             if hasattr(self, 'lbl_uptime_val'):
                 self.lbl_uptime_val.config(text=f"{h}h {m}m {s}s")
-                self.lbl_cmds_val.config(text=f"{TOTAL_COMMANDS_EXECUTED} ({TOTAL_COMMANDS_FAILED} failed)")
-                self.lbl_viewers_val.config(text=str(CURRENT_VIEWERS))
-                self.lbl_likes_val.config(text=str(CURRENT_LIKES))
+                self.lbl_cmds_val.config(text=f"{total_commands_executed} ({total_commands_failed} failed)")
+                self.lbl_viewers_val.config(text=str(current_viewers))
+                self.lbl_likes_val.config(text=str(current_likes))
             
             if time.time() - self.last_gc_time > 60:
                 self.last_gc_time = time.time()
@@ -1579,7 +1540,7 @@ class ChatPlaysApp:
                 self.last_vbox_refresh = time.time()
                 self.auto_refresh_vbox_ui()
 
-            global CURRENT_VOTE_INFO
+            global current_vote_info
             if time.time() - getattr(self, 'last_thread_check', 0) > 15:
                 self.last_thread_check = time.time()
                 self.start_app_threads()
@@ -1592,11 +1553,11 @@ class ChatPlaysApp:
                     break
                 except Exception:
                     pass
-            with self.VOTE_LOCK:
+            with self.vote_lock:
                 now = time.time()
                 to_remove = []
                 for vtype, data in self.active_votes.items():
-                     if now - data["start_time"] > VOTE_TIMEOUT:
+                     if now - data["start_time"] > vote_timeout:
                          to_remove.append(vtype)
                 for vtype in to_remove:
                      del self.active_votes[vtype]
@@ -1605,26 +1566,26 @@ class ChatPlaysApp:
                      for vtype, data in self.active_votes.items():
                           parts.append(f"{vtype.lower()}: {len(data['voters'])}/{data['target']}")
                      text = " | ".join(parts).lower()
-                     CURRENT_VOTE_INFO = {"active": True, "text": f"⚠ [vote] {text}"}
+                     current_vote_info = {"active": True, "text": f"⚠ [vote] {text}"}
                 else:
-                     CURRENT_VOTE_INFO = {"active": False, "text": "no active votes"}
+                     current_vote_info = {"active": False, "text": "no active votes"}
         except Exception:
             pass
         finally:
             if self.running:
-                self.root.after(REFRESH_RATE, self.process_ui_queue)
+                self.root.after(refresh_rate, self.process_ui_queue)
 
     def save_session_data_threadsafe(self):
         try:
             url = self.active_url if self.active_url else ""
             mode = str(self.twenty_four_seven_mode)
-            layout = str(KEYBOARD_LAYOUT)
-            with open(SESSION_FILE, "w") as f:
+            layout = str(keyboard_layout)
+            with open(session_file, "w") as f:
                 f.write(f"{url}|{mode}|{layout}")
         except: pass
 
     def parse_command(self, msg, user, is_mod=False, is_owner=False):
-        global TOTAL_COMMANDS_EXECUTED
+        global total_commands_executed
         self.last_command_time = time.time()
         if not msg.startswith(self.command_prefix): return
         
@@ -1671,12 +1632,12 @@ class ChatPlaysApp:
                 cmd = aliases[cmd]
             
             arg = parts[1].strip() if len(parts) > 1 else ""
-            TOTAL_COMMANDS_EXECUTED += 1
+            total_commands_executed += 1
             
-            if clean_user in OWNERS:
+            if clean_user in owners:
                 is_owner = True
                 
-            is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in ADMINS
+            is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in admins
 
             if cmd == "!pausechat":
                 if is_owner:
@@ -1693,23 +1654,23 @@ class ChatPlaysApp:
             if self.chat_paused and not is_owner:
                 continue
 
-            append_to_json_log(LOGS_FILE, user, f"{cmd} {arg}".strip())
+            append_to_json_log(logs_file, user, f"{cmd} {arg}".strip())
             if is_admin:
-                append_to_json_log(MODLOGS_FILE, user, f"{cmd} {arg}".strip())
+                append_to_json_log(modlogs_file, user, f"{cmd} {arg}".strip())
 
             if cmd == "!ping":
                 self.log("[system]", "pong! chat control is active.", "sysmsg")
                 continue
             if cmd == "!uptime":
-                uptime_sec = int(time.time() - SCRIPT_START_TIME)
+                uptime_sec = int(time.time() - script_start_time)
                 m, s = divmod(uptime_sec, 60)
                 h, m = divmod(m, 60)
                 self.log("[system]", f"bot uptime: {h}h {m}m {s}s", "sysmsg")
                 continue
 
             if cmd == "!opme":
-                 if clean_user not in ADMINS:
-                      ADMINS.append(clean_user)
+                 if clean_user not in admins:
+                      admins.append(clean_user)
                  return
             if cmd == "!enablecv":
                  if is_owner:
@@ -1721,23 +1682,23 @@ class ChatPlaysApp:
                 
             if cmd in ["!votestop", "!clear", "!changevm", "!switchsnapshot", "!swichsnapshot", "!say", "!fixvm", "!forcefixvm", "!shutdown", "!remake2", "!makesnapshot"]:
                 if cmd == "!say" and not self.say_admin_only:
-                     if any(bad_word in arg.lower() for bad_word in BANNED_WORDS): pass
+                     if any(bad_word in arg.lower() for bad_word in banned_words): pass
                      else: self.log("[announcement]", arg, "sysmsg")
                      continue
 
                 if is_admin:
                     if cmd == "!votestop":
-                        with self.VOTE_LOCK:
+                        with self.vote_lock:
                             self.active_votes.clear()
                     elif cmd == "!clear":
-                        global WEB_CHAT_HISTORY
-                        with HISTORY_LOCK:
-                            WEB_CHAT_HISTORY.clear()
+                        global web_chat_history
+                        with history_lock:
+                            web_chat_history.clear()
                     elif cmd == "!changevm":
                          if self.changevm_enabled:
                              action_chain.append(("changevm", "", user))
                     elif cmd in ["!switchsnapshot", "!swichsnapshot"]:
-                         snaps = get_vbox_snapshots(VBOX_MANAGE_CMD, VM_NAME)
+                         snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
                          if len(snaps) > 1:
                              try:
                                  idx = snaps.index(self.current_snapshot)
@@ -1746,7 +1707,7 @@ class ChatPlaysApp:
                                  self.current_snapshot = snaps[-1]
                              self.log("[system]", f"switched to snapshot: {self.current_snapshot}", "sysmsg")
                              try:
-                                 with open(SNAP_FILE, "w") as f:
+                                 with open(snap_file, "w") as f:
                                      f.write(self.current_snapshot)
                              except: pass
                     elif cmd == "!makesnapshot":
@@ -1799,7 +1760,7 @@ class ChatPlaysApp:
                     self.process_vote(user, f"{self.command_prefix}revert", 2)
                 continue
                 
-            valid_user_cmds = ["!run", "!startvm", "!type", "!send", "!key", "!combo", "!keydown", "!keyup", "!move", "!abs", "!click", "!rclick", "!mclick", "!scroll", "!drag", "!wait", "!cmd"]
+            valid_user_cmds = ["!run", "!startvm", "!type", "!send", "!key", "!combo", "!keydown", "!keyup", "!move", "!abs", "!click", "!rclick", "!mclick", "!scroll", "!drag", "!wait", "!cmd", "!roll", "!coinflip"]
             if cmd in valid_user_cmds:
                 action_chain.append((cmd, arg, user))
 
@@ -1807,7 +1768,7 @@ class ChatPlaysApp:
             self.trigger_command_chain(action_chain)
 
     def chat_listener_loop(self, thread_id=0):
-        if not PYTCHAT_AVAILABLE:
+        if not pytchat_available:
             while self.running and getattr(self, 'listener_id', 0) == thread_id:
                 time.sleep(1)
             return
@@ -1907,21 +1868,18 @@ class ChatPlaysApp:
                             if clean_name == "nightbot":
                                 continue
                             
-                            if (c.author.isChatOwner or clean_name in ["reallybotyt", "system"]) and c.message in self.recent_bot_messages:
-                                continue
-                            
                             if clean_name in ["reallybotyt", "system"]:
                                 c.author.name = "[system]"
                                 is_owner = True
                                 is_mod = True
                             else:
-                                is_owner = c.author.isChatOwner or clean_name in OWNERS
-                                is_mod = is_owner or c.author.isChatModerator or clean_name in ADMINS
+                                is_owner = c.author.isChatOwner or clean_name in owners
+                                is_mod = is_owner or c.author.isChatModerator or clean_name in admins
                             
                             if msg_lower.startswith(f"{self.command_prefix}forcefixvm"):
                                 if is_mod:
                                     if platform.system() == "Windows":
-                                        subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {VM_NAME}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                        subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {vm_name}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         subprocess.run(["taskkill", "/F", "/IM", "VirtualBoxVM.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         subprocess.run(["taskkill", "/F", "/IM", "VirtualBox.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                     self.clear_commands()
@@ -2005,162 +1963,11 @@ class ChatPlaysApp:
             try: chat.terminate()
             except: pass
 
-    def bot_worker_loop(self, thread_id=0):
-        if not YT_BOT_AVAILABLE:
-            if not getattr(self, '_bot_pkg_warned', False):
-                console_log("ERROR", "[bot] missing python packages! the bot cannot type in chat.")
-                self._bot_pkg_warned = True
-            while self.running and getattr(self, 'executor_id', 0) == thread_id:
-                time.sleep(1)
-            return
-            
-        console_log("SYSTEM", "[bot] thread starting. authenticating...")
-        scopes = ['https://www.googleapis.com/auth/youtube.force-ssl']
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try:
-                with open(TOKEN_FILE, 'rb') as token:
-                    creds = pickle.load(token)
-                if creds and hasattr(creds, 'has_scopes') and not creds.has_scopes(scopes):
-                    console_log("SYSTEM", "[bot] old token missing chat scopes! forcing re-auth...")
-                    creds = None
-            except Exception as e: 
-                self.log("[system]", f"[error] failed to load {TOKEN_FILE}: {e}", "err")
-                
-        if not creds and not self.use_local_creds:
-            try:
-                flow = InstalledAppFlow.from_client_config(YT_CLIENT_CONFIG, scopes)
-                creds = flow.run_local_server(port=0)
-                with open(TOKEN_FILE, 'wb') as token:
-                    pickle.dump(creds, token)
-                console_log("SYSTEM", "[bot] auth successful!")
-            except Exception as e: 
-                self.log("[system]", f"[error] auth failed: {e}", "err")
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: 
-                    creds.refresh(Request())
-                    with open(TOKEN_FILE, 'wb') as token:
-                        pickle.dump(creds, token)
-                    console_log("SYSTEM", "[bot] token refreshed successfully.")
-                except Exception as e: 
-                    self.log("[system]", f"[error] token refresh failed: {e}", "err")
-            else:
-                if self.use_local_creds and os.path.exists('client_secrets.json'):
-                    try:
-                        console_log("SYSTEM", "[bot] please check your web browser to authenticate!")
-                        flow = InstalledAppFlow.from_client_secrets_file('client_secrets.json', scopes)
-                        creds = flow.run_local_server(port=0)
-                        with open(TOKEN_FILE, 'wb') as token:
-                            pickle.dump(creds, token)
-                        console_log("SYSTEM", "[bot] local auth successful!")
-                    except Exception as e: 
-                        self.log("[system]", f"[error] local auth failed: {e}", "err")
-                        
-        if creds and creds.valid:
-            try:
-                self.yt_bot_service = build('youtube', 'v3', credentials=creds)
-                console_log("SYSTEM", "[bot] connected to youtube api successfully!")
-            except Exception as e: 
-                self.log("[system]", f"[error] api build failed: {e}", "err")
-        else:
-            console_log("ERROR", "[bot] authentication failed. bot will not be able to talk.")
-
-        while self.running and getattr(self, 'executor_id', 0) == thread_id:
-            try:
-                msg = self.bot_msg_queue.get(timeout=1)
-                if self.yt_bot_service and self.active_url and "[DEBUG_MODE]" not in self.active_url:
-                    if not self.yt_bot_chat_id:
-                        vid = self.resolve_live_video_id(self.active_url)
-                        if vid and len(vid) == 11:
-                            try:
-                                req = self.yt_bot_service.videos().list(part="liveStreamingDetails", id=vid)
-                                res = req.execute()
-                                if 'items' in res and res['items']:
-                                    self.yt_bot_chat_id = res['items'][0]['liveStreamingDetails'].get('activeLiveChatId')
-                                    if self.yt_bot_chat_id:
-                                        console_log("SYSTEM", f"[bot] found live chat id: {self.yt_bot_chat_id}")
-                            except Exception as e: 
-                                err_str = str(e)
-                                self.log("[system]", f"[error] failed to get chat id: {err_str}", "err")
-                                err_lower = err_str.lower()
-                                if "quota" in err_lower:
-                                    console_log("ERROR", "[bot] api quota exceeded! youtube bot is disabled for the day.")
-                                    self.yt_bot_service = None
-                                elif "invalid_grant" in err_lower or "expired" in err_lower or "revoked" in err_lower or "401" in err_lower:
-                                    self.log("[system]", "[bot] auth token expired. restart script to login again.", "err")
-                                    self.yt_bot_service = None
-                                    try: os.remove(TOKEN_FILE)
-                                    except: pass
-                    
-                    if self.yt_bot_chat_id:
-                        try:
-                            request = self.yt_bot_service.liveChatMessages().insert(
-                                part="snippet",
-                                body={
-                                    "snippet": {
-                                        "liveChatId": self.yt_bot_chat_id,
-                                        "type": "textMessageEvent",
-                                        "textMessageDetails": {"messageText": msg}
-                                    }
-                                }
-                            )
-                            request.execute()
-                            console_log("SYSTEM", f"[bot sent] {msg}")
-                        except Exception as e:
-                            err_str = str(e)
-                            if hasattr(e, 'content'):
-                                try:
-                                    err_json = json.loads(e.content.decode('utf-8'))
-                                    if 'error' in err_json and 'message' in err_json['error']:
-                                        err_str = err_json['error']['message']
-                                except Exception:
-                                    pass
-                            
-                            err_lower = err_str.lower()
-                            self.log("[system]", f"[error] failed to send message: {err_str}", "err")
-                            
-                            if "quota" in err_lower:
-                                console_log("ERROR", "[bot] api quota exceeded! resting.")
-                                self.yt_bot_service = None
-                                self.yt_bot_chat_id = None
-                            elif "rate" in err_lower:
-                                console_log("ERROR", "[bot] rate limit hit! cooling down for 15s...")
-                                time.sleep(15)
-                                try: self.bot_msg_queue.put_nowait(msg)
-                                except Exception: pass
-                            elif "insufficient authentication scopes" in err_lower:
-                                console_log("SYSTEM", "[bot] token lacks permissions! deleting old token.")
-                                try: os.remove(TOKEN_FILE)
-                                except Exception: pass
-                                self.yt_bot_service = None
-                                self.yt_bot_chat_id = None
-                            elif "livechatended" in err_lower or "notfound" in err_lower:
-                                self.yt_bot_chat_id = None 
-                            elif "401" in err_lower or "unauthorized" in err_lower:
-                                self.yt_bot_chat_id = None 
-                                
-            except queue.Empty:
-                pass
-            except Exception as e:
-                err_str = str(e)
-                if hasattr(e, 'content'):
-                    try:
-                        err_json = json.loads(e.content.decode('utf-8'))
-                        if 'error' in err_json and 'message' in err_json['error']:
-                            err_str = err_json['error']['message']
-                    except Exception:
-                        pass
-                console_log("ERROR", f"bot worker error: {err_str}\n{traceback.format_exc()}")
-                self.log("[system]", f"[error] bot worker error: {err_str}", "err")
-                time.sleep(2)
-
     def _kill_vbox_tasks(self):
         if platform.system() == "Windows":
             try:
-                subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {VM_NAME}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-                res = subprocess.run([VBOX_MANAGE_CMD, "list", "runningvms"], capture_output=True, text=True, timeout=3)
+                subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {vm_name}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                res = subprocess.run([vbox_manage_cmd, "list", "runningvms"], capture_output=True, text=True, timeout=3)
                 running_vms_count = res.stdout.count('"') // 2
                 
                 if running_vms_count <= 1:
@@ -2172,21 +1979,21 @@ class ChatPlaysApp:
         time.sleep(5)
 
     def _start_vm_safely(self):
-        if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-        self.log("[system]", f"[debug] executing startvm for {VM_NAME}...", "sysmsg")
+        if self.config.get("enable_starting_scene", True): set_obs_scene(obs_scene_starting)
+        self.log("[system]", f"[debug] executing startvm for {vm_name}...", "sysmsg")
         
         success = False
         err_text = ""
         for attempt in range(5):
             self.vm_start_time = time.time()
-            res = subprocess.run([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], capture_output=True, text=True)
+            res = subprocess.run([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], capture_output=True, text=True)
             if res.returncode == 0:
                 success = True
                 self.log("[system]", f"[debug] startvm successful. pinging...", "sysmsg")
                 for _ in range(40):
                     try:
-                        check_res = subprocess.run([VBOX_MANAGE_CMD, "list", "runningvms"], capture_output=True, text=True, timeout=2)
-                        if f'"{VM_NAME}"' in check_res.stdout:
+                        check_res = subprocess.run([vbox_manage_cmd, "list", "runningvms"], capture_output=True, text=True, timeout=2)
+                        if f'"{vm_name}"' in check_res.stdout:
                             self.log("[system]", f"[debug] vm pinged true! ready.", "sysmsg")
                             break
                     except: pass
@@ -2203,7 +2010,7 @@ class ChatPlaysApp:
 
                 if "0x80004005" in err_lower or "e_fail" in err_lower:
                     self.log("[system]", f"[warn] boot failed with e_fail. discarding state...", "sysmsg")
-                    subprocess.run([VBOX_MANAGE_CMD, "discardstate", VM_NAME], capture_output=True, text=True, timeout=10)
+                    subprocess.run([vbox_manage_cmd, "discardstate", vm_name], capture_output=True, text=True, timeout=10)
                     time.sleep(1.0)
                     continue
                 
@@ -2218,7 +2025,7 @@ class ChatPlaysApp:
         if not success and ("locked" in err_text.lower() or "0x80bb0007" in err_text.lower()):
             self.log("[system]", f"[warn] locked! forcing taskkill...", "sysmsg")
             self._kill_vbox_tasks()
-            subprocess.run([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], capture_output=True, text=True)
+            subprocess.run([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], capture_output=True, text=True)
             self.vm_start_time = time.time()
 
     def _do_vm_maintenance(self, cmd_type, target_snap=None):
@@ -2245,10 +2052,10 @@ class ChatPlaysApp:
         self.maintenance_start_time = time.time()
         self.revert_disabled = True 
         try:
-            if self.shared_session and self.shared_session.state == self.mgr.constants.SessionState_Locked:
+            if getattr(self, 'shared_session', None):
                 try: 
                     self.log("[system]", "[debug] unlocking session...", "sysmsg")
-                    self.shared_session.unlockMachine()
+                    self.shared_session.unlock_machine()
                 except Exception as ex: 
                     self.log("[system]", f"[debug] unlock failed: {ex}", "sysmsg")
             self.shared_session = None
@@ -2256,24 +2063,24 @@ class ChatPlaysApp:
             is_off = False
             if cmd_type == "startvm":
                 try:
-                    res = subprocess.run([VBOX_MANAGE_CMD, "list", "runningvms"], capture_output=True, text=True, timeout=3)
-                    if f'"{VM_NAME}"' in res.stdout:
-                        self.log("[system]", f"[warn] {VM_NAME} already running! ignoring.", "sysmsg")
+                    res = subprocess.run([vbox_manage_cmd, "list", "runningvms"], capture_output=True, text=True, timeout=3)
+                    if f'"{vm_name}"' in res.stdout:
+                        self.log("[system]", f"[warn] {vm_name} already running! ignoring.", "sysmsg")
                         return
                 except: pass
 
             if cmd_type in ["changevm", "shutdown", "restartvm", "remake2", "revert", "fixvm", "forcefixvm"]:
                 try:
                     self.log("[system]", f"[debug] sending poweroff...", "sysmsg")
-                    subprocess.run([VBOX_MANAGE_CMD, "controlvm", VM_NAME, "poweroff"], capture_output=True, text=True, timeout=5)
+                    subprocess.run([vbox_manage_cmd, "controlvm", vm_name, "poweroff"], capture_output=True, text=True, timeout=5)
                 except Exception as ex:
                     self.log("[system]", f"[error] poweroff exception: {ex}", "err")
                 
                 self.log("[system]", f"[debug] waiting for power off...", "sysmsg")
                 for _ in range(15): 
                     try:
-                        res = subprocess.run([VBOX_MANAGE_CMD, "list", "runningvms"], capture_output=True, text=True, timeout=3)
-                        if f'"{VM_NAME}"' not in res.stdout:
+                        res = subprocess.run([vbox_manage_cmd, "list", "runningvms"], capture_output=True, text=True, timeout=3)
+                        if f'"{vm_name}"' not in res.stdout:
                             is_off = True
                             self.log("[system]", f"[debug] vm is powered off.", "sysmsg")
                             break
@@ -2283,8 +2090,8 @@ class ChatPlaysApp:
                     
                 self.log("[system]", "[debug] forcing lock release...", "sysmsg")
                 if platform.system() == "Windows":
-                    subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {VM_NAME}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
-                subprocess.run([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "emergencystop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                    subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq {vm_name}*", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                subprocess.run([vbox_manage_cmd, "startvm", vm_name, "--type", "emergencystop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
                 
                 if not is_off:
                     self.log("[system]", f"[debug] still running. killing tasks...", "sysmsg")
@@ -2302,7 +2109,7 @@ class ChatPlaysApp:
 
             elif cmd_type in ["revert", "remake2"]:
                 self.log("[system]", f"[debug] fetching snapshots...", "sysmsg")
-                actual_snaps = get_vbox_snapshots(VBOX_MANAGE_CMD, VM_NAME)
+                actual_snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
                 self.log("[system]", f"[debug] snapshots: {actual_snaps}", "sysmsg")
                 
                 if not target_snap or target_snap not in actual_snaps:
@@ -2316,7 +2123,7 @@ class ChatPlaysApp:
                         target_snap = actual_snaps[-1]
                         self.current_snapshot = target_snap
                         try:
-                            with open(SNAP_FILE, "w") as f:
+                            with open(snap_file, "w") as f:
                                 f.write(target_snap)
                         except Exception as ex: 
                             self.log("[system]", f"[error] snap file write: {ex}", "err")
@@ -2325,7 +2132,7 @@ class ChatPlaysApp:
                     self.log("[system]", f"[debug] restoring '{target_snap}'...", "sysmsg")
                     restore_success = False
                     for attempt in range(5):
-                        res = subprocess.run([VBOX_MANAGE_CMD, "snapshot", VM_NAME, "restore", target_snap], capture_output=True, text=True, timeout=60)
+                        res = subprocess.run([vbox_manage_cmd, "snapshot", vm_name, "restore", target_snap], capture_output=True, text=True, timeout=60)
                         if res.returncode == 0:
                             restore_success = True
                             self.log("[system]", f"[debug] restore successful.", "sysmsg")
@@ -2355,7 +2162,7 @@ class ChatPlaysApp:
             self.log("[system]", f"[error] maintenance exception: {maint_e}", "err")
         finally:
             self.log("[system]", "[debug] maintenance complete. releasing locks.", "sysmsg")
-            set_obs_scene(OBS_SCENE_MAIN)
+            set_obs_scene(obs_scene_main)
             self.vm_start_time = time.time()
             self.vm_crashed = False
             self.vm_maintenance = False
@@ -2395,17 +2202,20 @@ class ChatPlaysApp:
             
             self.log("[system]", echo_msg, "sysmsg")
 
+            self.active_com_time = time.time()
+            self.is_com_active = True
+
             kb = getattr(self, 'shared_kb', None)
             mouse = getattr(self, 'shared_mouse', None)
             
-            if core_cmd not in maintenance_cmds and (not kb or not mouse):
+            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not kb or not mouse):
                 for _ in range(200):
                     time.sleep(0.05)
                     kb = getattr(self, 'shared_kb', None)
                     mouse = getattr(self, 'shared_mouse', None)
                     if kb and mouse: break
             
-            if core_cmd not in maintenance_cmds and (not kb or not mouse):
+            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not kb or not mouse):
                 self.log("[system]", f"[warn] '{display_cmd}' dropped: com disconnected. rebuilding...", "err")
                 self.force_session_refresh = True
                 return
@@ -2413,10 +2223,13 @@ class ChatPlaysApp:
             lm = getattr(self, 'lag_multiplier', 1.0)
             
             try:
-                base_type_spd = float(self.config.get("typing_speed", 0.02))
-                base_key_del = float(self.config.get("key_delay", 0.02))
-                base_mouse_del = float(self.config.get("mouse_delay", 0.005))
-                max_wait = float(self.config.get("max_wait_time", 20.0))
+                if self.ultra_speed:
+                    base_type_spd, base_key_del, base_mouse_del, max_wait = 0.001, 0.001, 0.001, 20.0
+                else:
+                    base_type_spd = float(self.config.get("typing_speed", 0.02))
+                    base_key_del = float(self.config.get("key_delay", 0.02))
+                    base_mouse_del = float(self.config.get("mouse_delay", 0.005))
+                    max_wait = float(self.config.get("max_wait_time", 20.0))
             except:
                 base_type_spd, base_key_del, base_mouse_del, max_wait = 0.02, 0.02, 0.005, 20.0
 
@@ -2439,11 +2252,11 @@ class ChatPlaysApp:
                 self.log("[system]", f"[debug] scancodes: {codes}", "debugmsg")
                 with self.input_lock:
                     try:
-                        kb_obj.putScancodes(codes)
+                        kb_obj.put_scancodes(codes)
                     except Exception as e1:
                         time.sleep(0.002 * lm) 
                         try:
-                            kb_obj.putScancodes(codes)
+                            kb_obj.put_scancodes(codes)
                         except Exception as e2:
                             handle_input_error(e2)
 
@@ -2457,7 +2270,7 @@ class ChatPlaysApp:
 
             def type_char_smart(kb_obj, char, type_delay=base_type_spd):
                 if not kb_obj: return
-                modifiers, base_code = get_typed_codes(char, KEYBOARD_LAYOUT)
+                modifiers, base_code = get_typed_codes(char, keyboard_layout)
                 if base_code == [0]: 
                     self.log("[system]", f"[error] char '{char}' not on layout.", "sysmsg")
                     return
@@ -2480,7 +2293,7 @@ class ChatPlaysApp:
                         "TURKISH": ['~', '^', '`', '´', '¨'],
                         "UK": ['`']
                     }
-                    if char in dead_keys.get(KEYBOARD_LAYOUT, []):
+                    if char in dead_keys.get(keyboard_layout, []):
                         time.sleep(0.01 * lm)
                         press_scancodes_vbox(kb_obj, [0x39], delay=type_delay)
 
@@ -2489,11 +2302,11 @@ class ChatPlaysApp:
                 self.log("[system]", f"[debug] mouse: dx={dx} dy={dy} btn={button_state}", "debugmsg")
                 with self.input_lock:
                     try:
-                        mouse_obj.putMouseEvent(dx, dy, dz, dw, button_state)
+                        mouse_obj.put_mouse_event(dx, dy, dz, dw, button_state)
                     except Exception as e1:
                         time.sleep(base_mouse_del * lm)
                         try:
-                            mouse_obj.putMouseEvent(dx, dy, dz, dw, button_state)
+                            mouse_obj.put_mouse_event(dx, dy, dz, dw, button_state)
                         except Exception as e2:
                             handle_input_error(e2)
 
@@ -2502,11 +2315,11 @@ class ChatPlaysApp:
                 self.log("[system]", f"[debug] mouse abs: x={x} y={y} btn={button_state}", "debugmsg")
                 with self.input_lock:
                     try:
-                        mouse_obj.putMouseEventAbsolute(x, y, dz, dw, button_state)
+                        mouse_obj.put_mouse_event_absolute(x, y, dz, dw, button_state)
                     except Exception as e1:
                         time.sleep(base_mouse_del * lm)
                         try:
-                            mouse_obj.putMouseEventAbsolute(x, y, dz, dw, button_state)
+                            mouse_obj.put_mouse_event_absolute(x, y, dz, dw, button_state)
                         except Exception as e2:
                             handle_input_error(e2)
 
@@ -2522,11 +2335,11 @@ class ChatPlaysApp:
 
             def run_windows_command(command_str, is_admin=False):
                 with self.input_lock:
-                    safe_put_scancodes(kb, SCANCODES.get('win', [224, 91]))
+                    safe_put_scancodes(kb, scancodes.get('win', [224, 91]))
                     time.sleep(0.2 * lm)
                     type_char_smart(kb, 'r', type_delay=base_type_spd)
                     time.sleep(0.2 * lm)
-                    safe_put_scancodes(kb, get_release_codes(SCANCODES.get('win', [224, 91])))
+                    safe_put_scancodes(kb, get_release_codes(scancodes.get('win', [224, 91])))
                     time.sleep(0.5 * lm) 
                     
                     full_cmd = f"cmd /c {command_str}" if is_admin else command_str
@@ -2536,18 +2349,18 @@ class ChatPlaysApp:
                     time.sleep(0.1 * lm) 
                     
                     if is_admin:
-                        safe_put_scancodes(kb, SCANCODES['lctrl'])
-                        safe_put_scancodes(kb, SCANCODES['lshift'])
+                        safe_put_scancodes(kb, scancodes['lctrl'])
+                        safe_put_scancodes(kb, scancodes['lshift'])
                         time.sleep(0.1 * lm)
-                        press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                        press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
                         time.sleep(0.1 * lm)
-                        safe_put_scancodes(kb, get_release_codes(SCANCODES['lshift']))
-                        safe_put_scancodes(kb, get_release_codes(SCANCODES['lctrl']))
+                        safe_put_scancodes(kb, get_release_codes(scancodes['lshift']))
+                        safe_put_scancodes(kb, get_release_codes(scancodes['lctrl']))
                         time.sleep(0.5 * lm)
-                        press_scancodes_vbox(kb, SCANCODES['left'], delay=base_key_del)
+                        press_scancodes_vbox(kb, scancodes['left'], delay=base_key_del)
                         time.sleep(0.1 * lm)
                         
-                    press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
                     time.sleep(0.5 * lm)
 
             if core_cmd == "wait":
@@ -2563,7 +2376,7 @@ class ChatPlaysApp:
                 self._do_vm_maintenance("startvm")
 
             elif core_cmd == "changevm":
-                set_obs_scene(OBS_SCENE_CHANGEVM) 
+                set_obs_scene(obs_scene_changevm) 
                 self._do_vm_maintenance("changevm")
 
             elif core_cmd == "shutdown":
@@ -2576,14 +2389,14 @@ class ChatPlaysApp:
             elif core_cmd == "remake2":
                 self.current_snapshot = "SnapshotRemake2"
                 try:
-                    with open(SNAP_FILE, "w") as f:
+                    with open(snap_file, "w") as f:
                         f.write(self.current_snapshot)
                 except: pass
                 set_obs_scene("remake 2")
                 self._do_vm_maintenance("remake2", self.current_snapshot)
 
             elif core_cmd == "revert": 
-                set_obs_scene(OBS_SCENE_REVERT) 
+                set_obs_scene(obs_scene_revert) 
                 self._do_vm_maintenance("revert", self.current_snapshot)
 
             elif core_cmd == "makesnapshot":
@@ -2593,17 +2406,17 @@ class ChatPlaysApp:
                     return
                 self.vm_maintenance = True
                 try:
-                    if self.shared_session and self.shared_session.state == self.mgr.constants.SessionState_Locked:
-                        try: self.shared_session.unlockMachine()
+                    if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
+                        try: self.shared_session.unlock_machine()
                         except Exception: pass
                     self.log("[system]", f"[debug] creating snapshot '{snap_name}'...", "sysmsg")
-                    res = subprocess.run([VBOX_MANAGE_CMD, "snapshot", VM_NAME, "take", snap_name, "--live"], capture_output=True, text=True, timeout=60)
+                    res = subprocess.run([vbox_manage_cmd, "snapshot", vm_name, "take", snap_name, "--live"], capture_output=True, text=True, timeout=60)
                     self.log("[system]", f"[debug] snapshot result: {res.returncode}", "sysmsg")
                     if res.returncode == 0:
                         self.current_snapshot = snap_name
                         self.log("[system]", f"snapshot {snap_name} created!", "sysmsg")
                         try:
-                            with open(SNAP_FILE, "w") as f:
+                            with open(snap_file, "w") as f:
                                 f.write(snap_name)
                         except: pass
                     else:
@@ -2619,14 +2432,14 @@ class ChatPlaysApp:
                     except RuntimeError: pass
 
             elif core_cmd == "fix":
-                set_obs_scene(OBS_SCENE_MAIN)
+                set_obs_scene(obs_scene_main)
 
             elif core_cmd == "fixvm":
-                set_obs_scene(OBS_SCENE_REVERT) 
+                set_obs_scene(obs_scene_revert) 
                 self._do_vm_maintenance("fixvm")
                 
             elif core_cmd == "forcefixvm":
-                set_obs_scene(OBS_SCENE_REVERT) 
+                set_obs_scene(obs_scene_revert) 
                 self._do_vm_maintenance("forcefixvm")
 
             elif core_cmd == "cmd":
@@ -2634,6 +2447,20 @@ class ChatPlaysApp:
 
             elif core_cmd in ["run", "open_app"]:
                 run_windows_command(arg, is_admin=False)
+
+            elif core_cmd == "roll":
+                res = str(random.randint(1, 100))
+                with self.input_lock:
+                    for char in f"rolling... {res}": 
+                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        time.sleep(0.005 * lm)
+
+            elif core_cmd == "coinflip":
+                res = random.choice(["heads", "tails"])
+                with self.input_lock:
+                    for char in res: 
+                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        time.sleep(0.005 * lm)
 
             elif core_cmd == "type":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
@@ -2649,7 +2476,7 @@ class ChatPlaysApp:
                         type_char_smart(kb, char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm) 
                     time.sleep(0.1 * lm)
-                    press_scancodes_vbox(kb, SCANCODES['enter'], delay=base_key_del)
+                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "combo":
                 keys = arg.split("+")
@@ -2658,8 +2485,8 @@ class ChatPlaysApp:
                     valid_combo = True
                     for k in keys:
                         k = k.strip()
-                        if k.lower() in SCANCODES:
-                            codes = SCANCODES[k.lower()]
+                        if k.lower() in scancodes:
+                            codes = scancodes[k.lower()]
                             safe_put_scancodes(kb, codes)
                             pressed_codes.append(codes)
                             time.sleep(0.1 * lm) 
@@ -2675,23 +2502,23 @@ class ChatPlaysApp:
                     time.sleep(0.5 * lm)
 
             elif core_cmd == "keydown":
-                if arg.lower() in SCANCODES:
-                    safe_put_scancodes(kb, SCANCODES[arg.lower()])
+                if arg.lower() in scancodes:
+                    safe_put_scancodes(kb, scancodes[arg.lower()])
                 else:
                     self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
                     
             elif core_cmd == "keyup":
-                if arg.lower() in SCANCODES:
-                    safe_put_scancodes(kb, get_release_codes(SCANCODES[arg.lower()]))
+                if arg.lower() in scancodes:
+                    safe_put_scancodes(kb, get_release_codes(scancodes[arg.lower()]))
                 else:
                     self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
 
             elif core_cmd == "key":
                 with self.input_lock:
-                    if arg.lower() in SCANCODES:
-                        safe_put_scancodes(kb, SCANCODES[arg.lower()])
+                    if arg.lower() in scancodes:
+                        safe_put_scancodes(kb, scancodes[arg.lower()])
                         time.sleep(max(0.1, base_key_del * lm))
-                        safe_put_scancodes(kb, get_release_codes(SCANCODES[arg.lower()]))
+                        safe_put_scancodes(kb, get_release_codes(scancodes[arg.lower()]))
                         if arg.lower() in ['win', 'lwin', 'rwin', 'cmd', 'super', 'menu', 'esc', 'enter', 'return']:
                             time.sleep(0.5 * lm)
                     elif len(arg) == 1: 
@@ -2763,13 +2590,14 @@ class ChatPlaysApp:
             self.last_success_time = time.time()
 
         except Exception as loop_e:
-            global TOTAL_COMMANDS_FAILED
-            TOTAL_COMMANDS_FAILED += 1
+            global total_commands_failed
+            total_commands_failed += 1
             self.consecutive_failures = getattr(self, 'consecutive_failures', 0) + 1
             console_log("ERROR", f"execution failed: {display_cmd} {arg}: {loop_e}\n{traceback.format_exc()}")
             self.log("[system]", f"<h1 something went wrong: {loop_e} h1>", "err")
             
         finally:
+            self.is_com_active = False
             try:
                 import pythoncom
                 pythoncom.CoUninitialize()
@@ -2790,15 +2618,12 @@ class ChatPlaysApp:
         except Exception:
             pass
 
-        self.mgr = None
-        self.vbox = None
-
         while self.running and getattr(self, 'executor_id', 0) == thread_id:
             self.executor_tick = time.time()
             try:
                 if getattr(self, 'vm_maintenance', False):
-                    if getattr(self, 'shared_session', None) and self.shared_session.state == self.mgr.constants.SessionState_Locked:
-                        try: self.shared_session.unlockMachine()
+                    if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
+                        try: self.shared_session.unlock_machine()
                         except: pass
                     self.shared_session = None
                     time.sleep(0.5)
@@ -2806,17 +2631,14 @@ class ChatPlaysApp:
 
                 if self.vbox is None:
                     try:
-                        if VBOX_AVAILABLE:
-                            self.mgr = VirtualBoxManager(None, None)
-                            self.vbox = self.mgr.getVirtualBox()
-                            set_obs_scene(OBS_SCENE_MAIN) 
+                        if vbox_available:
+                            self.vbox = virtualbox.VirtualBox()
+                            set_obs_scene(obs_scene_main) 
                     except Exception as e: 
-                        set_obs_scene(OBS_SCENE_ERROR)
+                        set_obs_scene(obs_scene_error)
                         self.log("[system]", f"[error] failed to init vbox api: {e}", "err")
                         if getattr(self, 'vbox', None): del self.vbox
-                        if getattr(self, 'mgr', None): del self.mgr
                         self.vbox = None
-                        self.mgr = None
                         time.sleep(2)
                         continue 
 
@@ -2828,16 +2650,14 @@ class ChatPlaysApp:
                         self.force_session_refresh = False
                         self.log("[system]", "[debug] rebuilding memory...", "sysmsg")
                         try:
-                            if getattr(self, 'shared_session', None) and self.shared_session.state == self.mgr.constants.SessionState_Locked:
-                                self.shared_session.unlockMachine()
+                            if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
+                                self.shared_session.unlock_machine()
                         except Exception: pass
                         self.shared_session = None
                         self.shared_kb = None
                         self.shared_mouse = None
                         if getattr(self, 'vbox', None): del self.vbox
-                        if getattr(self, 'mgr', None): del self.mgr
                         self.vbox = None
-                        self.mgr = None
                         
                         import pythoncom
                         try: pythoncom.CoFreeUnusedLibraries()
@@ -2849,24 +2669,24 @@ class ChatPlaysApp:
 
                     machine_check = None
                     try:
-                        machine_check = self.vbox.findMachine(VM_NAME)
+                        machine_check = self.vbox.find_machine(vm_name)
                     except Exception:
                         pass
 
-                    if machine_check and machine_check.state == self.mgr.constants.MachineState_Running:
+                    if machine_check and machine_check.state == virtualbox.library.MachineState.running:
                         self.set_status("running")
-                        session = self.mgr.getSessionObject(self.vbox)
+                        session = virtualbox.Session()
                         
                         lock_attempts = 0
-                        while session.state != self.mgr.constants.SessionState_Locked and lock_attempts < 20:
+                        while session.state != virtualbox.library.SessionState.locked and lock_attempts < 20:
                             if time.time() - getattr(self, 'vm_start_time', 0) > 0.5:
                                 try:
-                                    machine_check.lockMachine(session, self.mgr.constants.LockType_Shared)
+                                    machine_check.lock_machine(session, virtualbox.library.LockType.shared)
                                 except Exception:
                                     time.sleep(0.05) 
                             lock_attempts += 1
 
-                        if session.state == self.mgr.constants.SessionState_Locked:
+                        if session.state == virtualbox.library.SessionState.locked:
                             self.shared_session = session
                             self.shared_kb = session.console.keyboard
                             self.shared_mouse = session.console.mouse
@@ -2884,8 +2704,8 @@ class ChatPlaysApp:
     def error_watcher_loop(self):
         if platform.system() != "Windows": return
         user32 = ctypes.windll.user32
-        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+        wndenumproc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [wndenumproc, wintypes.LPARAM]
         user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
         user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
         user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -2893,11 +2713,11 @@ class ChatPlaysApp:
         user32.IsHungAppWindow.argtypes = [wintypes.HWND]
         user32.IsHungAppWindow.restype = wintypes.BOOL
         user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-        WM_CLOSE = 0x0010
+        wm_close = 0x0010
 
         hung_state = {"found": False}
         
-        @WNDENUMPROC
+        @wndenumproc
         def foreach_window(hwnd, lParam):
             if not user32.IsWindowVisible(hwnd):
                 return True
@@ -2914,10 +2734,10 @@ class ChatPlaysApp:
             error_titles = ["virtualbox - error", "suplibosinit", "application error", "fatal:", "guru meditation", "not responding", "svarer ikke", "keine rückmeldung", "pas de réponse", "yanıt vermiyor"]
             if any(err in title for err in error_titles) or (cls_name == "#32770" and "virtualbox" in title):
                 self.vm_crashed = True
-                user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+                user32.PostMessageW(hwnd, wm_close, 0, 0)
                 return True
             
-            if VM_NAME.lower() in title and ("virtualbox" in title or "oracle" in title):
+            if vm_name.lower() in title and ("virtualbox" in title or "oracle" in title):
                 if user32.IsHungAppWindow(hwnd):
                     hung_state["found"] = True
 
@@ -2927,6 +2747,7 @@ class ChatPlaysApp:
             if getattr(self, 'vm_maintenance', False):
                 self.vm_frozen_since = None
                 self.executor_tick = time.time()
+                self.active_com_time = time.time()
                 time.sleep(1.0)
                 continue
                 
@@ -2937,11 +2758,16 @@ class ChatPlaysApp:
             except Exception:
                 pass
 
-            if hung_state["found"]:
+            api_frozen_timeout = (time.time() - getattr(self, 'executor_tick', time.time())) > 25
+            com_stuck = getattr(self, 'is_com_active', False) and (time.time() - getattr(self, 'active_com_time', time.time())) > 30
+            is_frozen = hung_state["found"] or api_frozen_timeout or com_stuck
+
+            if is_frozen:
                 if getattr(self, 'vm_frozen_since', None) is None:
                     self.vm_frozen_since = time.time()
                     self.revert_disabled = True
-                    self.log("[system]", "[warn] virtualbox ui frozen. watchdog active...", "sysmsg")
+                    reason = "ui" if hung_state["found"] else ("com stuck" if com_stuck else "api")
+                    self.log("[system]", f"[warn] virtualbox {reason} frozen. watchdog active...", "sysmsg")
                 else:
                     frozen_duration = time.time() - self.vm_frozen_since
                     if frozen_duration >= 20:
@@ -2962,14 +2788,14 @@ class ChatPlaysApp:
                             self.last_watchdog_action_time = time.time()
                             self.vm_frozen_since = None
                             self._kill_vbox_tasks()
-                            if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-                            subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if self.config.get("enable_starting_scene", True): set_obs_scene(obs_scene_starting)
+                            subprocess.Popen([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                             time.sleep(15)
-                            set_obs_scene(OBS_SCENE_MAIN)
+                            set_obs_scene(obs_scene_main)
                             self.watchdog_action_level = 0
             else:
                 if getattr(self, 'vm_frozen_since', None) is not None:
-                    self.log("[system]", "virtualbox ui recovered.", "sysmsg")
+                    self.log("[system]", "virtualbox recovered.", "sysmsg")
                     self.vm_frozen_since = None
                     self.watchdog_action_level = 0
                     self.revert_disabled = False
@@ -2995,19 +2821,12 @@ class ChatPlaysApp:
                     self.last_success_time = time.time()
                     self.consecutive_failures = 0
                     self._kill_vbox_tasks()
-                    if self.config.get("enable_starting_scene", True): set_obs_scene(OBS_SCENE_STARTING)
-                    subprocess.Popen([VBOX_MANAGE_CMD, "startvm", VM_NAME, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if self.config.get("enable_starting_scene", True): set_obs_scene(obs_scene_starting)
+                    subprocess.Popen([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     time.sleep(15)
-                    set_obs_scene(OBS_SCENE_MAIN)
+                    set_obs_scene(obs_scene_main)
                     self.revert_disabled = False
                     self.api_watchdog_level = 0
-
-            api_frozen_timeout = (time.time() - getattr(self, 'executor_tick', time.time())) > 25
-            if api_frozen_timeout and not self.vm_maintenance:
-                if getattr(self, 'vm_frozen_since', None) is None:
-                    self.vm_frozen_since = time.time()
-                    self.revert_disabled = True
-                    self.log("[system]", "[warn] virtualbox com api hanging. watchdog active...", "sysmsg")
 
             time.sleep(1.0)
 
@@ -3027,12 +2846,9 @@ class ChatPlaysApp:
             if not hasattr(self, 'error_watcher_thread') or not self.error_watcher_thread.is_alive():
                 self.error_watcher_thread = threading.Thread(target=self.error_watcher_loop, daemon=True)
                 self.error_watcher_thread.start()
-            if FLASK_AVAILABLE and (not hasattr(self, 'flask_thread') or not self.flask_thread.is_alive()):
+            if flask_available and (not hasattr(self, 'flask_thread') or not self.flask_thread.is_alive()):
                 self.flask_thread = threading.Thread(target=start_flask, daemon=True)
                 self.flask_thread.start()
-            if not hasattr(self, 'bot_thread') or not self.bot_thread.is_alive():
-                self.bot_thread = threading.Thread(target=self.bot_worker_loop, args=(self.executor_id,), daemon=True)
-                self.bot_thread.start()
         except Exception as e:
             console_log("ERROR", f"start threads crashed: {e}\n{traceback.format_exc()}")
             self.log("[system]", f"[error] start threads crashed: {e}", "err")
@@ -3044,7 +2860,7 @@ class ChatPlaysApp:
         self.stats_thread.start()
 
     def stats_loop(self):
-        global CURRENT_VIEWERS, CURRENT_LIKES
+        global current_viewers, current_likes
         api_cooldown_until = 0
         while self.running:
             try:
@@ -3061,7 +2877,7 @@ class ChatPlaysApp:
                 api_success = False
                 if current_time > api_cooldown_until:
                     try:
-                        api_key_to_use = self.config.get("youtube_api_key", YOUTUBE_API_KEY).strip()
+                        api_key_to_use = self.config.get("youtube_api_key", youtube_api_key).strip()
                         api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics%2CliveStreamingDetails&id={vid}&key={api_key_to_use}"
                         req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
                         with urllib.request.urlopen(req, timeout=5) as response:
@@ -3074,8 +2890,8 @@ class ChatPlaysApp:
                                 live = item.get("liveStreamingDetails", {})
                                 new_viewers = live.get("concurrentViewers")
                                 new_likes = stats.get("likeCount")
-                                if new_viewers: CURRENT_VIEWERS = str(new_viewers)
-                                if new_likes: CURRENT_LIKES = str(new_likes)
+                                if new_viewers: current_viewers = str(new_viewers)
+                                if new_likes: current_likes = str(new_likes)
                                 api_success = True
                     except urllib.error.HTTPError as e:
                         if e.code in [403, 429]: 
@@ -3096,14 +2912,14 @@ class ChatPlaysApp:
                             v_match = re.search(r'([\d,]+)\s*watching now', html, re.IGNORECASE)
                         if v_match:
                             num = ''.join(filter(str.isdigit, v_match.group(1)))
-                            if num: CURRENT_VIEWERS = num
+                            if num: current_viewers = num
                             
                         l_match = re.search(r'"likeCount":\s*"(\d+)"', html)
                         if not l_match:
                             l_match = re.search(r'"label":\s*"([\d,]+)\s+likes"', html)
                         if l_match:
                             num = ''.join(filter(str.isdigit, l_match.group(1)))
-                            if num: CURRENT_LIKES = num
+                            if num: current_likes = num
                     except urllib.error.HTTPError as e:
                         if e.code == 429:
                             time.sleep(60) 
@@ -3111,8 +2927,8 @@ class ChatPlaysApp:
                         pass
             if self.active_url == "[DEBUG_MODE]":
                  if random.random() < 0.1:
-                      CURRENT_VIEWERS = str(random.randint(100, 5000))
-                      CURRENT_LIKES = str(random.randint(10, 500))
+                      current_viewers = str(random.randint(100, 5000))
+                      current_likes = str(random.randint(10, 500))
             save_stats()
             time.sleep(stats_interval)
 

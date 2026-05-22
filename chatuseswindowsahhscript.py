@@ -58,7 +58,7 @@ for arg in sys.argv:
 is_multistream = instance_id > 1
 hypervisor_type = "virtualbox"
 flask_port = 5000 + instance_id - 1
-version = "v20.0.ultra"
+version = "v20.0.public"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 settings_file = f"settings{suffix}.json"

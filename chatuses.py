@@ -20,6 +20,23 @@ import collections
 import math
 import gc
 import queue
+import shutil
+import signal
+
+try:
+    import pythoncom
+except ImportError:
+    pass
+
+try:
+    import virtualbox
+    VBOX_PKG = "virtualbox"
+except ImportError:
+    try:
+        from vboxapi import VirtualBoxManager
+        VBOX_PKG = "vboxapi"
+    except ImportError:
+        VBOX_PKG = None
 
 if platform.system() == "Darwin":
     class MacLabelButton(tk.Label):
@@ -47,12 +64,6 @@ except ImportError:
     obs_available = False
 
 try:
-    import virtualbox
-    vbox_available = True
-except ImportError:
-    vbox_available = False
-
-try:
     from flask import Flask, jsonify, render_template_string
     import logging as flask_logging
     flask_available = True
@@ -77,7 +88,7 @@ for arg in sys.argv:
 is_multistream = instance_id > 1
 hypervisor_type = "virtualbox"
 flask_port = 5000 + instance_id - 1
-version = "v20.0.ultra"
+version = "v21.0.stable"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 settings_file = f"settings{suffix}.json"
@@ -468,8 +479,8 @@ if flask_available:
     html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[ACTIVE] CHAT SERVER ACTIVE</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
     html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
-    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
     html_debugchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
     html_stats = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
 
@@ -537,7 +548,6 @@ def start_flask():
     global flask_port
     if flask_available:
         try: 
-            import sys
             if 'flask.cli' in sys.modules:
                 sys.modules['flask.cli'].show_server_banner = lambda *x: None
             if platform.system() == "Windows":
@@ -614,9 +624,15 @@ class ChatPlaysApp:
             self.accent_hover = "#7C3AED" if self.is_multistream else "#00B3CC"
 
             if platform.system() == "Windows":
-                self.root.overrideredirect(True)
+                self.root.overrideredirect(False)
+                self.root.update_idletasks()
                 try:
                     hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+                    GWL_STYLE = -16
+                    WS_CAPTION = 0x00C00000
+                    style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+                    ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_CAPTION)
+                    
                     dwmwa_window_corner_preference = 33
                     dwmwcp_round = 2
                     ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, dwmwa_window_corner_preference, ctypes.byref(ctypes.c_int(dwmwcp_round)), ctypes.sizeof(ctypes.c_int))
@@ -700,12 +716,17 @@ class ChatPlaysApp:
                     self.current_snapshot = snaps_found[-1]
 
             self.vbox = None
+            self.mgr = None
 
-            if vbox_available:
+            if VBOX_PKG == "virtualbox":
                 try:
                     self.vbox = virtualbox.VirtualBox()
-                except Exception:
-                    pass
+                except Exception: pass
+            elif VBOX_PKG == "vboxapi":
+                try:
+                    self.mgr = VirtualBoxManager(None, None)
+                    self.vbox = self.mgr.getVirtualBox()
+                except Exception: pass
 
             try:
                 set_obs_scene(obs_scene_main) 
@@ -863,7 +884,6 @@ class ChatPlaysApp:
     def spawn_multistream(self, suffix_id=""):
         try:
             self.log("[system]", f"[debug] spawning multi-stream instance {suffix_id}...", "sysmsg")
-            import shutil
             script_path = os.path.abspath(sys.argv[0])
             base_dir = os.path.dirname(script_path)
             base_name = os.path.basename(script_path)
@@ -968,7 +988,9 @@ class ChatPlaysApp:
             tk.Button(btn_grid, text="Restart", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=lambda: quick_cmd("!restartvm")).grid(row=0, column=1, padx=5, pady=5, sticky="we", ipady=5)
             tk.Button(btn_grid, text="Shutdown", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=lambda: quick_cmd("shutdown")).grid(row=1, column=0, padx=5, pady=5, sticky="we", ipady=5)
             tk.Button(btn_grid, text="Revert VM", font=("Segoe UI", 10, "bold"), bg="#EF4444", fg="white", activebackground="#DC2626", activeforeground="white", bd=0, cursor="hand2", command=lambda: quick_cmd("revert")).grid(row=1, column=1, padx=5, pady=5, sticky="we", ipady=5)
-            tk.Button(btn_grid, text="Extract All Msgs", font=("Segoe UI", 10, "bold"), bg="#3B82F6", fg="white", activebackground="#2563EB", activeforeground="white", bd=0, cursor="hand2", command=self.extract_all_msgs).grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="we", ipady=5)
+            
+            tk.Button(btn_grid, text="Rebuild COM", font=("Segoe UI", 10, "bold"), bg="#3B82F6", fg="white", activebackground="#2563EB", activeforeground="white", bd=0, cursor="hand2", command=lambda: setattr(self, 'force_session_refresh', True)).grid(row=2, column=0, padx=5, pady=5, sticky="we", ipady=5)
+            tk.Button(btn_grid, text="Extract All Msgs", font=("Segoe UI", 10, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=self.extract_all_msgs).grid(row=2, column=1, padx=5, pady=5, sticky="we", ipady=5)
 
             ttk.Label(dash_right, text="Live Output Console", style="Header.TLabel").pack(anchor="w", pady=(0, 10))
             console_border = tk.Frame(dash_right, bg="#27272A", bd=0)
@@ -2143,7 +2165,10 @@ class ChatPlaysApp:
             if getattr(self, 'shared_session', None):
                 try: 
                     self.log("[system]", "[debug] unlocking session...", "sysmsg")
-                    self.shared_session.unlock_machine()
+                    if VBOX_PKG == "virtualbox":
+                        self.shared_session.unlock_machine()
+                    else:
+                        self.shared_session.unlockMachine()
                 except Exception as ex: 
                     self.log("[system]", f"[debug] unlock failed: {ex}", "sysmsg")
             self.shared_session = None
@@ -2264,9 +2289,9 @@ class ChatPlaysApp:
         cmd, arg, user = action_tuple
         try:
             try:
-                import pythoncom
-                pythoncom.CoInitialize()
-            except ImportError:
+                if 'pythoncom' in sys.modules:
+                    pythoncom.CoInitialize()
+            except Exception:
                 pass
             
             cmd_clean = cmd if cmd.startswith(self.command_prefix) else self.command_prefix + cmd
@@ -2292,18 +2317,13 @@ class ChatPlaysApp:
 
             self.active_com_time = time.time()
             self.is_com_active = True
-
-            kb = getattr(self, 'shared_kb', None)
-            mouse = getattr(self, 'shared_mouse', None)
             
-            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not kb or not mouse):
+            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not getattr(self, 'shared_kb', None) or not getattr(self, 'shared_mouse', None)):
                 for _ in range(200):
                     time.sleep(0.05)
-                    kb = getattr(self, 'shared_kb', None)
-                    mouse = getattr(self, 'shared_mouse', None)
-                    if kb and mouse: break
+                    if getattr(self, 'shared_kb', None) and getattr(self, 'shared_mouse', None): break
             
-            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not kb or not mouse):
+            if core_cmd not in maintenance_cmds and core_cmd not in ["roll", "coinflip"] and (not getattr(self, 'shared_kb', None) or not getattr(self, 'shared_mouse', None)):
                 self.log("[system]", f"[warn] '{display_cmd}' dropped: com disconnected. rebuilding...", "err")
                 self.force_session_refresh = True
                 return
@@ -2330,48 +2350,57 @@ class ChatPlaysApp:
                         rel.append(c | 0x80)
                 return rel
 
-            def handle_input_error(err_obj):
-                self.force_session_refresh = True
-                self.log("[system]", f"[error] something went wrong: {err_obj}", "err")
-                console_log("ERROR", f"input com error: {err_obj}\n{traceback.format_exc()}")
+            def handle_input_error(err_obj, action="input"):
+                err_str = str(err_obj).lower()
+                if "rpc" in err_str or "locked" in err_str or "busy" in err_str or "rejected" in err_str or "callee" in err_str:
+                    pass
+                else:
+                    self.force_session_refresh = True
+                    self.log("[system]", f"[error] com lost during {action}: {err_obj}", "err")
+                    console_log("ERROR", f"input com error: {err_obj}\n{traceback.format_exc()}")
 
-            def safe_put_scancodes(kb_obj, codes):
-                if not kb_obj: return
-                self.log("[system]", f"[debug] scancodes: {codes}", "debugmsg")
+            def safe_put_scancodes(codes):
                 with self.input_lock:
-                    try:
-                        kb_obj.put_scancodes(codes)
-                    except Exception as e1:
-                        time.sleep(0.002 * lm) 
+                    for attempt in range(3):
+                        kb_obj = getattr(self, 'shared_kb', None)
+                        if not kb_obj:
+                            time.sleep(0.05 * lm)
+                            continue
                         try:
-                            kb_obj.put_scancodes(codes)
-                        except Exception as e2:
-                            handle_input_error(e2)
+                            int_codes = [int(c) for c in codes]
+                            if hasattr(kb_obj, 'put_scancodes'):
+                                res = kb_obj.put_scancodes(int_codes)
+                            else:
+                                res = kb_obj.putScancodes(int_codes)
+                            
+                            if res == 0:
+                                self.log("[system]", "[debug] warning: 0 scancodes written. com might be stale.", "sysmsg")
+                            return
+                        except Exception as e:
+                            time.sleep(0.01 * lm)
+                            last_e = e
+                    try: handle_input_error(last_e, "scancodes")
+                    except: pass
 
-            def press_scancodes_vbox(kb_obj, codes, delay=base_key_del):
-                if not kb_obj: return
-                self.log("[system]", f"[debug] pressing: {codes}", "debugmsg")
+            def press_scancodes_vbox(codes, delay=base_key_del):
                 with self.input_lock:
-                    safe_put_scancodes(kb_obj, codes)
+                    safe_put_scancodes(codes)
                     time.sleep(delay * lm) 
-                    safe_put_scancodes(kb_obj, get_release_codes(codes))
+                    safe_put_scancodes(get_release_codes(codes))
 
-            def type_char_smart(kb_obj, char, type_delay=base_type_spd):
-                if not kb_obj: return
+            def type_char_smart(char, type_delay=base_type_spd):
                 modifiers, base_code = get_typed_codes(char, keyboard_layout)
-                if base_code == [0]: 
-                    self.log("[system]", f"[error] char '{char}' not on layout.", "sysmsg")
-                    return
+                if base_code == [0]: return
                 with self.input_lock:
                     for mod in modifiers:
-                        safe_put_scancodes(kb_obj, mod)
-                        time.sleep(0.005 * lm) 
-                    press_scancodes_vbox(kb_obj, base_code, delay=type_delay)
+                        safe_put_scancodes(mod)
+                        time.sleep(0.002 * lm) 
+                    press_scancodes_vbox(base_code, delay=type_delay)
                     for mod in reversed(modifiers):
-                        time.sleep(0.005 * lm)
-                        if mod == [0x2A]: safe_put_scancodes(kb_obj, [0xAA])
-                        elif mod == [0xE0, 0x38]: safe_put_scancodes(kb_obj, [0xE0, 0xB8])
-                        else: safe_put_scancodes(kb_obj, get_release_codes(mod))
+                        time.sleep(0.002 * lm)
+                        if mod == [0x2A]: safe_put_scancodes([0xAA])
+                        elif mod == [0xE0, 0x38]: safe_put_scancodes([0xE0, 0xB8])
+                        else: safe_put_scancodes(get_release_codes(mod))
                         time.sleep(0.002 * lm)
                         
                     dead_keys = {
@@ -2383,72 +2412,84 @@ class ChatPlaysApp:
                     }
                     if char in dead_keys.get(keyboard_layout, []):
                         time.sleep(0.01 * lm)
-                        press_scancodes_vbox(kb_obj, [0x39], delay=type_delay)
+                        press_scancodes_vbox([0x39], delay=type_delay)
 
-            def safe_put_mouse_event(mouse_obj, dx, dy, dz, dw, button_state):
-                if not mouse_obj: return
-                self.log("[system]", f"[debug] mouse: dx={dx} dy={dy} btn={button_state}", "debugmsg")
+            def safe_put_mouse_event(dx, dy, dz, dw, button_state):
                 with self.input_lock:
-                    try:
-                        mouse_obj.put_mouse_event(dx, dy, dz, dw, button_state)
-                    except Exception as e1:
-                        time.sleep(base_mouse_del * lm)
+                    for attempt in range(3):
+                        mouse_obj = getattr(self, 'shared_mouse', None)
+                        if not mouse_obj:
+                            time.sleep(0.05 * lm)
+                            continue
                         try:
-                            mouse_obj.put_mouse_event(dx, dy, dz, dw, button_state)
-                        except Exception as e2:
-                            handle_input_error(e2)
+                            if hasattr(mouse_obj, 'put_mouse_event'):
+                                mouse_obj.put_mouse_event(int(dx), int(dy), int(dz), int(dw), int(button_state))
+                            else:
+                                mouse_obj.putMouseEvent(int(dx), int(dy), int(dz), int(dw), int(button_state))
+                            return
+                        except Exception as e:
+                            time.sleep(0.01 * lm)
+                            last_e = e
+                    try: handle_input_error(last_e, "mouse")
+                    except: pass
 
-            def safe_put_mouse_event_absolute(mouse_obj, x, y, dz, dw, button_state):
-                if not mouse_obj: return
-                self.log("[system]", f"[debug] mouse abs: x={x} y={y} btn={button_state}", "debugmsg")
+            def safe_put_mouse_event_absolute(x, y, dz, dw, button_state):
                 with self.input_lock:
-                    try:
-                        mouse_obj.put_mouse_event_absolute(x, y, dz, dw, button_state)
-                    except Exception as e1:
-                        time.sleep(base_mouse_del * lm)
+                    for attempt in range(3):
+                        mouse_obj = getattr(self, 'shared_mouse', None)
+                        if not mouse_obj:
+                            time.sleep(0.05 * lm)
+                            continue
                         try:
-                            mouse_obj.put_mouse_event_absolute(x, y, dz, dw, button_state)
-                        except Exception as e2:
-                            handle_input_error(e2)
+                            if hasattr(mouse_obj, 'put_mouse_event_absolute'):
+                                mouse_obj.put_mouse_event_absolute(int(x), int(y), int(dz), int(dw), int(button_state))
+                            else:
+                                mouse_obj.putMouseEventAbsolute(int(x), int(y), int(dz), int(dw), int(button_state))
+                            return
+                        except Exception as e:
+                            time.sleep(0.01 * lm)
+                            last_e = e
+                    try: handle_input_error(last_e, "mouse_abs")
+                    except: pass
 
             def do_mouse_click(btn_code, count_str):
                 count = 1
                 if count_str.isdigit(): count = int(count_str)
                 with self.input_lock:
                     for _ in range(min(count, 50)):
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
+                        safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
                         time.sleep(base_mouse_del * lm)
-                        safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
+                        safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
                         time.sleep(base_mouse_del * lm)
 
             def run_windows_command(command_str, is_admin=False):
                 with self.input_lock:
-                    safe_put_scancodes(kb, scancodes.get('win', [224, 91]))
+                    safe_put_scancodes(scancodes.get('win', [224, 91]))
                     time.sleep(0.2 * lm)
-                    type_char_smart(kb, 'r', type_delay=base_type_spd)
+                    type_char_smart('r', type_delay=base_type_spd)
                     time.sleep(0.2 * lm)
-                    safe_put_scancodes(kb, get_release_codes(scancodes.get('win', [224, 91])))
+                    safe_put_scancodes(get_release_codes(scancodes.get('win', [224, 91])))
                     time.sleep(0.5 * lm) 
                     
                     full_cmd = f"cmd /c {command_str}" if is_admin else command_str
                     for char in full_cmd:
-                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        type_char_smart(char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm) 
                     time.sleep(0.1 * lm) 
                     
                     if is_admin:
-                        safe_put_scancodes(kb, scancodes['lctrl'])
-                        safe_put_scancodes(kb, scancodes['lshift'])
+                        safe_put_scancodes(scancodes['lctrl'])
+                        safe_put_scancodes(scancodes['lshift'])
                         time.sleep(0.1 * lm)
-                        press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
+                        press_scancodes_vbox(scancodes['enter'], delay=base_key_del)
                         time.sleep(0.1 * lm)
-                        safe_put_scancodes(kb, get_release_codes(scancodes['lshift']))
-                        safe_put_scancodes(kb, get_release_codes(scancodes['lctrl']))
+                        safe_put_scancodes(get_release_codes(scancodes['lshift']))
+                        safe_put_scancodes(get_release_codes(scancodes['lctrl']))
                         time.sleep(0.5 * lm)
-                        press_scancodes_vbox(kb, scancodes['left'], delay=base_key_del)
+                        press_scancodes_vbox(scancodes['left'], delay=base_key_del)
                         time.sleep(0.1 * lm)
                         
-                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
+                    press_scancodes_vbox(scancodes['enter'], delay=base_key_del)
                     time.sleep(0.5 * lm)
 
             if core_cmd == "wait":
@@ -2494,8 +2535,16 @@ class ChatPlaysApp:
                     return
                 self.vm_maintenance = True
                 try:
-                    if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
-                        try: self.shared_session.unlock_machine()
+                    session_locked = False
+                    if getattr(self, 'shared_session', None):
+                        if VBOX_PKG == "virtualbox" and self.shared_session.state == virtualbox.library.SessionState.locked:
+                            session_locked = True
+                        elif VBOX_PKG == "vboxapi" and self.shared_session.state == self.mgr.constants.SessionState_Locked:
+                            session_locked = True
+                    if session_locked:
+                        try:
+                            if VBOX_PKG == "virtualbox": self.shared_session.unlock_machine()
+                            else: self.shared_session.unlockMachine()
                         except Exception: pass
                     self.log("[system]", f"[debug] creating snapshot '{snap_name}'...", "sysmsg")
                     res = subprocess.run([vbox_manage_cmd, "snapshot", vm_name, "take", snap_name, "--live"], capture_output=True, text=True, timeout=60)
@@ -2540,35 +2589,35 @@ class ChatPlaysApp:
                 res = str(random.randint(1, 100))
                 with self.input_lock:
                     for char in f"rolling... {res}": 
-                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        type_char_smart(char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm)
                     time.sleep(0.1 * lm)
-                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
+                    press_scancodes_vbox(scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "coinflip":
                 res = random.choice(["heads", "tails"])
                 with self.input_lock:
                     for char in res: 
-                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        type_char_smart(char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm)
                     time.sleep(0.1 * lm)
-                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
+                    press_scancodes_vbox(scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "type":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
                 with self.input_lock:
                     for char in arg: 
-                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        type_char_smart(char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm) 
 
             elif core_cmd == "send":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
                 with self.input_lock:
                     for char in arg: 
-                        type_char_smart(kb, char, type_delay=base_type_spd)
+                        type_char_smart(char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm) 
                     time.sleep(0.1 * lm)
-                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
+                    press_scancodes_vbox(scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "combo":
                 keys = arg.split("+")
@@ -2579,7 +2628,7 @@ class ChatPlaysApp:
                         k = k.strip()
                         if k.lower() in scancodes:
                             codes = scancodes[k.lower()]
-                            safe_put_scancodes(kb, codes)
+                            safe_put_scancodes(codes)
                             pressed_codes.append(codes)
                             time.sleep(0.1 * lm) 
                         else:
@@ -2589,32 +2638,32 @@ class ChatPlaysApp:
                     if valid_combo:
                         time.sleep(0.1 * lm) 
                     for codes in reversed(pressed_codes):
-                        safe_put_scancodes(kb, get_release_codes(codes))
+                        safe_put_scancodes(get_release_codes(codes))
                         time.sleep(0.02 * lm) 
                     time.sleep(0.5 * lm)
 
             elif core_cmd == "keydown":
                 if arg.lower() in scancodes:
-                    safe_put_scancodes(kb, scancodes[arg.lower()])
+                    safe_put_scancodes(scancodes[arg.lower()])
                 else:
                     self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
                     
             elif core_cmd == "keyup":
                 if arg.lower() in scancodes:
-                    safe_put_scancodes(kb, get_release_codes(scancodes[arg.lower()]))
+                    safe_put_scancodes(get_release_codes(scancodes[arg.lower()]))
                 else:
                     self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
 
             elif core_cmd == "key":
                 with self.input_lock:
                     if arg.lower() in scancodes:
-                        safe_put_scancodes(kb, scancodes[arg.lower()])
+                        safe_put_scancodes(scancodes[arg.lower()])
                         time.sleep(max(0.1, base_key_del * lm))
-                        safe_put_scancodes(kb, get_release_codes(scancodes[arg.lower()]))
+                        safe_put_scancodes(get_release_codes(scancodes[arg.lower()]))
                         if arg.lower() in ['win', 'lwin', 'rwin', 'cmd', 'super', 'menu', 'esc', 'enter', 'return']:
                             time.sleep(0.5 * lm)
                     elif len(arg) == 1: 
-                        type_char_smart(kb, arg, type_delay=base_type_spd)
+                        type_char_smart(arg, type_delay=base_type_spd)
                     else:
                         self.log("[system]", f"[error] key '{arg}' not found.", "sysmsg")
             
@@ -2636,7 +2685,7 @@ class ChatPlaysApp:
                         dx = -amt if dir == "left" else (amt if dir == "right" else 0)
                         dy = -amt if dir == "up" else (amt if dir == "down" else 0)
                         with self.input_lock:
-                            safe_put_mouse_event(mouse, dx, dy, 0, 0, self.vbox_mouse_btns)
+                            safe_put_mouse_event(dx, dy, 0, 0, self.vbox_mouse_btns)
                     except ValueError: pass
 
             elif core_cmd == "abs":
@@ -2646,7 +2695,7 @@ class ChatPlaysApp:
                         x = int(args[0])
                         y = int(args[1])
                         with self.input_lock:
-                            safe_put_mouse_event_absolute(mouse, x, y, 0, 0, self.vbox_mouse_btns)
+                            safe_put_mouse_event_absolute(x, y, 0, 0, self.vbox_mouse_btns)
                     except ValueError: pass
                     
             elif core_cmd == "drag":
@@ -2655,15 +2704,15 @@ class ChatPlaysApp:
                     try:
                         dx, dy = int(args[0]), int(args[1])
                         with self.input_lock:
-                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | 0x01)
+                            safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns | 0x01)
                             time.sleep(base_mouse_del * lm)
                             steps = 5
                             for i in range(1, steps + 1):
                                 step_x = dx // steps
                                 step_y = dy // steps
-                                safe_put_mouse_event(mouse, step_x, step_y, 0, 0, self.vbox_mouse_btns | 0x01)
+                                safe_put_mouse_event(step_x, step_y, 0, 0, self.vbox_mouse_btns | 0x01)
                                 time.sleep(base_mouse_del * lm)
-                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~0x01)
+                            safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns & ~0x01)
                     except ValueError: pass
                     
             elif core_cmd == "scroll":
@@ -2672,9 +2721,9 @@ class ChatPlaysApp:
                     btn = 8 if amt > 0 else 16
                     with self.input_lock:
                         for _ in range(min(abs(amt), 50)):
-                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns | btn)
+                            safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns | btn)
                             time.sleep(base_mouse_del * lm)
-                            safe_put_mouse_event(mouse, 0, 0, 0, 0, self.vbox_mouse_btns & ~btn)
+                            safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns & ~btn)
                             time.sleep(base_mouse_del * lm)
                 except ValueError: pass
 
@@ -2691,22 +2740,21 @@ class ChatPlaysApp:
         finally:
             self.is_com_active = False
             try:
-                import pythoncom
-                pythoncom.CoUninitialize()
+                if 'pythoncom' in sys.modules:
+                    pythoncom.CoUninitialize()
             except Exception:
                 pass
 
     def executor_loop(self, thread_id=0):
         
-        import signal
         try:
             signal.signal = lambda *args, **kwargs: None
         except Exception:
             pass
 
         try:
-            import pythoncom
-            pythoncom.CoInitialize()
+            if 'pythoncom' in sys.modules:
+                pythoncom.CoInitialize()
         except Exception:
             pass
 
@@ -2714,8 +2762,12 @@ class ChatPlaysApp:
             self.executor_tick = time.time()
             try:
                 if getattr(self, 'vm_maintenance', False):
-                    if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
-                        try: self.shared_session.unlock_machine()
+                    if getattr(self, 'shared_session', None):
+                        try:
+                            if VBOX_PKG == "virtualbox" and self.shared_session.state == virtualbox.library.SessionState.locked:
+                                self.shared_session.unlock_machine()
+                            elif VBOX_PKG == "vboxapi" and self.shared_session.state == self.mgr.constants.SessionState_Locked:
+                                self.shared_session.unlockMachine()
                         except: pass
                     self.shared_session = None
                     time.sleep(0.5)
@@ -2723,8 +2775,13 @@ class ChatPlaysApp:
 
                 if self.vbox is None:
                     try:
-                        if vbox_available:
+                        if VBOX_PKG == "virtualbox":
                             self.vbox = virtualbox.VirtualBox()
+                        elif VBOX_PKG == "vboxapi":
+                            self.mgr = VirtualBoxManager(None, None)
+                            self.vbox = self.mgr.getVirtualBox()
+                        
+                        if self.vbox:
                             set_obs_scene(obs_scene_main) 
                     except Exception as e: 
                         set_obs_scene(obs_scene_error)
@@ -2748,8 +2805,11 @@ class ChatPlaysApp:
                         self.force_session_refresh = False
                         self.log("[system]", "[debug] rebuilding memory...", "sysmsg")
                         try:
-                            if getattr(self, 'shared_session', None) and self.shared_session.state == virtualbox.library.SessionState.locked:
-                                self.shared_session.unlock_machine()
+                            if getattr(self, 'shared_session', None):
+                                if VBOX_PKG == "virtualbox" and self.shared_session.state == virtualbox.library.SessionState.locked:
+                                    self.shared_session.unlock_machine()
+                                elif VBOX_PKG == "vboxapi" and self.shared_session.state == self.mgr.constants.SessionState_Locked:
+                                    self.shared_session.unlockMachine()
                         except Exception: pass
                         self.shared_session = None
                         self.shared_kb = None
@@ -2757,8 +2817,9 @@ class ChatPlaysApp:
                         if getattr(self, 'vbox', None): del self.vbox
                         self.vbox = None
                         
-                        import pythoncom
-                        try: pythoncom.CoFreeUnusedLibraries()
+                        try:
+                            if 'pythoncom' in sys.modules:
+                                pythoncom.CoFreeUnusedLibraries()
                         except: pass
                         gc.collect() 
                         
@@ -2767,39 +2828,86 @@ class ChatPlaysApp:
 
                     machine_check = None
                     try:
-                        machine_check = self.vbox.find_machine(vm_name)
+                        if VBOX_PKG == "virtualbox":
+                            machine_check = self.vbox.find_machine(vm_name)
+                        else:
+                            machine_check = self.vbox.findMachine(vm_name)
                     except Exception:
-                        pass
+                        pass 
 
-                    if machine_check and machine_check.state == virtualbox.library.MachineState.running:
-                        self.set_status("running")
-                        
-                        if getattr(self, 'shared_session', None) is None or self.shared_session.state != virtualbox.library.SessionState.locked:
-                            session = virtualbox.Session()
-                            
-                            lock_attempts = 0
-                            while session.state != virtualbox.library.SessionState.locked and lock_attempts < 20:
-                                if time.time() - getattr(self, 'vm_start_time', 0) > 0.5:
-                                    try:
-                                        machine_check.lock_machine(session, virtualbox.library.LockType.shared)
-                                    except Exception:
-                                        time.sleep(0.05) 
-                                lock_attempts += 1
-
-                            if session.state == virtualbox.library.SessionState.locked:
-                                self.shared_session = session
-                                self.shared_kb = session.console.keyboard
-                                self.shared_mouse = session.console.mouse
-                                self.last_com_rebuild_time = time.time()
+                    if machine_check:
+                        try:
+                            m_state = machine_check.state
+                        except Exception:
+                            if VBOX_PKG == "virtualbox":
+                                m_state = virtualbox.library.MachineState.running 
                             else:
-                                self.shared_session = None
-                                self.shared_kb = None
-                                self.shared_mouse = None
-                    else:
-                        self.set_status("stopped")
-                        self.shared_session = None
-                        self.shared_kb = None
-                        self.shared_mouse = None
+                                m_state = self.mgr.constants.MachineState_Running
+
+                        is_running = False
+                        if VBOX_PKG == "virtualbox" and m_state == virtualbox.library.MachineState.running:
+                            is_running = True
+                        elif VBOX_PKG == "vboxapi" and m_state == self.mgr.constants.MachineState_Running:
+                            is_running = True
+
+                        if is_running:
+                            self.set_status("running")
+                            
+                            session_locked = False
+                            try:
+                                if getattr(self, 'shared_session', None):
+                                    if VBOX_PKG == "virtualbox" and self.shared_session.state == virtualbox.library.SessionState.locked:
+                                        session_locked = True
+                                    elif VBOX_PKG == "vboxapi" and self.shared_session.state == self.mgr.constants.SessionState_Locked:
+                                        session_locked = True
+                            except Exception:
+                                session_locked = True 
+                                
+                            if not session_locked:
+                                if VBOX_PKG == "virtualbox":
+                                    session = virtualbox.Session()
+                                else:
+                                    session = self.mgr.getSessionObject(self.vbox)
+                                    
+                                lock_attempts = 0
+                                
+                                is_session_locked = False
+                                while not is_session_locked and lock_attempts < 20:
+                                    if VBOX_PKG == "virtualbox":
+                                        is_session_locked = (session.state == virtualbox.library.SessionState.locked)
+                                    else:
+                                        is_session_locked = (session.state == self.mgr.constants.SessionState_Locked)
+                                        
+                                    if not is_session_locked:
+                                        if time.time() - getattr(self, 'vm_start_time', 0) > 0.5:
+                                            try:
+                                                if VBOX_PKG == "virtualbox":
+                                                    machine_check.lock_machine(session, virtualbox.library.LockType.shared)
+                                                else:
+                                                    machine_check.lockMachine(session, self.mgr.constants.LockType_Shared)
+                                            except Exception:
+                                                time.sleep(0.05) 
+                                        lock_attempts += 1
+
+                                if VBOX_PKG == "virtualbox" and session.state == virtualbox.library.SessionState.locked:
+                                    self.shared_session = session
+                                    self.shared_kb = session.console.keyboard
+                                    self.shared_mouse = session.console.mouse
+                                    self.last_com_rebuild_time = time.time()
+                                elif VBOX_PKG == "vboxapi" and session.state == self.mgr.constants.SessionState_Locked:
+                                    self.shared_session = session
+                                    self.shared_kb = session.console.keyboard
+                                    self.shared_mouse = session.console.mouse
+                                    self.last_com_rebuild_time = time.time()
+                                else:
+                                    self.shared_session = None
+                                    self.shared_kb = None
+                                    self.shared_mouse = None
+                        else:
+                            self.set_status("stopped")
+                            self.shared_session = None
+                            self.shared_kb = None
+                            self.shared_mouse = None
                 
                 time.sleep(0.01) 
 

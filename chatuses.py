@@ -21,6 +21,25 @@ import math
 import gc
 import queue
 
+if platform.system() == "Darwin":
+    class MacLabelButton(tk.Label):
+        def __init__(self, master=None, cnf={}, **kw):
+            cmd = kw.pop('command', None)
+            abg = kw.pop('activebackground', None)
+            afg = kw.pop('activeforeground', None)
+            bg = kw.get('bg', kw.get('background', '#18181B'))
+            fg = kw.get('fg', kw.get('foreground', 'white'))
+            kw.pop('bd', None)
+            kw.pop('relief', None)
+            super().__init__(master, cnf, **kw)
+            self.config(cursor="hand2")
+            if cmd:
+                self.bind("<Button-1>", lambda e: cmd())
+            if abg:
+                self.bind("<Enter>", lambda e: self.config(bg=abg, fg=afg or fg))
+            self.bind("<Leave>", lambda e: self.config(bg=bg, fg=fg))
+    tk.Button = MacLabelButton
+
 try:
     import obsws_python as obs
     obs_available = True
@@ -58,7 +77,7 @@ for arg in sys.argv:
 is_multistream = instance_id > 1
 hypervisor_type = "virtualbox"
 flask_port = 5000 + instance_id - 1
-version = "v20.0.public"
+version = "v20.0.ultra"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 settings_file = f"settings{suffix}.json"
@@ -375,6 +394,67 @@ current_likes = "0"
 overlay_chat_visible = True
 split_overlay_mode = False
 
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    print("\n" + "="*50)
+    print("critical script error encountered:")
+    print("="*50)
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+    print("="*50 + "\n")
+    try:
+        with open("crash_log.txt", "w") as f:
+            traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+    except Exception:
+        pass
+    set_obs_scene(obs_scene_error)
+
+sys.excepthook = handle_exception
+
+def clean_text(text):
+    if not isinstance(text, str): return str(text)
+    return ''.join(c for c in text if c <= '\uFFFF')
+
+def escape_html(text):
+    if not isinstance(text, str): return str(text)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
+
+def add_to_history(user, msg, tag, is_mod=False, is_owner=False):
+    global global_msg_id
+    global_msg_id += 1
+    safe_user = escape_html(user)
+    safe_msg = escape_html(msg)
+    msg_obj = {
+        "id": global_msg_id,
+        "u": safe_user, 
+        "m": safe_msg, 
+        "t": tag, 
+        "is_admin": is_mod, 
+        "is_owner": is_owner
+    }
+    with buffer_lock:
+        messages_buffer.append(msg_obj)
+    with history_lock:
+        web_chat_history.append(msg_obj)
+
+def set_obs_scene(scene_name):
+    try:
+        if not obs_available:
+            return
+        def _switch():
+            try:
+                if obs_password:
+                    cl = obs.ReqClient(host=obs_host, port=obs_port, password=obs_password, timeout=3)
+                else:
+                    cl = obs.ReqClient(host=obs_host, port=obs_port, timeout=3)
+                cl.set_current_program_scene(scene_name)
+            except Exception:
+                pass
+        threading.Thread(target=_switch, daemon=True).start()
+    except Exception:
+        pass
+
 if flask_available:
     obs_web_overlay_app = Flask(__name__)
     flask_log = flask_logging.getLogger('werkzeug')
@@ -385,7 +465,7 @@ if flask_available:
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
-    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>🚀 CHAT SERVER ACTIVE</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[ACTIVE] CHAT SERVER ACTIVE</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
     html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('⚠ ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
     html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
@@ -489,7 +569,6 @@ class ChatPlaysApp:
     def __init__(self, root):
         try:
             self.root = root
-            self.root.overrideredirect(True)
             self.vm_crashed = False
             self.is_multistream = is_multistream
             self.changevm_enabled = not self.is_multistream
@@ -535,12 +614,19 @@ class ChatPlaysApp:
             self.accent_hover = "#7C3AED" if self.is_multistream else "#00B3CC"
 
             if platform.system() == "Windows":
+                self.root.overrideredirect(True)
                 try:
                     hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
                     dwmwa_window_corner_preference = 33
                     dwmwcp_round = 2
                     ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, dwmwa_window_corner_preference, ctypes.byref(ctypes.c_int(dwmwcp_round)), ctypes.sizeof(ctypes.c_int))
                 except Exception: pass
+            elif platform.system() == "Darwin":
+                self.root.overrideredirect(False)
+                try: self.root.wm_attributes('-titlebar', 0)
+                except Exception: pass
+            else:
+                self.root.overrideredirect(True)
 
             self.root.option_add('*TCombobox*Listbox.background', '#18181B')
             self.root.option_add('*TCombobox*Listbox.foreground', 'white')
@@ -548,9 +634,13 @@ class ChatPlaysApp:
             self.root.option_add('*TCombobox*Listbox.selectForeground', 'black')
 
             style = ttk.Style()
-            if "clam" in style.theme_names():
-                style.theme_use("clam")
-            
+            if platform.system() == "Darwin":
+                if "aqua" in style.theme_names(): style.theme_use("aqua")
+            else:
+                if "clam" in style.theme_names(): style.theme_use("clam")
+                style.configure("TCombobox", fieldbackground="#09090B", background="#27272A", foreground="white", bordercolor="#27272A", arrowcolor="white")
+                style.map("TCombobox", fieldbackground=[("readonly", "#09090B")], foreground=[("readonly", "white")])
+
             style.configure(".", background="#09090B", foreground="#F4F4F5")
             style.configure("TFrame", background="#09090B")
             style.configure("Card.TFrame", background="#18181B")
@@ -561,9 +651,6 @@ class ChatPlaysApp:
             style.map("TNotebook.Tab", background=[("selected", self.accent_main)], foreground=[("selected", "#000000")])
             style.configure("Toggle.TCheckbutton", background="#18181B", foreground="#D4D4D8", font=("Segoe UI", 10), indicatorcolor="#27272A", padding=5)
             style.map("Toggle.TCheckbutton", indicatorcolor=[("selected", "#10B981")])
-            
-            style.configure("TCombobox", fieldbackground="#09090B", background="#27272A", foreground="white", bordercolor="#27272A", arrowcolor="white")
-            style.map("TCombobox", fieldbackground=[("readonly", "#09090B")], foreground=[("readonly", "white")])
             
             self.build_custom_titlebar()
 
@@ -595,6 +682,7 @@ class ChatPlaysApp:
             
             self.input_lock = threading.RLock()
             self.vm_maintenance = False
+            self.last_com_rebuild_time = time.time()
 
             self.current_snapshot = ""
             if os.path.exists(snap_file):
@@ -644,13 +732,15 @@ class ChatPlaysApp:
         self.title_label = tk.Label(self.title_bar, text=f"{self.app_name} {version}", bg="#000000", fg=self.accent_main, font=("segoe ui", 10, "bold"))
         self.title_label.pack(side="left", pady=4, padx=15)
 
-        self.close_btn = tk.Button(self.title_bar, text="✕", bg="#000000", fg="white", activebackground="#ef4444", activeforeground="white", bd=0, relief="flat", font=("segoe ui", 12), command=self.on_closing, width=5)
+        self.close_btn = tk.Label(self.title_bar, text="X", bg="#000000", fg="#ffffff", font=("segoe ui", 12, "bold"), width=5, cursor="hand2", anchor="center")
         self.close_btn.pack(side="right", fill="y")
+        self.close_btn.bind("<Button-1>", lambda e: self.on_closing())
         self.close_btn.bind("<Enter>", lambda e: self.close_btn.config(bg="#ef4444"))
         self.close_btn.bind("<Leave>", lambda e: self.close_btn.config(bg="#000000"))
         
-        self.min_btn = tk.Button(self.title_bar, text="—", bg="#000000", fg="white", activebackground="#3f3f46", activeforeground="white", bd=0, relief="flat", font=("segoe ui", 12), command=self.minimize, width=5)
+        self.min_btn = tk.Label(self.title_bar, text="-", bg="#000000", fg="#ffffff", font=("segoe ui", 12, "bold"), width=5, cursor="hand2", anchor="center")
         self.min_btn.pack(side="right", fill="y")
+        self.min_btn.bind("<Button-1>", lambda e: self.minimize())
         self.min_btn.bind("<Enter>", lambda e: self.min_btn.config(bg="#3f3f46"))
         self.min_btn.bind("<Leave>", lambda e: self.min_btn.config(bg="#000000"))
         
@@ -1083,7 +1173,7 @@ class ChatPlaysApp:
                 tk.Button(extra_content, text="Spawn Multi-Stream 3 (Port 5003)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("3")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
                 tk.Button(extra_content, text="Spawn Multi-Stream 4 (Port 5004)", font=("Segoe UI", 11, "bold"), bg="#8B5CF6", fg="white", activebackground="#7C3AED", activeforeground="white", bd=0, cursor="hand2", command=lambda: self.spawn_multistream("4")).pack(anchor="w", ipady=8, ipadx=20, pady=5)
             else:
-                tk.Label(extra_content, text=f"🟢 This is currently Multi-Stream {instance_id-1} running on Port {flask_port}.", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#8B5CF6").pack(anchor="w", pady=10)
+                tk.Label(extra_content, text=f"[active] this is currently multi-stream {instance_id-1} running on port {flask_port}.", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#8B5CF6").pack(anchor="w", pady=10)
         except Exception as e:
             self.log("[system]", f"[error] extra tab build error: {e}", "err")
             console_log("ERROR", f"[error] extra tab build error: {e}\n{traceback.format_exc()}")
@@ -1448,10 +1538,10 @@ class ChatPlaysApp:
                 if user not in vote["voters"]:
                     vote["voters"].add(user)
                     current_votes = len(vote["voters"])
-                    self.log("[system]", f"[vote] 🚨 {vote_type.lower()} progress: {current_votes}/{vote['target']}!", "sysmsg")
+                    self.log("[system]", f"[vote] [alert] {vote_type.lower()} progress: {current_votes}/{vote['target']}!", "sysmsg")
                     log_vote_action("vote_progress", user, vote_type, vote['target'], current_votes)
                     if current_votes >= vote["target"]:
-                        self.log("[system]", f"[vote] ✅ {vote_type.lower()} passed! executing now...", "sysmsg")
+                        self.log("[system]", f"[vote] [success] {vote_type.lower()} passed! executing now...", "sysmsg")
                         log_vote_action("vote_passed", user, vote_type, vote['target'], current_votes)
                         
                         clean_cmd = vote_type
@@ -1480,7 +1570,7 @@ class ChatPlaysApp:
                         return
                 return
             if len(self.active_votes) < 3:
-                self.log("[system]", f"[vote] 🔥 {vote_type.lower()} vote started by {user}! progress: 1/{target}.", "sysmsg")
+                self.log("[system]", f"[vote] [started] {vote_type.lower()} vote started by {user}! progress: 1/{target}.", "sysmsg")
                 self.active_votes[vote_type] = {"voters": {user}, "target": target, "start_time": time.time()}
                 log_vote_action("vote_started", user, vote_type, target, 1)
 
@@ -1509,8 +1599,6 @@ class ChatPlaysApp:
             is_mod = True
             is_owner = True
             self.recent_bot_messages.append(message)
-            try: self.bot_msg_queue.put_nowait(message)
-            except Exception: pass
             
         self.log_queue.put(("log", (user, message, tag, is_mod, is_owner)))
         add_to_history(user, message, tag, is_mod, is_owner)
@@ -1566,7 +1654,7 @@ class ChatPlaysApp:
                      for vtype, data in self.active_votes.items():
                           parts.append(f"{vtype.lower()}: {len(data['voters'])}/{data['target']}")
                      text = " | ".join(parts).lower()
-                     current_vote_info = {"active": True, "text": f"⚠ [vote] {text}"}
+                     current_vote_info = {"active": True, "text": f"[vote] {text}"}
                 else:
                      current_vote_info = {"active": False, "text": "no active votes"}
         except Exception:
@@ -1752,7 +1840,7 @@ class ChatPlaysApp:
                 
             if cmd == "!revert":
                 if self.revert_disabled:
-                    self.log("[system]", "⚠️ !revert is temporarily disabled while the system recovers.", "sysmsg")
+                    self.log("[system]", "[warn] !revert is temporarily disabled while the system recovers.", "sysmsg")
                     continue
                 if is_admin:
                     action_chain.append(("revert", "", user))
@@ -2244,7 +2332,7 @@ class ChatPlaysApp:
 
             def handle_input_error(err_obj):
                 self.force_session_refresh = True
-                self.log("[system]", f"<h1 something went wrong: {err_obj} h1>", "err")
+                self.log("[system]", f"[error] something went wrong: {err_obj}", "err")
                 console_log("ERROR", f"input com error: {err_obj}\n{traceback.format_exc()}")
 
             def safe_put_scancodes(kb_obj, codes):
@@ -2454,6 +2542,8 @@ class ChatPlaysApp:
                     for char in f"rolling... {res}": 
                         type_char_smart(kb, char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm)
+                    time.sleep(0.1 * lm)
+                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "coinflip":
                 res = random.choice(["heads", "tails"])
@@ -2461,6 +2551,8 @@ class ChatPlaysApp:
                     for char in res: 
                         type_char_smart(kb, char, type_delay=base_type_spd)
                         time.sleep(0.005 * lm)
+                    time.sleep(0.1 * lm)
+                    press_scancodes_vbox(kb, scancodes['enter'], delay=base_key_del)
 
             elif core_cmd == "type":
                 if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'): arg = arg[1:-1]
@@ -2594,7 +2686,7 @@ class ChatPlaysApp:
             total_commands_failed += 1
             self.consecutive_failures = getattr(self, 'consecutive_failures', 0) + 1
             console_log("ERROR", f"execution failed: {display_cmd} {arg}: {loop_e}\n{traceback.format_exc()}")
-            self.log("[system]", f"<h1 something went wrong: {loop_e} h1>", "err")
+            self.log("[system]", f"[error] something went wrong: {loop_e}", "err")
             
         finally:
             self.is_com_active = False
@@ -2643,6 +2735,12 @@ class ChatPlaysApp:
                         continue 
 
                 current_time = time.time()
+                
+                if getattr(self, 'shared_session', None) and (current_time - getattr(self, 'last_com_rebuild_time', current_time)) > 3600:
+                    self.log("[system]", "[debug] scheduled 1-hour com memory rebuild...", "sysmsg")
+                    self.force_session_refresh = True
+                    self.last_com_rebuild_time = current_time
+
                 if current_time - getattr(self, 'last_health_check', 0) > 0.5: 
                     self.last_health_check = current_time
                     
@@ -2675,21 +2773,28 @@ class ChatPlaysApp:
 
                     if machine_check and machine_check.state == virtualbox.library.MachineState.running:
                         self.set_status("running")
-                        session = virtualbox.Session()
                         
-                        lock_attempts = 0
-                        while session.state != virtualbox.library.SessionState.locked and lock_attempts < 20:
-                            if time.time() - getattr(self, 'vm_start_time', 0) > 0.5:
-                                try:
-                                    machine_check.lock_machine(session, virtualbox.library.LockType.shared)
-                                except Exception:
-                                    time.sleep(0.05) 
-                            lock_attempts += 1
+                        if getattr(self, 'shared_session', None) is None or self.shared_session.state != virtualbox.library.SessionState.locked:
+                            session = virtualbox.Session()
+                            
+                            lock_attempts = 0
+                            while session.state != virtualbox.library.SessionState.locked and lock_attempts < 20:
+                                if time.time() - getattr(self, 'vm_start_time', 0) > 0.5:
+                                    try:
+                                        machine_check.lock_machine(session, virtualbox.library.LockType.shared)
+                                    except Exception:
+                                        time.sleep(0.05) 
+                                lock_attempts += 1
 
-                        if session.state == virtualbox.library.SessionState.locked:
-                            self.shared_session = session
-                            self.shared_kb = session.console.keyboard
-                            self.shared_mouse = session.console.mouse
+                            if session.state == virtualbox.library.SessionState.locked:
+                                self.shared_session = session
+                                self.shared_kb = session.console.keyboard
+                                self.shared_mouse = session.console.mouse
+                                self.last_com_rebuild_time = time.time()
+                            else:
+                                self.shared_session = None
+                                self.shared_kb = None
+                                self.shared_mouse = None
                     else:
                         self.set_status("stopped")
                         self.shared_session = None

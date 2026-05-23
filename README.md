@@ -2,7 +2,7 @@
 
 The project is finally out!
 
-#What does it do?
+# What does it do?
 
 This program allows connecting YouTube events or information to a virtual machine. No matter what you want to automate or do while creating an interactive stream, YT2VM© is your connection between YouTube and VM. We will update this part with all specific details and examples shortly.
 

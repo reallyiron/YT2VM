@@ -20,23 +20,6 @@ import collections
 import math
 import gc
 import queue
-import shutil
-import signal
-
-try:
-    import pythoncom
-except ImportError:
-    pass
-
-try:
-    import virtualbox
-    VBOX_PKG = "virtualbox"
-except ImportError:
-    try:
-        from vboxapi import VirtualBoxManager
-        VBOX_PKG = "vboxapi"
-    except ImportError:
-        VBOX_PKG = None
 
 if platform.system() == "Darwin":
     class MacLabelButton(tk.Label):
@@ -44,7 +27,7 @@ if platform.system() == "Darwin":
             cmd = kw.pop('command', None)
             abg = kw.pop('activebackground', None)
             afg = kw.pop('activeforeground', None)
-            bg = kw.get('bg', kw.get('background', '#18181B'))
+            bg = kw.get('bg', kw.get('background', '#18181b'))
             fg = kw.get('fg', kw.get('foreground', 'white'))
             kw.pop('bd', None)
             kw.pop('relief', None)
@@ -62,6 +45,12 @@ try:
     obs_available = True
 except ImportError:
     obs_available = False
+
+try:
+    import virtualbox
+    vbox_available = True
+except ImportError:
+    vbox_available = False
 
 try:
     from flask import Flask, jsonify, render_template_string
@@ -105,7 +94,6 @@ refresh_rate = 100
 keyboard_layout = "US" 
 available_layouts = ["US", "UK", "DANISH", "TURKISH", "GERMAN", "FRENCH"]
 vote_timeout = 60
-youtube_api_key = "your_api_key_here"
 
 obs_host = "localhost"
 obs_port = 4454 + instance_id  
@@ -409,11 +397,6 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
-    
-    err_str = str(exc_value).lower()
-    if "10061" in err_str or "actively refused" in err_str or "websocket" in err_str:
-        return
-        
     print("\n" + "="*50)
     print("critical script error encountered:")
     print("="*50)
@@ -484,8 +467,8 @@ if flask_available:
     html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/debugchat"><div class="title">Debug Chat (/debugchat)</div><div class="desc">Shows raw inputs, keys, and background errors.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
     html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
-    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">SYSTEM</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block cmd-border';div.innerHTML=`<div class="badge cmd">SYS</div><div class="msg-content"><span class="username cmd">SYSTEM</span> <span class="message">connected</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
     html_debugchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
     html_stats = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
 
@@ -553,6 +536,7 @@ def start_flask():
     global flask_port
     if flask_available:
         try: 
+            import sys
             if 'flask.cli' in sys.modules:
                 sys.modules['flask.cli'].show_server_banner = lambda *x: None
             if platform.system() == "Windows":
@@ -607,12 +591,11 @@ class ChatPlaysApp:
             
             self.ultra_speed = self.config.get("ultra_speed", False)
             
-            global vm_name, keyboard_layout, vbox_manage_cmd, youtube_api_key
+            global vm_name, keyboard_layout, vbox_manage_cmd
             vm_name = self.config.get("vm_name", vm_name)
             keyboard_layout = self.config.get("keyboard_layout", keyboard_layout)
             vbox_manage_cmd = self.config.get("vbox_path", vbox_manage_cmd)
             self.command_prefix = self.config.get("command_prefix", "!")
-            youtube_api_key = self.config.get("youtube_api_key", youtube_api_key)
             self.custom_commands = self.config.get("custom_commands", {})
             self.app_name = self.config.get("app_name", "YT2VM")
 
@@ -722,16 +705,15 @@ class ChatPlaysApp:
             self.vbox = None
             self.mgr = None
 
-            if not self.config.get("use_vmware", False):
-                if VBOX_PKG == "virtualbox":
-                    try:
-                        self.vbox = virtualbox.VirtualBox()
-                    except Exception: pass
-                elif VBOX_PKG == "vboxapi":
-                    try:
-                        self.mgr = VirtualBoxManager(None, None)
-                        self.vbox = self.mgr.getVirtualBox()
-                    except Exception: pass
+            if VBOX_PKG == "virtualbox":
+                try:
+                    self.vbox = virtualbox.VirtualBox()
+                except Exception: pass
+            elif VBOX_PKG == "vboxapi":
+                try:
+                    self.mgr = VirtualBoxManager(None, None)
+                    self.vbox = self.mgr.getVirtualBox()
+                except Exception: pass
 
             try:
                 set_obs_scene(obs_scene_main) 
@@ -764,6 +746,18 @@ class ChatPlaysApp:
         self.close_btn.bind("<Enter>", lambda e: self.close_btn.config(bg="#ef4444"))
         self.close_btn.bind("<Leave>", lambda e: self.close_btn.config(bg="#000000"))
         
+        def maximize(event=None):
+            if self.root.state() == 'zoomed':
+                self.root.state('normal')
+            else:
+                self.root.state('zoomed')
+                
+        self.max_btn = tk.Label(self.title_bar, text="+", bg="#000000", fg="#ffffff", font=("segoe ui", 14, "bold"), width=5, cursor="hand2", anchor="center")
+        self.max_btn.pack(side="right", fill="y")
+        self.max_btn.bind("<Button-1>", maximize)
+        self.max_btn.bind("<Enter>", lambda e: self.max_btn.config(bg="#3f3f46"))
+        self.max_btn.bind("<Leave>", lambda e: self.max_btn.config(bg="#000000"))
+        
         self.min_btn = tk.Label(self.title_bar, text="-", bg="#000000", fg="#ffffff", font=("segoe ui", 12, "bold"), width=5, cursor="hand2", anchor="center")
         self.min_btn.pack(side="right", fill="y")
         self.min_btn.bind("<Button-1>", lambda e: self.minimize())
@@ -780,58 +774,12 @@ class ChatPlaysApp:
         self.ywin = event.y
 
     def move_window(self, event):
+        if self.root.state() == 'zoomed':
+            self.root.state('normal')
         self.root.geometry(f"+{event.x_root - self.xwin}+{event.y_root - self.ywin}")
 
     def minimize(self):
         self.root.iconify()
-
-    def open_vmware_config(self):
-        top = tk.Toplevel(self.root)
-        top.title("vmware config")
-        top.geometry("500x250")
-        top.configure(bg="#09090b")
-        if platform.system() == "Windows":
-            top.overrideredirect(False)
-            try:
-                hwnd = ctypes.windll.user32.GetParent(top.winfo_id())
-                dwmwa_window_corner_preference = 33
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, dwmwa_window_corner_preference, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int))
-            except: pass
-        elif platform.system() == "Darwin":
-            try: top.wm_attributes('-titlebar', 0)
-            except: pass
-        
-        tk.Label(top, text="vmware .vmx file path:", bg="#09090b", fg="#d4d4d8", font=("segoe ui", 11, "bold")).pack(pady=(20,5), padx=20, anchor="w")
-        e_path = tk.Entry(top, font=("consolas", 11), bg="#18181b", fg="white", bd=0, highlightthickness=1, highlightbackground="#27272a")
-        e_path.pack(fill="x", padx=20, ipady=5)
-        e_path.insert(0, self.config.get("vmware_path", ""))
-        
-        tk.Label(top, text="vmware communication port:", bg="#09090b", fg="#d4d4d8", font=("segoe ui", 11, "bold")).pack(pady=(15,5), padx=20, anchor="w")
-        e_port = tk.Entry(top, font=("consolas", 11), bg="#18181b", fg="white", bd=0, highlightthickness=1, highlightbackground="#27272a")
-        e_port.pack(fill="x", padx=20, ipady=5)
-        e_port.insert(0, str(self.config.get("vmware_port", "8000")))
-        
-        def save_vmw():
-            self.config["use_vmware"] = True
-            self.config["vmware_path"] = e_path.get()
-            try: self.config["vmware_port"] = int(e_port.get())
-            except: self.config["vmware_port"] = 8000
-            self.save_settings()
-            top.destroy()
-            self.vbox = None
-            self.mgr = None
-            self.shared_session = None
-            self.log("[system]", "vmware enabled. virtualbox auto-disabled.", "sysmsg")
-            
-        tk.Button(top, text="save vmware config", bg="#10b981", fg="black", font=("segoe ui", 10, "bold"), bd=0, cursor="hand2", command=save_vmw).pack(pady=20, ipady=5, ipadx=10)
-
-    def on_vmware_toggle(self):
-        if self.var_use_vmware.get():
-            self.open_vmware_config()
-        else:
-            self.config["use_vmware"] = False
-            self.save_settings()
-            self.log("[system]", "vmware disabled. virtualbox active.", "sysmsg")
 
     def load_settings(self):
         all_vms = get_all_vbox_vms(vbox_manage_cmd)
@@ -851,8 +799,6 @@ class ChatPlaysApp:
             "strict_live_check": True,
             "keyboard_layout": "US",
             "command_prefix": "!",
-            "use_local_creds": False,
-            "youtube_api_key": youtube_api_key,
             "stats_interval": 15,
             "typing_speed": 0.015,
             "key_delay": 0.015,
@@ -861,10 +807,7 @@ class ChatPlaysApp:
             "enable_starting_scene": True,
             "app_name": "YT2VM",
             "ultra_speed": False,
-            "custom_commands": {},
-            "use_vmware": False,
-            "vmware_path": "",
-            "vmware_port": 8000
+            "custom_commands": {}
         }
         if os.path.exists(settings_file):
             try:
@@ -965,7 +908,7 @@ class ChatPlaysApp:
             self.log("[system]", f"[debug] successfully spawned instance {suffix_id}!", "sysmsg")
         except Exception as e:
             err_msg = f"[error] spawn_multistream crashed: {e}"
-            console_log("ERROR", err_msg + f"\n{traceback.format_exc()}")
+            console_log("error", err_msg + f"\n{traceback.format_exc()}")
             self.log("[system]", err_msg, "err")
             messagebox.showerror("error", err_msg)
 
@@ -1168,35 +1111,26 @@ class ChatPlaysApp:
             else:
                 self.cb_layout_new.set("US")
 
-            tk.Label(sett_left, text="YouTube Data API Key", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=10, padx=(0, 20))
-            self.entry_api_key_new = tk.Entry(sett_left, width=35, font=("Consolas", 11), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor=self.accent_main, justify="center")
-            self.entry_api_key_new.grid(row=3, column=1, sticky="w", pady=10, ipady=5)
-            self.entry_api_key_new.insert(0, str(self.config.get("youtube_api_key", youtube_api_key)))
-
             self.var_auto_new = tk.BooleanVar(value=self.config.get("auto_start", False))
-            ttk.Checkbutton(sett_left, text="Auto-start VM on launch", variable=self.var_auto_new, style="Toggle.TCheckbutton").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Auto-start VM on launch", variable=self.var_auto_new, style="Toggle.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
 
             self.var_chat_new = tk.BooleanVar(value=self.config.get("enable_chat", True))
-            ttk.Checkbutton(sett_left, text="Enable chat listener", variable=self.var_chat_new, style="Toggle.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Enable chat listener", variable=self.var_chat_new, style="Toggle.TCheckbutton").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
             
             self.say_admin_var = tk.BooleanVar(value=self.say_admin_only)
-            ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
             
             self.var_starting_scene = tk.BooleanVar(value=self.config.get("enable_starting_scene", True))
-            ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
 
             self.var_strict_live = tk.BooleanVar(value=self.config.get("strict_live_check", True))
-            ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
+            ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
 
-            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=9, column=0, sticky="e", pady=10, padx=(0, 20))
+            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=8, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "c2vm", "ycpv", "ytpvm"], width=30, state="readonly", font=("Segoe UI", 11))
-            self.cb_app_name.grid(row=9, column=1, sticky="w", pady=10)
+            self.cb_app_name.grid(row=8, column=1, sticky="w", pady=10)
             self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
             
-            self.var_use_vmware = tk.BooleanVar(value=self.config.get("use_vmware", False))
-            cb_vmware = ttk.Checkbutton(sett_left, text="Enable VMware Support", variable=self.var_use_vmware, style="Toggle.TCheckbutton", command=self.on_vmware_toggle)
-            cb_vmware.grid(row=10, column=0, columnspan=2, sticky="w", pady=6)
-
             tk.Label(sett_right, text="PERFORMANCE & TIMINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg="#10B981").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
 
             self.var_ultra_speed = tk.BooleanVar(value=self.config.get("ultra_speed", False))
@@ -1234,7 +1168,7 @@ class ChatPlaysApp:
             self.build_extra_tab()
         except Exception as e:
             self.log("[system]", f"[error] ui build error: {e}", "err")
-            console_log("ERROR", f"[error] ui build error: {e}\n{traceback.format_exc()}")
+            console_log("error", f"[error] ui build error: {e}\n{traceback.format_exc()}")
 
     def build_extra_tab(self):
         try:
@@ -1258,7 +1192,7 @@ class ChatPlaysApp:
                 tk.Label(extra_content, text=f"[active] this is currently multi-stream {instance_id-1} running on port {flask_port}.", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#8B5CF6").pack(anchor="w", pady=10)
         except Exception as e:
             self.log("[system]", f"[error] extra tab build error: {e}", "err")
-            console_log("ERROR", f"[error] extra tab build error: {e}\n{traceback.format_exc()}")
+            console_log("error", f"[error] extra tab build error: {e}\n{traceback.format_exc()}")
 
     def build_commands_tab(self):
         try:
@@ -1331,7 +1265,7 @@ class ChatPlaysApp:
             self.refresh_macro_list()
         except Exception as e:
             self.log("[system]", f"[error] commands tab build error: {e}", "err")
-            console_log("ERROR", f"[error] commands tab build error: {e}\n{traceback.format_exc()}")
+            console_log("error", f"[error] commands tab build error: {e}\n{traceback.format_exc()}")
 
     def save_custom_cmd(self):
         name = self.entry_macro_name.get().strip().lower()
@@ -1345,7 +1279,7 @@ class ChatPlaysApp:
         self.refresh_macro_list()
         self.entry_macro_name.delete(0, 'end')
         self.entry_macro_actions.delete(0, 'end')
-        console_log("SYSTEM", f"saved custom command: {name}")
+        console_log("system", f"saved custom command: {name}")
 
     def delete_custom_cmd(self):
         sel = self.macro_listbox.curselection()
@@ -1357,7 +1291,7 @@ class ChatPlaysApp:
             self.config["custom_commands"] = self.custom_commands
             self.save_settings()
             self.refresh_macro_list()
-            console_log("SYSTEM", f"deleted custom command: {name}")
+            console_log("system", f"deleted custom command: {name}")
 
     def refresh_macro_list(self):
         self.macro_listbox.delete(0, 'end')
@@ -1414,14 +1348,13 @@ class ChatPlaysApp:
         vbox_manage_cmd = self.config["vbox_path"]
         self.title_label.configure(text=f"{self.config.get('app_name', 'YT2VM')} {version}")
         self.btn_vm.configure(text=f"target: {vm_name}")
-        console_log("SYSTEM", "virtualbox settings saved!")
+        console_log("system", "virtualbox settings saved!")
 
     def save_general_settings(self):
         self.config["auto_start"] = self.var_auto_new.get()
         self.config["enable_chat"] = self.var_chat_new.get()
         self.config["keyboard_layout"] = self.cb_layout_new.get()
         self.config["command_prefix"] = self.entry_prefix_new.get()
-        self.config["youtube_api_key"] = self.entry_api_key_new.get().strip()
         self.config["enable_starting_scene"] = self.var_starting_scene.get()
         self.config["strict_live_check"] = self.var_strict_live.get()
         self.config["app_name"] = self.cb_app_name.get()
@@ -1444,24 +1377,23 @@ class ChatPlaysApp:
 
         self.save_settings()
         
-        global keyboard_layout, youtube_api_key
+        global keyboard_layout
         keyboard_layout = self.config["keyboard_layout"]
         self.command_prefix = self.config["command_prefix"]
         self.listening_to_chat = self.config["enable_chat"]
         self.twenty_four_seven_mode = self.config["auto_start"]
-        youtube_api_key = self.config["youtube_api_key"]
         self.max_wait_time = float(self.config["max_wait_time"])
         self.app_name = self.config["app_name"]
         self.ultra_speed = self.config["ultra_speed"]
         self.title_label.configure(text=f"{self.app_name} {version}")
-        console_log("SYSTEM", "general settings & timings saved!")
+        console_log("system", "general settings & timings saved!")
 
     def update_gui_console(self):
         try:
             while not gui_log_queue.empty():
                 level, msg = gui_log_queue.get_nowait()
                 self.console_text.configure(state='normal')
-                if level in ["SYSTEM", "ERROR", "EXEC", "CHAT"]:
+                if level in ["system", "error", "exec", "chat"]:
                     self.console_text.insert(tk.END, msg + "\n", level)
                 else:
                     self.console_text.insert(tk.END, msg + "\n")
@@ -1551,7 +1483,7 @@ class ChatPlaysApp:
                 self.save_settings() 
         except Exception as e:
             self.log("[system]", f"[error] go live error: {e}", "err")
-            console_log("ERROR", f"[error] go live error: {e}\n{traceback.format_exc()}")
+            console_log("error", f"[error] go live error: {e}\n{traceback.format_exc()}")
 
     def resolve_live_video_id(self, url):
         if not hasattr(self, 'resolved_id_cache'):
@@ -1668,13 +1600,13 @@ class ChatPlaysApp:
                 self.entry_cmd.delete(0, 'end')
         except Exception as e:
             self.log("[system]", f"[error] manual cmd error: {e}", "err")
-            console_log("ERROR", f"[error] manual cmd error: {e}\n{traceback.format_exc()}")
+            console_log("error", f"[error] manual cmd error: {e}\n{traceback.format_exc()}")
 
     def log(self, user, message, tag="sysmsg", is_mod=False, is_owner=False): 
         if not isinstance(message, str): message = str(message)
         if not isinstance(user, str): user = str(user)
         
-        if user == "[system]" or user.lower() == "system" or user == "[SYSTEM]":
+        if user == "[system]" or user.lower() == "system":
             user = "[system]"
             is_mod = True
             is_owner = True
@@ -1805,7 +1737,7 @@ class ChatPlaysApp:
             if clean_user in owners:
                 is_owner = True
                 
-            is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in admins
+            is_admin = is_owner or is_mod or user == "[console]" or clean_user in admins
 
             if cmd == "!pausechat":
                 if is_owner:
@@ -1948,6 +1880,8 @@ class ChatPlaysApp:
         chat_start_time = time.time()
         self.last_msg_time = time.time()
         is_first_fetch = True
+        is_connected = False
+        first_connect = True
         
         while self.running and getattr(self, 'listener_id', 0) == thread_id:
             self.listener_tick = time.time()
@@ -1955,8 +1889,8 @@ class ChatPlaysApp:
                 target_url = getattr(self, "active_url", None)
                 if (target_url and target_url != connected_url) or (target_url and getattr(self, "force_connect", False)):
                     self.force_connect = False
-                    if target_url == "[DEBUG_MODE]":
-                        chat = "[DEBUG_MODE]"
+                    if target_url == "[debug_mode]":
+                        chat = "[debug_mode]"
                         connected_url = target_url
                         retry_delay = 2 
                     else:
@@ -1965,7 +1899,7 @@ class ChatPlaysApp:
                             if vid and len(vid) == 11:
                                 if self.config.get("strict_live_check", True):
                                     if not self.is_video_currently_live(vid):
-                                        self.log("[system]", f"[warn] video {vid} is not currently live! refusing to connect.", "err")
+                                        self.log("[system]", f"video {vid} is not live. refusing connect.", "err")
                                         connected_url = target_url
                                         time.sleep(5)
                                         continue
@@ -1981,22 +1915,34 @@ class ChatPlaysApp:
                                 self.last_msg_time = time.time()
                                 is_first_fetch = True
                                 self.start_stats_thread()
+                                if not is_connected:
+                                    is_connected = True
+                                    if first_connect:
+                                        self.log("[system]", "connected to yt chat", "sysmsg")
+                                        first_connect = False
+                                    else:
+                                        self.log("[system]", "successfully connected to yt chat", "sysmsg")
                             else:
                                  time.sleep(retry_delay)
                                  retry_delay = min(retry_delay * 2, 60) 
+                                 if is_connected:
+                                     self.log("[system]", "disconnected from yt. connecting to stream...", "sysmsg")
+                                     is_connected = False
                         except Exception as parse_err:
                             err_msg = str(parse_err)
-                            if "ReadTimeout" in err_msg or "timeout" in err_msg.lower():
-                                self.log("[system]", f"[warn] youtube chat connection timed out. retrying in {retry_delay}s...", "sysmsg")
+                            if "readtimeout" in err_msg.lower() or "timeout" in err_msg.lower():
+                                pass
                             else:
-                                console_log("ERROR", f"chat init error: {parse_err}\n{traceback.format_exc()}")
-                                self.log("[system]", f"[error] chat init error: {parse_err}", "err")
+                                console_log("error", f"chat init error: {parse_err}")
                             chat = None
                             time.sleep(retry_delay)
-                            retry_delay = min(retry_delay * 2, 60) 
+                            retry_delay = min(retry_delay * 2, 60)
+                            if is_connected:
+                                self.log("[system]", "disconnected from yt. connecting to stream...", "sysmsg")
+                                is_connected = False
 
                 try:
-                    if chat == "[DEBUG_MODE]": 
+                    if chat == "[debug_mode]": 
                         pass
                     elif chat and chat.is_alive():
                         if retry_delay > 2: retry_delay = 2
@@ -2081,13 +2027,16 @@ class ChatPlaysApp:
                                 try:
                                     self.parse_command(c.message, c.author.name, is_mod, is_owner)
                                 except Exception as parse_err:
-                                    console_log("ERROR", f"command parsing error: {parse_err}\n{traceback.format_exc()}")
+                                    console_log("error", f"command parsing error: {parse_err}\n{traceback.format_exc()}")
                                     self.log("[system]", f"[error] command parsing error: {parse_err}", "err")
                         
                         if len(self.processed_msg_ids) > 5000:
                             self.processed_msg_ids = set(list(self.processed_msg_ids)[-1000:])
                                 
                     elif chat and not chat.is_alive():
+                        if is_connected:
+                            self.log("[system]", "disconnected from yt. connecting to stream...", "sysmsg")
+                            is_connected = False
                         if hasattr(self, 'resolved_id_cache'):
                             self.resolved_id_cache.clear()
                         if hasattr(chat, 'terminate'):
@@ -2098,8 +2047,10 @@ class ChatPlaysApp:
                         chat_start_time = time.time()
                         self.last_msg_time = time.time()
                 except Exception as e:
-                    console_log("ERROR", f"chat listener error: {e}\n{traceback.format_exc()}")
-                    self.log("[system]", f"[error] chat listener error: {e}", "err")
+                    console_log("error", f"chat listener error: {e}\n{traceback.format_exc()}")
+                    if is_connected:
+                        self.log("[system]", "disconnected from yt. connecting to stream...", "sysmsg")
+                        is_connected = False
                     error_count += 1
                     if error_count > 5:
                         if hasattr(self, 'resolved_id_cache'):
@@ -2113,8 +2064,10 @@ class ChatPlaysApp:
                         chat_start_time = time.time()
                 time.sleep(0.001)
             except Exception as e:
-                console_log("ERROR", f"critical chat error: {e}\n{traceback.format_exc()}")
-                self.log("[system]", f"[error] critical chat error: {e}", "err")
+                console_log("error", f"critical chat error: {e}\n{traceback.format_exc()}")
+                if is_connected:
+                    self.log("[system]", "disconnected from yt. connecting to stream...", "sysmsg")
+                    is_connected = False
                 error_count += 1
                 if error_count > 5:
                     if hasattr(self, 'resolved_id_cache'):
@@ -2415,7 +2368,7 @@ class ChatPlaysApp:
                 else:
                     self.force_session_refresh = True
                     self.log("[system]", f"[error] com lost during {action}: {err_obj}", "err")
-                    console_log("ERROR", f"input com error: {err_obj}\n{traceback.format_exc()}")
+                    console_log("error", f"input com error: {err_obj}\n{traceback.format_exc()}")
 
             def safe_put_scancodes(codes):
                 with self.input_lock:
@@ -2593,17 +2546,13 @@ class ChatPlaysApp:
                     return
                 self.vm_maintenance = True
                 try:
-                    session_locked = False
                     if getattr(self, 'shared_session', None):
                         if VBOX_PKG == "virtualbox" and self.shared_session.state == virtualbox.library.SessionState.locked:
-                            session_locked = True
+                            try: self.shared_session.unlock_machine()
+                            except Exception: pass
                         elif VBOX_PKG == "vboxapi" and self.shared_session.state == self.mgr.constants.SessionState_Locked:
-                            session_locked = True
-                    if session_locked:
-                        try:
-                            if VBOX_PKG == "virtualbox": self.shared_session.unlock_machine()
-                            else: self.shared_session.unlockMachine()
-                        except Exception: pass
+                            try: self.shared_session.unlockMachine()
+                            except Exception: pass
                     self.log("[system]", f"[debug] creating snapshot '{snap_name}'...", "sysmsg")
                     res = subprocess.run([vbox_manage_cmd, "snapshot", vm_name, "take", snap_name, "--live"], capture_output=True, text=True, timeout=60)
                     self.log("[system]", f"[debug] snapshot result: {res.returncode}", "sysmsg")
@@ -2617,7 +2566,7 @@ class ChatPlaysApp:
                     else:
                         self.log("[system]", f"[error] snapshot failed: {res.stderr.strip()}", "sysmsg")
                 except Exception as e:
-                    console_log("ERROR", f"snapshot exception: {e}\n{traceback.format_exc()}")
+                    console_log("error", f"snapshot exception: {e}\n{traceback.format_exc()}")
                     self.log("[system]", f"[error] snapshot exception: {e}", "err")
                 finally:
                     self.vm_maintenance = False
@@ -2792,8 +2741,8 @@ class ChatPlaysApp:
             global total_commands_failed
             total_commands_failed += 1
             self.consecutive_failures = getattr(self, 'consecutive_failures', 0) + 1
-            console_log("ERROR", f"execution failed: {display_cmd} {arg}: {loop_e}\n{traceback.format_exc()}")
-            self.log("[system]", f"[error] something went wrong: {loop_e}", "err")
+            console_log("error", f"execution failed: {display_cmd} {arg}: {loop_e}\n{traceback.format_exc()}")
+            self.log("[system]", f"<h1 something went wrong: {loop_e} h1>", "err")
             
         finally:
             self.is_com_active = False
@@ -2818,11 +2767,6 @@ class ChatPlaysApp:
 
         while self.running and getattr(self, 'executor_id', 0) == thread_id:
             self.executor_tick = time.time()
-            
-            if self.config.get("use_vmware", False):
-                time.sleep(1)
-                continue
-                
             try:
                 if getattr(self, 'vm_maintenance', False):
                     if getattr(self, 'shared_session', None):
@@ -3126,7 +3070,7 @@ class ChatPlaysApp:
                 self.flask_thread = threading.Thread(target=start_flask, daemon=True)
                 self.flask_thread.start()
         except Exception as e:
-            console_log("ERROR", f"start threads crashed: {e}\n{traceback.format_exc()}")
+            console_log("error", f"start threads crashed: {e}\n{traceback.format_exc()}")
             self.log("[system]", f"[error] start threads crashed: {e}", "err")
 
     def start_stats_thread(self):
@@ -3153,22 +3097,23 @@ class ChatPlaysApp:
                 api_success = False
                 if current_time > api_cooldown_until:
                     try:
-                        api_key_to_use = self.config.get("youtube_api_key", youtube_api_key).strip()
-                        api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics%2CliveStreamingDetails&id={vid}&key={api_key_to_use}"
-                        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                        with urllib.request.urlopen(req, timeout=5) as response:
-                            data = json.loads(response.read().decode())
-                            if "error" in data:
-                                raise Exception("api quota error")
-                            if "items" in data and len(data["items"]) > 0:
-                                item = data["items"][0]
-                                stats = item.get("statistics", {})
-                                live = item.get("liveStreamingDetails", {})
-                                new_viewers = live.get("concurrentViewers")
-                                new_likes = stats.get("likeCount")
-                                if new_viewers: current_viewers = str(new_viewers)
-                                if new_likes: current_likes = str(new_likes)
-                                api_success = True
+                        api_key_to_use = self.config.get("youtube_api_key", "").strip()
+                        if api_key_to_use:
+                            api_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics%2CliveStreamingDetails&id={vid}&key={api_key_to_use}"
+                            req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                            with urllib.request.urlopen(req, timeout=5) as response:
+                                data = json.loads(response.read().decode())
+                                if "error" in data:
+                                    raise Exception("api quota error")
+                                if "items" in data and len(data["items"]) > 0:
+                                    item = data["items"][0]
+                                    stats = item.get("statistics", {})
+                                    live = item.get("liveStreamingDetails", {})
+                                    new_viewers = live.get("concurrentViewers")
+                                    new_likes = stats.get("likeCount")
+                                    if new_viewers: current_viewers = str(new_viewers)
+                                    if new_likes: current_likes = str(new_likes)
+                                    api_success = True
                     except urllib.error.HTTPError as e:
                         if e.code in [403, 429]: 
                             api_cooldown_until = current_time + 3600 

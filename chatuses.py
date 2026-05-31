@@ -184,6 +184,12 @@ def get_vbox_snapshots(vbox_path, vm_name):
     except Exception: pass
     return snaps
 
+available_vms = get_all_vbox_vms(vbox_manage_cmd)
+vm_name = "Windows10ChatVm"
+if available_vms:
+    if len(available_vms) >= instance_id: vm_name = available_vms[instance_id - 1]
+    else: vm_name = available_vms[0]
+
 default_blocked_terms = [] 
 banned_words = []
 custom_commands = {}

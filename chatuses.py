@@ -6,10 +6,8 @@ from ctypes import wintypes
 
 sys.coinit_flags = 0
 
-try:
-    import pythoncom
-except ImportError:
-    pass
+try: import pythoncom
+except ImportError: pass
 
 try:
     import virtualbox
@@ -33,10 +31,8 @@ if platform.system() == "Darwin":
             kw.pop('relief', None)
             super().__init__(master, cnf, **kw)
             self.config(cursor="hand2")
-            if cmd:
-                self.bind("<Button-1>", lambda e: cmd())
-            if abg:
-                self.bind("<Enter>", lambda e: self.config(bg=abg, fg=afg or fg))
+            if cmd: self.bind("<Button-1>", lambda e: cmd())
+            if abg: self.bind("<Enter>", lambda e: self.config(bg=abg, fg=afg or fg))
             self.bind("<Leave>", lambda e: self.config(bg=bg, fg=fg))
     tk.Button = MacLabelButton
 
@@ -64,14 +60,12 @@ for arg in sys.argv:
     if arg == "--multistream":
         instance_id = 2
     elif arg.startswith("--multistream") and arg != "--multistream":
-        try:
-            instance_id = int(arg.replace("--multistream", "")) + 1
-        except Exception:
-            pass
+        try: instance_id = int(arg.replace("--multistream", "")) + 1
+        except Exception: pass
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "v43.0.vbox.only"
+version = "v33.0.vboxmaster"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 settings_file = f"settings{suffix}.json"
@@ -128,8 +122,7 @@ def get_all_vbox_vms(vbox_path="VBoxManage"):
         for line in res.stdout.splitlines():
             if '"' in line:
                 vms.append(line.split('"')[1])
-    except Exception:
-        pass
+    except Exception: pass
     return vms if vms else ["Windows10ChatVm", "Windows8ChatVm"]
 
 def get_vbox_snapshots(vbox_path, vm_name):
@@ -139,50 +132,21 @@ def get_vbox_snapshots(vbox_path, vm_name):
         for line in res.stdout.splitlines():
             if "Name:" in line and "(UUID:" in line:
                 part = line.split("Name:")[1].split("(UUID:")[0].strip()
-                if part:
-                    snaps.append(part)
-    except Exception:
-        pass
+                if part: snaps.append(part)
+    except Exception: pass
     return snaps
 
 available_vms = get_all_vbox_vms(vbox_manage_cmd)
 vm_name = "Windows10ChatVm"
 if available_vms:
-    if len(available_vms) >= instance_id:
-        vm_name = available_vms[instance_id - 1]
-    else:
-        vm_name = available_vms[0]
+    if len(available_vms) >= instance_id: vm_name = available_vms[instance_id - 1]
+    else: vm_name = available_vms[0]
 
 default_blocked_terms = [] 
 banned_words = []
 custom_commands = {}
 
-default_keydata = {
-    "RAW": {
-        "esc": [1], "1": [2], "2": [3], "3": [4], "4": [5], "5": [6], "6": [7], "7": [8], "8": [9], "9": [10], "0": [11], 
-        "-": [12], "=": [13], "backspace": [14], "tab": [15], "q": [16], "w": [17], "e": [18], "r": [19], "t": [20], "y": [21], 
-        "u": [22], "i": [23], "o": [24], "p": [25], "[": [26], "]": [27], "enter": [28], "ctrl": [29], "lctrl": [29], "rctrl": [224, 29], 
-        "a": [30], "s": [31], "d": [32], "f": [33], "g": [34], "h": [35], "j": [36], "k": [37], "l": [38], ";": [39], "'": [40], "`": [41], 
-        "shift": [42], "lshift": [42], "\\": [43], "z": [44], "x": [45], "c": [46], "v": [47], "b": [48], "n": [49], "m": [50], 
-        ",": [51], ".": [52], "/": [53], "rshift": [54], "alt": [56], "lalt": [56], "ralt": [224, 56], "space": [57], "capslock": [58], 
-        "f1": [59], "f2": [60], "f3": [61], "f4": [62], "f5": [63], "f6": [64], "f7": [65], "f8": [66], "f9": [67], "f10": [68], "f11": [87], "f12": [88], 
-        "numlock": [69], "scrolllock": [70], "home": [224, 71], "up": [224, 72], "pageup": [224, 73], "left": [224, 75], 
-        "right": [224, 77], "end": [224, 79], "down": [224, 80], "pagedown": [224, 81], "insert": [224, 82], "delete": [224, 83], "del": [224, 83], 
-        "win": [224, 91], "lwin": [224, 91], "rwin": [224, 92], "cmd": [224, 91], "super": [224, 91], "menu": [224, 93], "plus": [13], "minus": [12], "return": [28],
-        "numpad0": [82], "numpad1": [79], "numpad2": [80], "numpad3": [81], "numpad4": [75], "numpad5": [76], "numpad6": [77], 
-        "numpad7": [71], "numpad8": [72], "numpad9": [73], "numpad_dot": [83], "numpad_enter": [224, 28], "numpad_plus": [78], 
-        "numpad_minus": [74], "numpad_mul": [55], "numpad_div": [224, 53], "printscreen": [224, 55, 224, 183], "pause": [225, 29, 69, 225, 157, 197],
-        "vol_mute": [224, 32], "vol_down": [224, 46], "vol_up": [224, 48], "media_next": [224, 25], "media_prev": [224, 16], "media_stop": [224, 36], "media_play_pause": [224, 34]
-    },
-    "LAYOUTS": {
-        "US": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x10], 'w':[0x11], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x15], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x1E], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x2C], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x32], ' ':[0x39], '-':[0x0C], '=':[0x0D], '[':[0x1A], ']':[0x1B], '\\':[0x2B], ';':[0x27], '\'':[0x28], '`':[0x29], ',':[0x33], '.':[0x34], '/':[0x35]}, "shift": {'!':[0x02], '@':[0x03], '#':[0x04], '$':[0x05], '%':[0x06], '^':[0x07], '&':[0x08], '*':[0x09], '(':[0x0A], ')':[0x0B], '_':[0x0C], '+':[0x0D], '{':[0x1A], '}':[0x1B], '|':[0x2B], ':':[0x27], '"':[0x28], '~':[0x29], '<':[0x33], '>':[0x34], '?':[0x35]}, "altgr": {}},
-        "UK": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x10], 'w':[0x11], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x15], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x1E], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x2C], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x32], ' ':[0x39], '-':[0x0C], '=':[0x0D], '[':[0x1A], ']':[0x1B], '#':[0x2B], ';':[0x27], '\'':[0x28], '`':[0x29], ',':[0x33], '.':[0x34], '/':[0x35], '\\':[0x56]}, "shift": {'!':[0x02], '"':[0x03], '£':[0x04], '$':[0x05], '%':[0x06], '^':[0x07], '&':[0x08], '*':[0x09], '(':[0x0A], ')':[0x0B], '_':[0x0C], '+':[0x0D], '{':[0x1A], '}':[0x1B], '~':[0x2B], ':':[0x27], '@':[0x28], '¬':[0x29], '<':[0x33], '>':[0x34], '?':[0x35], '|':[0x56]}, "altgr": {'€':[0x05], '¦':[0x29]}},
-        "DANISH": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x10], 'w':[0x11], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x15], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x1E], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x2C], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x32], ' ':[0x39], '+': [0x0C], '´': [0x0D], 'å': [0x1A], '¨': [0x1B], '\'': [0x2B], 'æ': [0x27], 'ø': [0x28], '½': [0x29], ',': [0x33], '.': [0x34], '-': [0x35], '<': [0x56]}, "shift": {'!':[0x02], '"':[0x03], '#':[0x04], '¤':[0x05], '%':[0x06], '&':[0x07], '/':[0x08], '(': [0x09], ')': [0x0A], '=': [0x0B], '?': [0x0C], '`': [0x0D], 'Å': [0x1A], '^': [0x1B], '*': [0x2B], 'Æ': [0x27], 'Ø': [0x28], '§': [0x29], ';': [0x33], ':': [0x34], '_': [0x35], '>': [0x56]}, "altgr": {'@':[0x03], '£':[0x04], '$':[0x05], '€':[0x12], '{':[0x08], '[':[0x09], ']':[0x0A], '}':[0x0B], '|':[0x0D], '~':[0x1B], '\\':[0x56], 'µ':[0x32]}},
-        "TURKISH": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x10], 'w':[0x11], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x15], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x1E], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x2C], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x32], ' ':[0x39], 'ı': [0x17], 'i': [0x28], '*': [0x0C], '-': [0x0D], 'ğ': [0x1A], 'ü': [0x1B], ',': [0x2B], 'ş': [0x27], '"': [0x29], 'ö': [0x33], 'ç': [0x34], '.': [0x35], '<': [0x56]}, "shift": {'!':[0x02], '\'':[0x03], '^':[0x04], '+':[0x05], '%':[0x06], '&':[0x07], '/':[0x08], '(': [0x09], ')': [0x0A], '=': [0x0B], '?': [0x0C], '_': [0x0D], 'I': [0x17], 'İ': [0x28], 'Ğ': [0x1A], 'Ü': [0x1B], ';': [0x2B], 'Ş': [0x27], 'é': [0x29], 'Ö': [0x33], 'Ç': [0x34], ':': [0x35], '>': [0x56]}, "altgr": {'>':[0x02], '£':[0x03], '#':[0x04], '$':[0x05], '½':[0x06], '{':[0x08], '[':[0x09], ']':[0x0A], '}':[0x0B], '\\':[0x0C], '|':[0x0D], '~':[0x1B], '´':[0x27], '₺':[0x14], 'æ':[0x1E], 'ß':[0x1F], '`':[0x2B]}},
-        "GERMAN": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x10], 'w':[0x11], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x2C], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x1E], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x15], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x32], ' ':[0x39], 'ß': [0x0C], '´': [0x0D], 'ü': [0x1A], '+': [0x1B], '#': [0x2B], 'ö': [0x27], 'ä': [0x28], '^': [0x29], ',': [0x33], '.': [0x34], '-': [0x35], '<': [0x56]}, "shift": {'!':[0x02], '"':[0x03], '§':[0x04], '$':[0x05], '%':[0x06], '&':[0x07], '/':[0x08], '(': [0x09], ')': [0x0A], '=': [0x0B], '?': [0x0C], '`': [0x0D], 'Ü': [0x1A], '*': [0x1B], '\'': [0x2B], 'Ö': [0x27], 'Ä': [0x28], '°': [0x29], ';': [0x33], ':': [0x34], '_': [0x35], '>': [0x56]}, "altgr": {'²':[0x03], '³':[0x04], '{':[0x08], '[':[0x09], ']':[0x0A], '}':[0x0B], '\\':[0x0C], '@':[0x10], '€':[0x12], '~':[0x1B], 'µ':[0x32], '|':[0x56]}},
-        "FRENCH": {"noshift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], 'q':[0x1E], 'w':[0x2C], 'e':[0x12], 'r':[0x13], 't':[0x14], 'y':[0x15], 'u':[0x16], 'i':[0x17], 'o':[0x18], 'p':[0x19], 'a':[0x10], 's':[0x1F], 'd':[0x20], 'f':[0x21], 'g':[0x22], 'h':[0x23], 'j':[0x24], 'k':[0x25], 'l':[0x26], 'z':[0x11], 'x':[0x2D], 'c':[0x2E], 'v':[0x2F], 'b':[0x30], 'n':[0x31], 'm':[0x27], ' ':[0x39], '&': [0x02], 'é': [0x03], '"': [0x04], '\'': [0x05], '(': [0x06], '-': [0x07], 'è': [0x08], '_': [0x09], 'ç': [0x0A], 'à': [0x0B], ')': [0x0C], '=': [0x0D], '^': [0x1A], '$': [0x1B], '*': [0x2B], 'ù': [0x28], '²': [0x29], ',': [0x32], ';': [0x33], ':': [0x34], '!': [0x35], '<': [0x56]}, "shift": {'1':[0x02], '2':[0x03], '3':[0x04], '4':[0x05], '5':[0x06], '6':[0x07], '7':[0x08], '8':[0x09], '9':[0x0A], '0':[0x0B], '°': [0x0C], '+': [0x0D], '¨': [0x1A], '£': [0x1B], 'µ': [0x2B], '%': [0x28], '?': [0x32], '.': [0x33], '/': [0x34], '§': [0x35], '>': [0x56]}, "altgr": {'~':[0x03], '#':[0x04], '{':[0x05], '[':[0x06], '|':[0x07], '`':[0x08], '\\':[0x09], '^':[0x0A], '@':[0x0B], ']':[0x0C], '}':[0x0D], '¤':[0x1B], '€':[0x12]}}
-    }
-}
+default_keydata = {"RAW":{"esc":[1],"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"-":[12],"=":[13],"backspace":[14],"tab":[15],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"[":[26],"]":[27],"enter":[28],"ctrl":[29],"lctrl":[29],"rctrl":[224,29],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],";":[39],"'":[40],"`":[41],"shift":[42],"lshift":[42],"\\":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],",":[51],".":[52],"/":[53],"rshift":[54],"alt":[56],"lalt":[56],"ralt":[224,56],"space":[57],"capslock":[58],"f1":[59],"f2":[60],"f3":[61],"f4":[62],"f5":[63],"f6":[64],"f7":[65],"f8":[66],"f9":[67],"f10":[68],"f11":[87],"f12":[88],"numlock":[69],"scrolllock":[70],"home":[224,71],"up":[224,72],"pageup":[224,73],"left":[224,75],"right":[224,77],"end":[224,79],"down":[224,80],"pagedown":[224,81],"insert":[224,82],"delete":[224,83],"del":[224,83],"win":[224,91],"lwin":[224,91],"rwin":[224,92],"cmd":[224,91],"super":[224,91],"menu":[224,93],"plus":[13],"minus":[12],"return":[28],"numpad0":[82],"numpad1":[79],"numpad2":[80],"numpad3":[81],"numpad4":[75],"numpad5":[76],"numpad6":[77],"numpad7":[71],"numpad8":[72],"numpad9":[73],"numpad_dot":[83],"numpad_enter":[224,28],"numpad_plus":[78],"numpad_minus":[74],"numpad_mul":[55],"numpad_div":[224,53],"printscreen":[224,55,224,183],"pause":[225,29,69,225,157,197],"vol_mute":[224,32],"vol_down":[224,46],"vol_up":[224,48],"media_next":[224,25],"media_prev":[224,16],"media_stop":[224,36],"media_play_pause":[224,34]},"LAYOUTS":{"US":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x10],'w':[0x11],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x15],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x1E],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x2C],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x32],' ':[0x39],'-':[0x0C],'=':[0x0D],'[':[0x1A],']':[0x1B],'\\':[0x2B],';':[0x27],'\'':[0x28],'`':[0x29],',':[0x33],'.':[0x34],'/':[0x35]},"shift":{'!':[0x02],'@':[0x03],'#':[0x04],'$':[0x05],'%':[0x06],'^':[0x07],'&':[0x08],'*':[0x09],'(':[0x0A],')':[0x0B],'_':[0x0C],'+':[0x0D],'{':[0x1A],'}':[0x1B],'|':[0x2B],':':[0x27],'"':[0x28],'~':[0x29],'<':[0x33],'>':[0x34],'?':[0x35]},"altgr":{}},"UK":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x10],'w':[0x11],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x15],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x1E],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x2C],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x32],' ':[0x39],'-':[0x0C],'=':[0x0D],'[':[0x1A],']':[0x1B],'#':[0x2B],';':[0x27],'\'':[0x28],'`':[0x29],',':[0x33],'.':[0x34],'/':[0x35],'\\':[0x56]},"shift":{'!':[0x02],'"':[0x03],'£':[0x04],'$':[0x05],'%':[0x06],'^':[0x07],'&':[0x08],'*':[0x09],'(':[0x0A],')':[0x0B],'_':[0x0C],'+':[0x0D],'{':[0x1A],'}':[0x1B],'~':[0x2B],':':[0x27],'@':[0x28],'¬':[0x29],'<':[0x33],'>':[0x34],'?':[0x35],'|':[0x56]},"altgr":{'€':[0x05],'¦':[0x29]}},"DANISH":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x10],'w':[0x11],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x15],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x1E],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x2C],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x32],' ':[0x39],'+':[0x0C],'´':[0x0D],'å':[0x1A],'¨':[0x1B],'\'':[0x2B],'æ':[0x27],'ø':[0x28],'½':[0x29],',':[0x33],'.':[0x34],'-':[0x35],'<':[0x56]},"shift":{'!':[0x02],'"':[0x03],'#':[0x04],'¤':[0x05],'%':[0x06],'&':[0x07],'/':[0x08],'(':[0x09],')':[0x0A],'=':[0x0B],'?':[0x0C],'`':[0x0D],'Å':[0x1A],'^':[0x1B],'*':[0x2B],'Æ':[0x27],'Ø':[0x28],'§':[0x29],';':[0x33],':':[0x34],'_':[0x35],'>':[0x56]},"altgr":{'@':[0x03],'£':[0x04],'$':[0x05],'€':[0x12],'{':[0x08],'[':[0x09],']':[0x0A],'}':[0x0B],'|':[0x0D],'~':[0x1B],'\\':[0x56],'µ':[0x32]}},"TURKISH":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x10],'w':[0x11],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x15],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x1E],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x2C],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x32],' ':[0x39],'ı':[0x17],'i':[0x28],'*':[0x0C],'-':[0x0D],'ğ':[0x1A],'ü':[0x1B],',':[0x2B],'ş':[0x27],'"':[0x29],'ö':[0x33],'ç':[0x34],'.':[0x35],'<':[0x56]},"shift":{'!':[0x02],'\'':[0x03],'^':[0x04],'+':[0x05],'%':[0x06],'&':[0x07],'/':[0x08],'(':[0x09],')':[0x0A],'=':[0x0B],'?':[0x0C],'_':[0x0D],'I':[0x17],'İ':[0x28],'Ğ':[0x1A],'Ü':[0x1B],';':[0x2B],'Ş':[0x27],'é':[0x29],'Ö':[0x33],'Ç':[0x34],':':[0x35],'>':[0x56]},"altgr":{'>':[0x02],'£':[0x03],'#':[0x04],'$':[0x05],'½':[0x06],'{':[0x08],'[':[0x09],']':[0x0A],'}':[0x0B],'\\':[0x0C],'|':[0x0D],'~':[0x1B],'´':[0x27],'₺':[0x14],'æ':[0x1E],'ß':[0x1F],'`':[0x2B]}},"GERMAN":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x10],'w':[0x11],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x2C],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x1E],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x15],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x32],' ':[0x39],'ß':[0x0C],'´':[0x0D],'ü':[0x1A],'+':[0x1B],'#':[0x2B],'ö':[0x27],'ä':[0x28],'^':[0x29],',':[0x33],'.':[0x34],'-':[0x35],'<':[0x56]},"shift":{'!':[0x02],'"':[0x03],'§':[0x04],'$':[0x05],'%':[0x06],'&':[0x07],'/':[0x08],'(':[0x09],')':[0x0A],'=':[0x0B],'?':[0x0C],'`':[0x0D],'Ü':[0x1A],'*':[0x1B],'\'':[0x2B],'Ö':[0x27],'Ä':[0x28],'°':[0x29],';':[0x33],':':[0x34],'_':[0x35],'>':[0x56]},"altgr":{'²':[0x03],'³':[0x04],'{':[0x08],'[':[0x09],']':[0x0A],'}':[0x0B],'\\':[0x0C],'@':[0x10],'€':[0x12],'~':[0x1B],'µ':[0x32],'|':[0x56]}},"FRENCH":{"noshift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'q':[0x1E],'w':[0x2C],'e':[0x12],'r':[0x13],'t':[0x14],'y':[0x15],'u':[0x16],'i':[0x17],'o':[0x18],'p':[0x19],'a':[0x10],'s':[0x1F],'d':[0x20],'f':[0x21],'g':[0x22],'h':[0x23],'j':[0x24],'k':[0x25],'l':[0x26],'z':[0x11],'x':[0x2D],'c':[0x2E],'v':[0x2F],'b':[0x30],'n':[0x31],'m':[0x27],' ':[0x39],'&':[0x02],'é':[0x03],'"':[0x04],'\'':[0x05],'(':[0x06],'-':[0x07],'è':[0x08],'_':[0x09],'ç':[0x0A],'à':[0x0B],')':[0x0C],'=':[0x0D],'^':[0x1A],'$':[0x1B],'*':[0x2B],'ù':[0x28],'²':[0x29],',':[0x32],';':[0x33],':':[0x34],'!':[0x35],'<':[0x56]},"shift":{'1':[0x02],'2':[0x03],'3':[0x04],'4':[0x05],'5':[0x06],'6':[0x07],'7':[0x08],'8':[0x09],'9':[0x0A],'0':[0x0B],'°':[0x0C],'+':[0x0D],'¨':[0x1A],'£':[0x1B],'µ':[0x2B],'%':[0x28],'?':[0x32],'.':[0x33],'/':[0x34],'§':[0x35],'>':[0x56]},"altgr":{'~':[0x03],'#':[0x04],'{':[0x05],'[':[0x06],'|':[0x07],'`':[0x08],'\\':[0x09],'^':[0x0A],'@':[0x0B],']':[0x0C],'}':[0x0D],'¤':[0x1B],'€':[0x12]}}}}
 
 _needs_update = False
 if os.path.exists(scancodes_file):
@@ -191,6 +155,11 @@ if os.path.exists(scancodes_file):
             _loaded_data = json.load(f)
         if "LAYOUTS" not in _loaded_data or "RAW" not in _loaded_data:
             _needs_update = True
+            old_keys = _loaded_data.copy()
+            _loaded_data = default_keydata.copy()
+            for k, v in old_keys.items():
+                if isinstance(v, list) and k not in _loaded_data["RAW"]:
+                    _loaded_data["RAW"][k] = v
         else:
             for lang, layout_dict in default_keydata["LAYOUTS"].items():
                 if lang not in _loaded_data["LAYOUTS"]:
@@ -211,8 +180,7 @@ if _needs_update:
     try:
         with open(scancodes_file, "w", encoding="utf-8") as f:
             json.dump(_loaded_data, f, indent=4, ensure_ascii=False)
-    except Exception:
-        pass
+    except Exception: pass
 
 scancodes = _loaded_data["RAW"]
 _layouts = _loaded_data["LAYOUTS"]
@@ -224,32 +192,18 @@ def get_typed_codes(char, layout="US"):
     active_no = target.get("noshift", {})
     active_sh = target.get("shift", {})
     active_al = target.get("altgr", {})
-    
-    if char in active_sh:
-        return (SHIFT, active_sh[char])
-    if char in active_al:
-        return (ALTGR, active_al[char])
-    if char in active_no:
-        return ([], active_no[char])
-        
+    if char in active_sh: return (SHIFT, active_sh[char])
+    if char in active_al: return (ALTGR, active_al[char])
+    if char in active_no: return ([], active_no[char])
     char_lower = char.lower()
-    if char.isupper() and char_lower in active_no:
-        return (SHIFT, active_no[char_lower])
-    if char_lower != char and char_lower in active_no:
-        return (SHIFT, active_no[char_lower])
-    if char_lower in active_no:
-        return ([], active_no[char_lower])
-        
+    if char.isupper() and char_lower in active_no: return (SHIFT, active_no[char_lower])
+    if char_lower != char and char_lower in active_no: return (SHIFT, active_no[char_lower])
+    if char_lower in active_no: return ([], active_no[char_lower])
     us = _layouts["US"]
-    if char in us["shift"]:
-        return (SHIFT, us["shift"][char])
-    if char in us["noshift"]:
-        return ([], us["noshift"][char])
-    if char.isupper() and char_lower in us["noshift"]:
-        return (SHIFT, us["noshift"][char_lower])
-    if char_lower in us["noshift"]:
-        return ([], us["noshift"][char_lower])
-        
+    if char in us["shift"]: return (SHIFT, us["shift"][char])
+    if char in us["noshift"]: return ([], us["noshift"][char])
+    if char.isupper() and char_lower in us["noshift"]: return (SHIFT, us["noshift"][char_lower])
+    if char_lower in us["noshift"]: return ([], us["noshift"][char_lower])
     return ([], [0])
 
 def safe_json_dump(filename, data):
@@ -262,8 +216,7 @@ def safe_json_dump(filename, data):
         try:
             with open(filename, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
-        except Exception:
-            pass
+        except Exception: pass
 
 def append_to_json_log(filename, user, command):
     try:
@@ -272,16 +225,12 @@ def append_to_json_log(filename, user, command):
             logs = []
             if os.path.exists(filename):
                 try:
-                    with open(filename, "r", encoding="utf-8") as f:
-                        logs = json.load(f)
-                except Exception:
-                    pass
+                    with open(filename, "r", encoding="utf-8") as f: logs = json.load(f)
+                except Exception: pass
             logs.append(entry)
-            if len(logs) > 1000:
-                logs = logs[-1000:]
+            if len(logs) > 1000: logs = logs[-1000:]
             safe_json_dump(filename, logs)
-    except Exception:
-        pass
+    except Exception: pass
 
 def append_to_all_msgs_log(user, msg):
     try:
@@ -289,48 +238,33 @@ def append_to_all_msgs_log(user, msg):
             entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "username": user, "message": msg}
             with open(allmsglogs_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
+    except Exception: pass
 
 def log_vote_action(action, user, vote_type, target, current_votes=0):
     try:
         with log_lock:
-            entry = {
-                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "action": action.lower(),
-                "user": user,
-                "vote": vote_type,
-                "progress": f"{current_votes}/{target}" if current_votes else str(target)
-            }
+            entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": action.lower(), "user": user, "vote": vote_type, "progress": f"{current_votes}/{target}" if current_votes else str(target)}
             logs = []
             if os.path.exists(voteslogs_file):
                 try:
-                    with open(voteslogs_file, "r", encoding="utf-8") as f:
-                        logs = json.load(f)
-                except Exception:
-                    pass
+                    with open(voteslogs_file, "r", encoding="utf-8") as f: logs = json.load(f)
+                except Exception: pass
             logs.append(entry)
-            if len(logs) > 1000:
-                logs = logs[-1000:]
+            if len(logs) > 1000: logs = logs[-1000:]
             safe_json_dump(voteslogs_file, logs)
-    except Exception:
-        pass
+    except Exception: pass
 
 def console_log(level, msg):
     timestamp = time.strftime("%H:%M:%S")
     date_stamp = time.strftime("%Y-%m-%d")
     log_line = f"[{timestamp}] [{level.lower()}] {msg.lower()}"
     print(log_line, flush=True)
-    try:
-        gui_log_queue.put_nowait((level, log_line))
-    except queue.Full:
-        pass
+    try: gui_log_queue.put_nowait((level, log_line))
+    except queue.Full: pass
     try:
         with log_lock:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"[{date_stamp} {timestamp}] [{level.lower()}] {msg.lower()}\n")
-    except Exception:
-        pass
+            with open(log_file, "a", encoding="utf-8") as f: f.write(f"[{date_stamp} {timestamp}] [{level.lower()}] {msg.lower()}\n")
+    except Exception: pass
 
 global_msg_id = 0
 web_chat_history = collections.deque(maxlen=50)
@@ -349,8 +283,7 @@ try:
             total_commands_executed = _saved.get("commands", 0)
             total_commands_failed = _saved.get("failed", 0)
             script_start_time = time.time() - _saved.get("uptime", 0)
-except Exception:
-    pass
+except Exception: pass
 
 def save_stats():
     try:
@@ -358,15 +291,9 @@ def save_stats():
         with stats_lock:
             tmp_file = stats_file + ".tmp"
             with open(tmp_file, "w") as f:
-                json.dump({
-                    "uptime": uptime,
-                    "commands": total_commands_executed,
-                    "failed": total_commands_failed,
-                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
-                }, f)
+                json.dump({"uptime": uptime, "commands": total_commands_executed, "failed": total_commands_failed, "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
             os.replace(tmp_file, stats_file)
-    except Exception:
-        pass
+    except Exception: pass
 
 current_status = "initializing..."
 current_vote_info = {"active": False, "text": ""}
@@ -385,10 +312,8 @@ def handle_exception(exc_type, exc_value, exc_traceback):
     traceback.print_exception(exc_type, exc_value, exc_traceback)
     print("==================================================\n")
     try:
-        with open("crash_log.txt", "w") as f:
-            traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
-    except Exception:
-        pass
+        with open("crash_log.txt", "w") as f: traceback.print_exception(exc_type, exc_value, exc_traceback, file=f)
+    except Exception: pass
     set_obs_scene(obs_scene_error)
 sys.excepthook = handle_exception
 
@@ -405,34 +330,21 @@ def add_to_history(user, msg, tag, is_mod=False, is_owner=False):
     global_msg_id += 1
     safe_user = escape_html(user)
     safe_msg = escape_html(msg)
-    msg_obj = {
-        "id": global_msg_id,
-        "u": safe_user,
-        "m": safe_msg,
-        "t": tag,
-        "is_admin": is_mod,
-        "is_owner": is_owner
-    }
-    with buffer_lock:
-        messages_buffer.append(msg_obj)
-    with history_lock:
-        web_chat_history.append(msg_obj)
+    msg_obj = {"id": global_msg_id, "u": safe_user, "m": safe_msg, "t": tag, "is_admin": is_mod, "is_owner": is_owner}
+    with buffer_lock: messages_buffer.append(msg_obj)
+    with history_lock: web_chat_history.append(msg_obj)
 
 def set_obs_scene(scene_name):
     try:
         if not obs_available: return
         def _switch():
             try:
-                if obs_password:
-                    cl = obs.ReqClient(host=obs_host, port=obs_port, password=obs_password, timeout=3)
-                else:
-                    cl = obs.ReqClient(host=obs_host, port=obs_port, timeout=3)
+                if obs_password: cl = obs.ReqClient(host=obs_host, port=obs_port, password=obs_password, timeout=3)
+                else: cl = obs.ReqClient(host=obs_host, port=obs_port, timeout=3)
                 cl.set_current_program_scene(scene_name)
-            except Exception:
-                pass
+            except Exception: pass
         threading.Thread(target=_switch, daemon=True).start()
-    except Exception:
-        pass
+    except Exception: pass
 
 if flask_available:
     obs_web_overlay_app = Flask(__name__)
@@ -444,791 +356,31 @@ if flask_available:
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
-    html_index = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>chat controls</title>
-        <style>
-            body { background: #09090b; color: #00E5FF; font-family: 'Segoe UI', Consolas, monospace; text-align: center; padding: 40px; }
-            h1 { color: #10B981; font-size: 36px; text-shadow: 0 0 10px rgba(16,185,129,0.3); margin-bottom: 5px; }
-            .grid { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; max-width: 800px; margin: 40px auto; }
-            a { background: #18181b; border: 1px solid #27272a; color: #fff; text-decoration: none; padding: 20px; border-radius: 12px; width: 300px; transition: all 0.2s; box-shadow: 0 4px 6px rgba(0,0,0,0.3); text-align: left; }
-            a:hover { transform: translateY(-5px); border-color: #00E5FF; box-shadow: 0 8px 15px rgba(0,229,255,0.2); }
-            .title { font-size: 20px; font-weight: bold; margin-bottom: 10px; color: #00E5FF; }
-            .desc { font-size: 14px; color: #a1a1aa; }
-        </style>
-    </head>
-    <body>
-        <h1>[active] chat server active</h1>
-        <p style="color:#71717a;font-size:18px">add one of these links to your obs browser source:</p>
-        <div class="grid">
-            <a href="/obsnew"><div class="title">liquid glass chat (/obsnew)</div><div class="desc">sleek gray bubbles with a glass background.</div></a>
-            <a href="/oldobsnew"><div class="title">classic dark chat (/oldobsnew)</div><div class="desc">the og dark background modern chat.</div></a>
-            <a href="/ultrachat"><div class="title">ultra chat (/ultrachat)</div><div class="desc">pure old basic chat with material 3 mod icons.</div></a>
-            <a href="/announcement"><div class="title">announcements (/announcement)</div><div class="desc">animated popup for server announcements.</div></a>
-            <a href="/stats"><div class="title">live stats (/stats)</div><div class="desc">viewers, likes, and uptime widget.</div></a>
-            <a href="/obs"><div class="title">legacy chat (/obs)</div><div class="desc">the original transparent overlay.</div></a>
-        </div>
-    </body>
-    </html>
-    """
-    
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');
-            @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-            html, body { background-color: rgba(0,0,0,0) !important; margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; }
-            body { font-family: 'Fira Code', 'Consolas', monospace; display: flex; flex-direction: column; padding: 10px; text-shadow: 2px 2px 0 #000; color: #ccc; font-size: 16px; justify-content: flex-end; }
-            .header { position: absolute; top: 10px; right: 10px; text-align: right; display: flex; flex-direction: column; align-items: flex-end; z-index: 10; }
-            div[id="vote-text"] { font-family: 'Impact', sans-serif; font-size: 24px; color: red; text-transform: uppercase; margin-bottom: 5px; text-shadow: 2px 2px 0 #000; background: rgba(0,0,0,0.85); padding: 5px 12px; border: 1px solid #444; border-radius: 4px; display: none; }
-            .stats-container { display: flex; gap: 15px; font-family: 'Fira Code', monospace; font-weight: bold; font-size: 20px; align-items: center; background: rgba(0,0,0,0.85); padding: 5px 12px; border: 1px solid #444; border-radius: 4px; }
-            .stat-item { display: flex; align-items: center; gap: 6px; }
-            .icon-eye { fill: #0af; width: 22px; height: 22px; filter: drop-shadow(0 0 2px #0af); }
-            .icon-thumb { fill: #0f0; width: 22px; height: 22px; filter: drop-shadow(0 0 2px #0f0); }
-            .stat-text { color: #fff; text-shadow: 0 0 2px #fff; }
-            .chat-box { flex-grow: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-end; padding-bottom: 10px; z-index: 5; }
-            .line { font-size: 18px; font-weight: 500; margin-bottom: 3px; color: #fff; line-height: 1.3; word-wrap: break-word; overflow-wrap: break-word; display: flex; align-items: flex-start; justify-content: flex-end; width: 100%; animation: slideIn 0.2s ease-out forwards; }
-            .admin-name { color: #5e84f1; font-weight: 700; text-shadow: 0 0 3px #5e84f1; }
-            .owner-name { color: #ffd700; font-weight: 700; text-shadow: 0 0 3px #ffd700; }
-            .user-name { color: #e0e0e0; font-weight: 700; }
-            .sys-text { color: #f0f; font-weight: 700; text-shadow: 0 0 3px #f0f; }
-            .sys-msg-text { color: #0f0; font-weight: bold; }
-            .err-text { color: #f33; font-weight: bold; }
-            .msg-text { color: #fff; }
-            .separator { margin-right: 8px; color: #888; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div id="vote-text">no active votes</div>
-            <div class="stats-container">
-                <div class="stat-item">
-                    <svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
-                    <span id="viewers" class="stat-text">0</span>
-                </div>
-                <div class="stat-item">
-                    <svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg>
-                    <span id="likes" class="stat-text">0</span>
-                </div>
-            </div>
-        </div>
-        <div class="chat-box" id="chat"></div>
-        <script>
-            let lastId = -1;
-            let fetchingUpdates = false;
-            setInterval(function(){
-                if(fetchingUpdates) return;
-                fetchingUpdates = true;
-                fetch('/history?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    if(data && Array.isArray(data)){
-                        const c = document.getElementById('chat');
-                        if(!c) return;
-                        const fragment = document.createDocumentFragment();
-                        let added = false;
-                        data.forEach(i => {
-                            if(i.id > lastId){
-                                lastId = i.id;
-                                try {
-                                    let nameClass = "user-name";
-                                    let msgClass = "msg-text";
-                                    if(i.is_owner) { nameClass = "owner-name"; }
-                                    else if(i.is_admin) { nameClass = "admin-name"; }
-                                    let u = i.u || "Unknown";
-                                    let m = i.m || "";
-                                    if(u === '[system]' || u === 'system'){
-                                        u = "[system]";
-                                        nameClass = "sys-text";
-                                        msgClass = m.includes("[err]") ? "err-text" : "sys-msg-text";
-                                    } else if(u === '[console]' || u === '[announcement]') {
-                                        nameClass = "admin-name";
-                                    } else {
-                                        if(typeof u === 'string' && !u.startsWith('@')) u = "@" + u;
-                                    }
-                                    const div = document.createElement('div');
-                                    div.className = 'line';
-                                    div.innerHTML = `<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;
-                                    fragment.appendChild(div);
-                                    added = true;
-                                } catch(err){}
-                            }
-                        });
-                        if(added){
-                            c.appendChild(fragment);
-                            window.scrollTo(0, document.body.scrollHeight);
-                            while(c.children.length > 50) c.removeChild(c.firstChild);
-                        }
-                    }
-                    fetchingUpdates = false;
-                }).catch(e => { fetchingUpdates = false; });
-            }, 1000);
-            
-            let fetchingStatus = false;
-            setInterval(function(){
-                if(fetchingStatus) return;
-                fetchingStatus = true;
-                fetch('/status_update?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    try {
-                        const v = document.getElementById('vote-text');
-                        const chatBox = document.getElementById('chat');
-                        const headerBox = document.querySelector('.header');
-                        if(chatBox){ chatBox.style.display = data.chat_visible ? 'flex' : 'none'; }
-                        if(headerBox){
-                            if(data.split_mode){
-                                headerBox.style.display = 'none';
-                            } else {
-                                headerBox.style.display = 'flex';
-                                if(v && data.vote && data.vote.active){
-                                    v.innerHTML = (data.vote.text || "").replace('[vote]', '');
-                                    v.style.display = "block";
-                                } else if(v) {
-                                    v.style.display = "none";
-                                }
-                                const viewEl = document.getElementById('viewers');
-                                const likeEl = document.getElementById('likes');
-                                if(viewEl) viewEl.innerText = data.viewers || "0";
-                                if(likeEl) likeEl.innerText = data.likes || "0";
-                            }
-                        }
-                    } catch(err){}
-                    fetchingStatus = false;
-                }).catch(e => { fetchingStatus = false; });
-            }, 2000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_template_2 = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');
-            html, body { background-color: rgba(0,0,0,0) !important; margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; }
-            body { font-family: 'Fira Code', 'Consolas', monospace; display: flex; flex-direction: column; align-items: flex-end; padding: 3vw; box-sizing: border-box; }
-            .header { text-align: right; display: flex; flex-direction: column; align-items: flex-end; }
-            div[id="vote-text"] { font-family: 'Impact', sans-serif; font-size: 10vw; color: red; text-transform: uppercase; margin-bottom: 2vw; text-shadow: 0.5vw 0.5vw 0 #000; display: none; line-height: 1; }
-            .stats-container { display: flex; gap: 5vw; font-family: 'Fira Code', monospace; font-weight: bold; font-size: 8vw; align-items: center; }
-            .stat-item { display: flex; align-items: center; gap: 2vw; }
-            .icon-eye { fill: #0af; width: 9vw; height: 9vw; filter: drop-shadow(0.4vw 0.4vw 0 #000); }
-            .icon-thumb { fill: #0f0; width: 9vw; height: 9vw; filter: drop-shadow(0.4vw 0.4vw 0 #000); }
-            .stat-text { color: #fff; text-shadow: 0.4vw 0.4vw 0 #000; }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div id="vote-text"></div>
-            <div class="stats-container">
-                <div class="stat-item">
-                    <svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
-                    <span id="viewers" class="stat-text">0</span>
-                </div>
-                <div class="stat-item">
-                    <svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg>
-                    <span id="likes" class="stat-text">0</span>
-                </div>
-            </div>
-        </div>
-        <script>
-            let fetchingStatus2 = false;
-            setInterval(function(){
-                if(fetchingStatus2) return;
-                fetchingStatus2 = true;
-                fetch('/status_update?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    try {
-                        const v = document.getElementById('vote-text');
-                        if(data.vote && data.vote.active){
-                            v.innerHTML = (data.vote.text || "").replace('[vote] ', '');
-                            v.style.display = "block";
-                        } else if(v) {
-                            v.style.display = "none";
-                        }
-                        const viewEl = document.getElementById('viewers');
-                        const likeEl = document.getElementById('likes');
-                        if(viewEl) viewEl.innerText = data.viewers || "0";
-                        if(likeEl) likeEl.innerText = data.likes || "0";
-                    } catch(err){}
-                    fetchingStatus2 = false;
-                }).catch(e => { fetchingStatus2 = false; });
-            }, 2000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_template_new = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-            html, body { background-color: rgba(0,0,0,0) !important; margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-            body { font-family: '-apple-system', 'BlinkMacSystemFont', 'Inter', sans-serif; display: flex; flex-direction: column; padding: 25px; justify-content: flex-end; box-sizing: border-box; }
-            .chat-box { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; width: 100%; }
-            .msg-block { background: rgba(80,80,85,0.25); backdrop-filter: blur(25px) saturate(200%); -webkit-backdrop-filter: blur(25px) saturate(200%); padding: 12px 18px; display: flex; align-items: flex-start; font-size: 16px; border-radius: 22px; box-shadow: 0 8px 32px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.4); animation: popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards; max-width: 90%; word-wrap: break-word; border: 1px solid rgba(255,255,255,0.15); border-bottom: 1px solid rgba(255,255,255,0.05); }
-            .msg-block.cmd-border { box-shadow: 0 8px 32px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.4), inset 4px 0 0 #00E5FF; }
-            .msg-block.chat-border { box-shadow: 0 8px 32px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.4), inset 4px 0 0 #10B981; }
-            .msg-block.vote-border { box-shadow: 0 8px 32px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.4), inset 4px 0 0 #F59E0B; }
-            .msg-block.err-border { box-shadow: 0 8px 32px rgba(0,0,0,0.15), inset 0 1px 1px rgba(255,255,255,0.4), inset 4px 0 0 #EF4444; }
-            .badge { padding: 4px 10px; font-weight: 800; font-size: 11px; border-radius: 20px; margin-right: 14px; flex-shrink: 0; align-self: center; color: #fff; letter-spacing: 0.8px; text-transform: uppercase; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
-            .badge.cmd { background: linear-gradient(135deg, #00E5FF, #0083B0); }
-            .badge.chat { background: linear-gradient(135deg, #10B981, #047857); }
-            .badge.vote { background: linear-gradient(135deg, #F59E0B, #B45309); }
-            .badge.err { background: linear-gradient(135deg, #EF4444, #991B1B); }
-            .msg-content { display: flex; flex-direction: column; gap: 2px; }
-            .username { font-weight: 700; font-size: 14px; letter-spacing: 0.3px; text-shadow: 0 1px 4px rgba(0,0,0,0.3); }
-            .username.cmd { color: #40C4FF; }
-            .username.chat { color: #34D399; }
-            .username.vote { color: #FBBF24; }
-            .username.err { color: #FF8A8A; }
-            .message { color: #fff; font-weight: 500; line-height: 1.4; font-size: 16px; text-shadow: 0 1px 3px rgba(0,0,0,0.4); }
-            @keyframes popIn { from { transform: translateY(20px) scale(0.95); opacity: 0; filter: blur(4px); } to { transform: translateY(0) scale(1); opacity: 1; filter: blur(0); } }
-        </style>
-    </head>
-    <body>
-        <div class="chat-box" id="chat"></div>
-        <script>
-            let lastId = -1;
-            let fetchingUpdates = false;
-            let hasConnected = false;
-            setInterval(function(){
-                if(fetchingUpdates) return;
-                fetchingUpdates = true;
-                fetch('/history?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    try {
-                        if(data && Array.isArray(data)){
-                            const c = document.getElementById('chat');
-                            if(c){
-                                if(!hasConnected){
-                                    hasConnected = true;
-                                    const div = document.createElement('div');
-                                    div.className = 'msg-block chat-border';
-                                    div.innerHTML = `<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;
-                                    c.appendChild(div);
-                                }
-                                const fragment = document.createDocumentFragment();
-                                let added = false;
-                                data.forEach(i => {
-                                    if(i.id > lastId){
-                                        lastId = i.id;
-                                        try {
-                                            let u = i.u || "Unknown";
-                                            let m = i.m || "";
-                                            if(u === '[system]' && !m.includes('vote') && !m.includes('[err]') && !m.includes('waiting') && !m.includes('ready') && !m.includes('chat listener') && !m.includes('running') && !m.includes('[ban]') && !m.includes('[warn]')) return;
-                                            let isCmd = m.trim().startsWith('!');
-                                            let badgeClass = isCmd ? 'cmd' : 'chat';
-                                            let badgeText = isCmd ? 'CMD' : 'CHAT';
-                                            let borderClass = isCmd ? 'cmd-border' : 'chat-border';
-                                            let unameClass = isCmd ? 'username cmd' : 'username chat';
-                                            let cleanU = u.replace(/^@+/, '');
-                                            let displayU = '@' + cleanU;
-                                            if(u === '[console]') {
-                                                displayU = 'CONSOLE';
-                                                badgeText = 'SYS';
-                                            } else if(u === '[announcement]') {
-                                                displayU = 'ANNOUNCEMENT';
-                                                badgeText = 'INFO';
-                                                badgeClass = 'cmd';
-                                                borderClass = 'cmd-border';
-                                                unameClass = 'username cmd';
-                                            } else if(u === '[system]') {
-                                                displayU = 'SYSTEM';
-                                                badgeText = 'SYS';
-                                                badgeClass = 'cmd';
-                                                borderClass = 'cmd-border';
-                                                unameClass = 'username cmd';
-                                                if(m.includes('[vote]')){
-                                                    badgeText = 'VOTE';
-                                                    badgeClass = 'vote';
-                                                    borderClass = 'vote-border';
-                                                    unameClass = 'username vote';
-                                                } else if(m.includes('[err]') || m.includes('[ban]') || m.includes('[warn]')){
-                                                    badgeText = 'ERR';
-                                                    badgeClass = 'err';
-                                                    borderClass = 'err-border';
-                                                    unameClass = 'username err';
-                                                } else if(m.includes('running:')){
-                                                    badgeText = 'EXEC';
-                                                    badgeClass = 'cmd';
-                                                    borderClass = 'cmd-border';
-                                                    unameClass = 'username cmd';
-                                                } else if(m.includes('[debug]')){
-                                                    badgeText = 'DBG';
-                                                    badgeClass = 'cmd';
-                                                    borderClass = 'cmd-border';
-                                                    unameClass = 'username cmd';
-                                                }
-                                            }
-                                            const div = document.createElement('div');
-                                            div.className = `msg-block ${borderClass}`;
-                                            div.innerHTML = `<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;
-                                            fragment.appendChild(div);
-                                            added = true;
-                                        } catch(err){}
-                                    }
-                                });
-                                if(added){
-                                    c.appendChild(fragment);
-                                    window.scrollTo(0, document.body.scrollHeight);
-                                    while(c.children.length > 15) c.removeChild(c.firstChild);
-                                }
-                            }
-                        }
-                    } finally {
-                        fetchingUpdates = false;
-                    }
-                }).catch(e => { fetchingUpdates = false; });
-            }, 1000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_template_oldnew = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');
-            html, body { background-color: rgba(0,0,0,0) !important; margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
-            body { font-family: 'Fira Code', 'Consolas', monospace; display: flex; flex-direction: column; padding: 15px; justify-content: flex-end; box-sizing: border-box; }
-            .chat-box { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; width: 100%; }
-            .msg-block { background-color: rgba(0,0,0,0.85); padding: 6px 10px; display: flex; align-items: baseline; font-size: 16px; border-radius: 6px; box-shadow: 2px 2px 4px rgba(0,0,0,0.5); animation: slideIn 0.2s ease-out forwards; margin-bottom: 2px; max-width: 95%; word-wrap: break-word; }
-            .msg-block.cmd-border { border-left: 5px solid #00e5ff; }
-            .msg-block.chat-border { border-left: 5px solid #00e676; }
-            .msg-block.vote-border { border-left: 5px solid orange; }
-            .msg-block.err-border { border-left: 5px solid #f33; }
-            .badge { padding: 2px 6px; font-weight: 800; color: #111; font-size: 11px; border-radius: 3px; margin-right: 8px; flex-shrink: 0; align-self: flex-start; margin-top: 3px; }
-            .badge.cmd { background-color: #00e5ff; }
-            .badge.chat { background-color: #00e676; }
-            .badge.vote { background-color: orange; }
-            .badge.err { background-color: #f33; color: #fff; }
-            .msg-content { display: block; word-break: break-word; }
-            .username { font-weight: 900; text-shadow: 1px 1px 0 rgba(0,0,0,0.8); margin-right: 5px; }
-            .username.cmd { color: #00e5ff; }
-            .username.chat { color: #00e676; }
-            .username.vote { color: orange; }
-            .username.err { color: #f33; }
-            .message { color: #fff; font-weight: 600; text-shadow: 1px 1px 0 rgba(0,0,0,0.8); line-height: 1.4; }
-            .owner-icon { width: 16px; height: 16px; fill: #ffd700; vertical-align: -3px; margin-right: 4px; }
-            .mod-icon { width: 16px; height: 16px; fill: #58a6ff; vertical-align: -3px; margin-right: 4px; }
-            @keyframes slideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        </style>
-    </head>
-    <body>
-        <div class="chat-box" id="chat"></div>
-        <script>
-            let lastId = -1;
-            let fetchingUpdates = false;
-            let hasConnected = false;
-            setInterval(function(){
-                if(fetchingUpdates) return;
-                fetchingUpdates = true;
-                fetch('/history?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    try {
-                        if(data && Array.isArray(data)){
-                            const c = document.getElementById('chat');
-                            if(c){
-                                if(!hasConnected){
-                                    hasConnected = true;
-                                    const div = document.createElement('div');
-                                    div.className = 'msg-block cmd-border';
-                                    div.innerHTML = `<div class="badge cmd">SYS</div><div class="msg-content"><span class="username cmd">system</span> <span class="message">connected</span></div>`;
-                                    c.appendChild(div);
-                                }
-                                const fragment = document.createDocumentFragment();
-                                let added = false;
-                                data.forEach(i => {
-                                    if(i.id > lastId){
-                                        lastId = i.id;
-                                        try {
-                                            let u = i.u || "Unknown";
-                                            let m = i.m || "";
-                                            if(u === '[system]' && !m.includes('vote') && !m.includes('[debug]') && !m.includes('[err]') && !m.includes('waiting') && !m.includes('ready') && !m.includes('chat listener') && !m.includes('running') && !m.includes('[ban]') && !m.includes('[warn]')) return;
-                                            let isCmd = m.trim().startsWith('!');
-                                            let badgeClass = isCmd ? 'cmd' : 'chat';
-                                            let badgeText = isCmd ? 'CMD' : 'CHAT';
-                                            let borderClass = isCmd ? 'cmd-border' : 'chat-border';
-                                            let unameClass = isCmd ? 'username cmd' : 'username chat';
-                                            let cleanU = u.replace(/^@+/, '');
-                                            let displayU = '@' + cleanU;
-                                            
-                                            let badgeIcon = "";
-                                            if(i.is_owner || u.toLowerCase() === 'reallyiron') {
-                                                badgeIcon = `<svg class='owner-icon' viewBox='0 0 24 24'><path d='M5 16h14l-1.5-9-3.5 4-2-5-2 5-3.5-4L5 16zm0 2h14v2H5v-2z'/></svg>`;
-                                            } else if(i.is_admin) {
-                                                badgeIcon = `<svg class='mod-icon' viewBox='0 0 24 24'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z'/></svg>`;
-                                            }
-                                            displayU = badgeIcon + displayU;
-                                            
-                                            if(u === '[console]') {
-                                                displayU = 'CONSOLE';
-                                                badgeText = 'SYS';
-                                            } else if(u === '[announcement]') {
-                                                displayU = 'ANNOUNCEMENT';
-                                                badgeText = 'INFO';
-                                                badgeClass = 'cmd';
-                                                borderClass = 'cmd-border';
-                                                unameClass = 'username cmd';
-                                            } else if(u === '[system]') {
-                                                displayU = 'SYSTEM';
-                                                badgeText = 'SYS';
-                                                badgeClass = 'cmd';
-                                                borderClass = 'cmd-border';
-                                                unameClass = 'username cmd';
-                                                if(m.includes('[vote]')){
-                                                    badgeText = 'VOTE';
-                                                    badgeClass = 'vote';
-                                                    borderClass = 'vote-border';
-                                                    unameClass = 'username vote';
-                                                } else if(m.includes('[err]') || m.includes('[ban]') || m.includes('[warn]')){
-                                                    badgeText = 'ERR';
-                                                    badgeClass = 'err';
-                                                    borderClass = 'err-border';
-                                                    unameClass = 'username err';
-                                                } else if(m.includes('running:')){
-                                                    badgeText = 'EXEC';
-                                                    badgeClass = 'cmd';
-                                                    borderClass = 'cmd-border';
-                                                    unameClass = 'username cmd';
-                                                } else if(m.includes('[debug]')){
-                                                    badgeText = 'DBG';
-                                                    badgeClass = 'cmd';
-                                                    borderClass = 'cmd-border';
-                                                    unameClass = 'username cmd';
-                                                }
-                                            }
-                                            const div = document.createElement('div');
-                                            div.className = `msg-block ${borderClass}`;
-                                            div.innerHTML = `<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;
-                                            fragment.appendChild(div);
-                                            added = true;
-                                        } catch(err){}
-                                    }
-                                });
-                                if(added){
-                                    c.appendChild(fragment);
-                                    window.scrollTo(0, document.body.scrollHeight);
-                                    while(c.children.length > 20) c.removeChild(c.firstChild);
-                                }
-                            }
-                        }
-                    } finally {
-                        fetchingUpdates = false;
-                    }
-                }).catch(e => { fetchingUpdates = false; });
-            }, 1000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_stats = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');
-            html, body { background-color: rgba(0,0,0,0) !important; margin: 0; padding: 20px; overflow: hidden; font-family: 'Fira Code', Consolas, monospace; }
-            .stats-widget { background: rgba(20,20,25,0.85); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px 30px; display: inline-block; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
-            .stat-row { display: flex; align-items: center; justify-content: space-between; margin: 12px 0; gap: 40px; }
-            .stat-label { color: #a1a1aa; font-weight: bold; font-size: 16px; text-transform: uppercase; letter-spacing: 1px; }
-            .stat-value { color: #fff; font-weight: bold; font-size: 24px; text-shadow: 0 0 10px rgba(255,255,255,0.2); }
-            .stat-row.cmds .stat-value { color: #00E5FF; text-shadow: 0 0 10px rgba(0,229,255,0.3); }
-            .stat-row.views .stat-value { color: #3B82F6; text-shadow: 0 0 10px rgba(59,130,246,0.3); }
-            .stat-row.likes .stat-value { color: #10B981; text-shadow: 0 0 10px rgba(16,185,129,0.3); }
-            .stat-row.errs .stat-value { color: #EF4444; text-shadow: 0 0 10px rgba(239,68,68,0.3); }
-            .version-tag { font-size: 12px; color: #52525b; text-align: right; margin-top: 15px; font-weight: bold; border-top: 1px solid #3f3f46; padding-top: 10px; }
-        </style>
-    </head>
-    <body>
-        <div class="stats-widget">
-            <div class="stat-row">
-                <span class="stat-label">UPTIME</span>
-                <span class="stat-value" id="uptime">0d 0h 0m 0s</span>
-            </div>
-            <div class="stat-row views">
-                <span class="stat-label">VIEWERS</span>
-                <span class="stat-value" id="viewers">0</span>
-            </div>
-            <div class="stat-row likes">
-                <span class="stat-label">LIKES</span>
-                <span class="stat-label" id="likes">0</span>
-            </div>
-            <div class="stat-row cmds">
-                <span class="stat-label">CMDS EXECUTED</span>
-                <span class="stat-value" id="cmds">0</span>
-            </div>
-            <div class="stat-row errs">
-                <span class="stat-label">FAILED CMDS</span>
-                <span class="stat-value" id="failed">0</span>
-            </div>
-            <div class="version-tag">{{ version }}</div>
-        </div>
-        <script>
-            setInterval(function(){
-                fetch('/stats_data?t=' + Date.now())
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('uptime').innerText = data.uptime;
-                    document.getElementById('cmds').innerText = data.commands;
-                    document.getElementById('failed').innerText = data.failed;
-                    if(document.getElementById('viewers')) document.getElementById('viewers').innerText = data.viewers || "0";
-                    if(document.getElementById('likes')) document.getElementById('likes').innerText = data.likes || "0";
-                }).catch(e => {});
-            }, 1000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_ultrachat = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&display=swap');
-            body { 
-                background: transparent; 
-                color: #c9d1d9; 
-                font-family: 'Inter', Consolas, monospace; 
-                font-weight: 700; 
-                font-size: 18px; 
-                display: flex; 
-                flex-direction: column; 
-                justify-content: flex-end; 
-                height: 100vh; 
-                margin: 0; 
-                padding: 20px; 
-                overflow: hidden; 
-            }
-            .msg-row { margin: 4px 0; animation: slide 0.2s; }
-            .user-msg { display: flex; align-items: flex-start; margin-bottom: 6px; }
-            
-            .sys-box { 
-                background: rgba(20, 25, 20, 0.9); 
-                border-left: 4px solid #2ea043; 
-                border-radius: 6px; 
-                padding: 8px 12px; 
-                display: flex; 
-                align-items: center; 
-                margin-top: 4px; 
-                margin-bottom: 8px; 
-                max-width: 90%; 
-            }
-            .sys-box.blue { border-left-color: #3b82f6; background: rgba(20, 20, 30, 0.9); }
-            .sys-box.red { border-left-color: #f85149; background: rgba(30, 20, 20, 0.9); }
-            
-            .sys-label { color: #2ea043; margin-right: 8px; font-weight: 900; }
-            .sys-box.blue .sys-label { color: #3b82f6; }
-            .sys-box.red .sys-label { color: #f85149; }
-            
-            .u { color: #3fb950; margin-right: 8px; display: flex; align-items: center; font-weight: 900; }
-            .u.mod { color: #58a6ff; }
-            .u.owner { color: #e3b341; }
-            
-            .text { color: #8b949e; word-wrap: break-word; font-weight: 700; }
-            .user-msg .text { color: #c9d1d9; }
-            
-            .material-symbols-outlined { font-size: 20px; margin-right: 6px; }
-            
-            @keyframes slide { 
-                from { transform: translateX(20px); opacity: 0; } 
-                to { transform: translateX(0); opacity: 1; } 
-            }
-        </style>
-    </head>
-    <body>
-        <div id="c"></div>
-        <script>
-            let lid = -1;
-            setInterval(() => fetch('/history').then(r => r.json()).then(d => {
-                let c = document.getElementById('c');
-                let a = false;
-                d.forEach(m => {
-                    if(m.id > lid) {
-                        lid = m.id;
-                        let isSys = m.u.includes('[system]') || m.u.includes('[console]') || m.u.includes('[announcement]');
-                        let html = '';
-                        
-                        if(isSys) {
-                            let boxClass = 'sys-box';
-                            let label = 'System:';
-                            
-                            if(m.u.includes('[announcement]')) { 
-                                boxClass += ' blue'; 
-                                label = 'Announcement:'; 
-                            } else if(m.m.includes('[err]') || m.m.includes('error') || m.m.includes('failed')) { 
-                                boxClass += ' red'; 
-                                label = 'Error:'; 
-                            } else if(m.m.includes('vote')) { 
-                                boxClass += ' blue'; 
-                                label = 'Vote:'; 
-                            }
-                            
-                            let cleanMsg = m.m.replace('[err]', '').replace('[debug]', '').trim();
-                            html = `<div class='msg-row'><div class='${boxClass}'><span class='sys-label'>${label}</span><span class='text'>${cleanMsg}</span></div></div>`;
-                        } else {
-                            let icon = "<span class='material-symbols-outlined' style='color:#a1a1aa;'>person</span>";
-                            let uClass = "u";
-                            
-                            if(m.is_owner || m.u.toLowerCase().includes('reallyiron')) { 
-                                icon = "<span class='material-symbols-outlined' style='color:#e3b341;'>stars</span>"; 
-                                uClass = "u owner"; 
-                            } else if(m.is_admin) { 
-                                icon = "<span class='material-symbols-outlined' style='color:#58a6ff;'>local_police</span>"; 
-                                uClass = "u mod"; 
-                            }
-                            
-                            let uName = m.u.startsWith('@') ? m.u : '@' + m.u;
-                            html = `<div class='msg-row'><div class='user-msg'>${icon}<span class='${uClass}'>${uName}</span><span class='text'>${m.m}</span></div></div>`;
-                        }
-                        
-                        c.insertAdjacentHTML('beforeend', html);
-                        a = true;
-                    }
-                });
-                if(a) {
-                    while(c.children.length > 25) c.removeChild(c.firstChild);
-                    window.scrollTo(0, document.body.scrollHeight);
-                }
-            }), 1000);
-        </script>
-    </body>
-    </html>
-    """
-
-    html_announcement = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body { 
-                margin: 0; 
-                overflow: hidden; 
-                font-family: 'Segoe UI', sans-serif; 
-                display: flex; 
-                justify-content: center; 
-                align-items: flex-start; 
-                padding-top: 80px; 
-                background: transparent; 
-            }
-            .box { 
-                background: #333; 
-                border: 2px solid #555; 
-                padding: 2px; 
-                border-radius: 8px; 
-                transform: translateY(-250%); 
-                transition: transform 0.4s ease; 
-                box-shadow: 0 10px 20px rgba(0,0,0,0.5); 
-                max-width: 85%; 
-            }
-            .box.show { transform: translateY(0); }
-            .inner { 
-                background: #222; 
-                border-radius: 6px; 
-                padding: 20px 30px; 
-                text-align: center; 
-            }
-            .auth { 
-                color: #aaa; 
-                font-size: 16px; 
-                font-weight: bold; 
-                text-transform: uppercase; 
-                margin-bottom: 8px; 
-            }
-            .msg { 
-                color: #fff; 
-                font-size: 28px; 
-                font-weight: bold; 
-                word-wrap: break-word; 
-            }
-        </style>
-    </head>
-    <body>
-        <div id="box" class="box">
-            <div class="inner">
-                <div id="auth" class="auth"></div>
-                <div id="msg" class="msg"></div>
-            </div>
-        </div>
-        <script>
-            let last_id = 0;
-            setInterval(() => {
-                fetch('/get_announcement').then(r=>r.json()).then(d => {
-                    if(d.id > last_id){
-                        last_id = d.id;
-                        document.getElementById('auth').innerText = d.author + " announces:";
-                        document.getElementById('msg').innerText = d.message;
-                        let b = document.getElementById('box');
-                        b.classList.add('show');
-                        setTimeout(() => { b.classList.remove('show'); }, 5000);
-                    }
-                });
-            }, 1000);
-        </script>
-    </body>
-    </html>
-    """
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>chat controls</title><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">add one of these links to your obs browser source:</p><div class="grid"><a href="/obsnew"><div class="title">liquid glass chat (/obsnew)</div><div class="desc">sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">classic dark chat (/oldobsnew)</div><div class="desc">the og dark background modern chat.</div></a><a href="/ultrachat"><div class="title">ultra chat (/ultrachat)</div><div class="desc">pure text overlay with material 3 mod icons.</div></a><a href="/announcement"><div class="title">announcements (/announcement)</div><div class="desc">animated popup for server announcements.</div></a><a href="/stats"><div class="title">live stats (/stats)</div><div class="desc">viewers, likes, and uptime widget.</div></a><a href="/obs"><div class="title">legacy chat (/obs)</div><div class="desc">the original transparent overlay.</div></a></div></body></html>"""
+    html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
+    html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
+    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}.owner-icon{width:16px;height:16px;fill:#ffd700;vertical-align:-3px;margin-right:4px}.mod-icon{width:16px;height:16px;fill:#58a6ff;vertical-align:-3px;margin-right:4px}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block cmd-border';div.innerHTML=`<div class="badge cmd">SYS</div><div class="msg-content"><span class="username cmd">system</span> <span class="message">connected</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU='@'+cleanU;let badgeIcon="";if(i.is_owner||u.toLowerCase()==='reallyiron'){badgeIcon=`<svg class='owner-icon' viewBox='0 0 24 24'><path d='M5 16h14l-1.5-9-3.5 4-2-5-2 5-3.5-4L5 16zm0 2h14v2H5v-2z'/></svg>`;}else if(i.is_admin){badgeIcon=`<svg class='mod-icon' viewBox='0 0 24 24'><path d='M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z'/></svg>`;}displayU=badgeIcon+displayU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_stats = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
+    html_ultrachat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" /><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;700;900&display=swap');body{background:transparent;color:#c9d1d9;font-family:'Inter',Consolas,monospace;font-weight:700;font-size:18px;display:flex;flex-direction:column;justify-content:flex-end;height:100vh;margin:0;padding:20px;overflow:hidden}.msg-row{margin:4px 0;animation:slide 0.2s}.user-msg{display:flex;align-items:flex-start;margin-bottom:6px}.sys-box{background:rgba(20,25,20,0.9);border-left:4px solid #2ea043;border-radius:6px;padding:8px 12px;display:flex;align-items:center;margin-top:4px;margin-bottom:8px;max-width:90%}.sys-box.blue{border-left-color:#3b82f6;background:rgba(20,20,30,0.9)}.sys-box.red{border-left-color:#f85149;background:rgba(30,20,20,0.9)}.sys-label{color:#2ea043;margin-right:8px;font-weight:900}.sys-box.blue .sys-label{color:#3b82f6}.sys-box.red .sys-label{color:#f85149}.u{color:#3fb950;margin-right:8px;display:flex;align-items:center;font-weight:900}.u.mod{color:#58a6ff}.u.owner{color:#e3b341}.text{color:#8b949e;word-wrap:break-word;font-weight:700}.user-msg .text{color:#c9d1d9}.material-symbols-outlined{font-size:20px;margin-right:6px}@keyframes slide{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}</style></head><body><div id="c"></div><script>let lid=-1;setInterval(()=>fetch('/history').then(r=>r.json()).then(d=>{let c=document.getElementById('c');let a=false;d.forEach(m=>{if(m.id>lid){lid=m.id;let isSys=m.u.includes('[system]')||m.u.includes('[console]')||m.u.includes('[announcement]');let html='';if(isSys){let boxClass='sys-box';let label='System:';if(m.u.includes('[announcement]')){boxClass+=' blue';label='Announcement:';}else if(m.m.includes('[err]')||m.m.includes('error')||m.m.includes('failed')){boxClass+=' red';label='Error:';}else if(m.m.includes('vote')){boxClass+=' blue';label='Vote:';}let cleanMsg=m.m.replace('[err]','').replace('[debug]','').trim();html=`<div class='msg-row'><div class='${boxClass}'><span class='sys-label'>${label}</span><span class='text'>${cleanMsg}</span></div></div>`;}else{let icon="<span class='material-symbols-outlined' style='color:#a1a1aa;'>person</span>";let uClass="u";if(m.is_owner||m.u.toLowerCase().includes('reallyiron')){icon="<span class='material-symbols-outlined' style='color:#e3b341;'>stars</span>";uClass="u owner";}else if(m.is_admin){icon="<span class='material-symbols-outlined' style='color:#58a6ff;'>local_police</span>";uClass="u mod";}let uName=m.u.startsWith('@')?m.u:'@'+m.u;html=`<div class='msg-row'><div class='user-msg'>${icon}<span class='${uClass}'>${uName}</span><span class='text'>${m.m}</span></div></div>`;}c.insertAdjacentHTML('beforeend',html);a=true;}});if(a){while(c.children.length>25)c.removeChild(c.firstChild);window.scrollTo(0,document.body.scrollHeight);}}),1000);</script></body></html>"""
+    html_announcement = """<!DOCTYPE html><html><head><style>body{margin:0;overflow:hidden;font-family:'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:flex-start;padding-top:80px;background:transparent}.box{background:#333;border:2px solid #555;padding:2px;border-radius:8px;transform:translateY(-250%);transition:transform 0.4s ease;box-shadow:0 10px 20px rgba(0,0,0,0.5);max-width:85%}.box.show{transform:translateY(0)}.inner{background:#222;border-radius:6px;padding:20px 30px;text-align:center}.auth{color:#aaa;font-size:16px;font-weight:bold;text-transform:uppercase;margin-bottom:8px}.msg{color:#fff;font-size:28px;font-weight:bold;word-wrap:break-word}</style></head><body><div id="box" class="box"><div class="inner"><div id="auth" class="auth"></div><div id="msg" class="msg"></div></div></div><script>let last_id=0;setInterval(()=>{fetch('/get_announcement').then(r=>r.json()).then(d=>{if(d.id>last_id){last_id=d.id;document.getElementById('auth').innerText=d.author+" announces:";document.getElementById('msg').innerText=d.message;let b=document.getElementById('box');b.classList.add('show');setTimeout(()=>{b.classList.remove('show');},5000);}});},1000);</script></body></html>"""
 
     @obs_web_overlay_app.route('/')
-    def index_page():
-        return render_template_string(html_index)
-
+    def index_page(): return render_template_string(html_index)
     @obs_web_overlay_app.route('/obs')
-    def obs_overlay():
-        return render_template_string(html_template, padding=10)
-
+    def obs_overlay(): return render_template_string(html_template, padding=10)
     @obs_web_overlay_app.route('/obs2')
-    def obs_overlay2():
-        return render_template_string(html_template_2)
-
+    def obs_overlay2(): return render_template_string(html_template_2)
     @obs_web_overlay_app.route('/obsnew')
-    def obs_overlay_new():
-        return render_template_string(html_template_new)
-
+    def obs_overlay_new(): return render_template_string(html_template_new)
     @obs_web_overlay_app.route('/oldobsnew')
-    def obs_overlay_oldnew():
-        return render_template_string(html_template_oldnew)
-
-    @obs_web_overlay_app.route('/debugchat')
-    def obs_overlay_debugchat():
-        return render_template_string(html_basic)
-
+    def obs_overlay_oldnew(): return render_template_string(html_template_oldnew)
     @obs_web_overlay_app.route('/ultrachat')
-    def ultrachat_overlay():
-        return render_template_string(html_ultrachat)
-
+    def ultrachat_overlay(): return render_template_string(html_ultrachat)
     @obs_web_overlay_app.route('/announcement')
-    def announcement_overlay():
-        return render_template_string(html_announcement)
-
+    def announcement_overlay(): return render_template_string(html_announcement)
     @obs_web_overlay_app.route('/stats')
-    def stats_overlay():
-        return render_template_string(html_stats, version=version)
-
+    def stats_overlay(): return render_template_string(html_stats, version=version)
     @obs_web_overlay_app.route('/stats_data')
     def get_stats_data(): 
         uptime_sec = int(time.time() - script_start_time)
@@ -1236,47 +388,26 @@ if flask_available:
         h, r = divmod(r, 3600)
         m, s = divmod(r, 60)
         uptime_str = f"{d}d {h}h {m}m {s}s" if d > 0 else f"{h}h {m}m {s}s"
-        return jsonify({
-            "uptime": uptime_str,
-            "commands": total_commands_executed,
-            "failed": total_commands_failed,
-            "viewers": current_viewers,
-            "likes": current_likes
-        })
-
+        return jsonify({"uptime": uptime_str, "commands": total_commands_executed, "failed": total_commands_failed, "viewers": current_viewers, "likes": current_likes})
     @obs_web_overlay_app.route('/updates')
     def get_updates(): 
         with buffer_lock:
             data = list(messages_buffer)
             messages_buffer.clear()
         return jsonify(data)
-
     @obs_web_overlay_app.route('/history')
     def get_history(): 
-        with history_lock:
-            return jsonify(list(web_chat_history))
-
+        with history_lock: return jsonify(list(web_chat_history))
     @obs_web_overlay_app.route('/get_announcement')
-    def get_announcement_data():
-        return jsonify(announcement_data)
-
+    def get_announcement_data(): return jsonify(announcement_data)
     @obs_web_overlay_app.route('/status_update')
-    def get_status_update():
-        return jsonify({
-            "status": current_status,
-            "vote": current_vote_info,
-            "viewers": current_viewers,
-            "likes": current_likes,
-            "chat_visible": overlay_chat_visible,
-            "split_mode": split_overlay_mode
-        })
+    def get_status_update(): return jsonify({"status": current_status, "vote": current_vote_info, "viewers": current_viewers, "likes": current_likes, "chat_visible": overlay_chat_visible, "split_mode": split_overlay_mode})
 
 def start_flask():
     global flask_port
     if flask_available:
         try: 
-            if 'flask.cli' in sys.modules:
-                sys.modules['flask.cli'].show_server_banner = lambda *x: None
+            if 'flask.cli' in sys.modules: sys.modules['flask.cli'].show_server_banner = lambda *x: None
             if platform.system() == "Windows":
                 try:
                     out = subprocess.check_output("netstat -ano", shell=True).decode()
@@ -1286,17 +417,14 @@ def start_flask():
                             if pid.isdigit() and int(pid) > 0 and int(pid) != os.getpid():
                                 subprocess.call(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                 time.sleep(0.5) 
-                except Exception:
-                    pass
+                except Exception: pass
             for port in range(flask_port, flask_port + 10):
                 try:
                     flask_port = port
                     obs_web_overlay_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False, threaded=True)
                     break
-                except OSError:
-                    continue
-        except Exception:
-            pass
+                except OSError: continue
+        except Exception: pass
 
 class ChatPlaysApp:
     def __init__(self, root):
@@ -1321,7 +449,6 @@ class ChatPlaysApp:
             self.config = self.load_settings()
             
             self.cmd_queue = queue.Queue()
-            self.ultra_speed = self.config.get("ultra_speed", False)
             
             global vm_name, keyboard_layout, vbox_manage_cmd
             vm_name = self.config.get("vm_name", vm_name)
@@ -1330,6 +457,7 @@ class ChatPlaysApp:
             self.command_prefix = self.config.get("command_prefix", "!")
             self.custom_commands = self.config.get("custom_commands", {})
             self.app_name = self.config.get("app_name", "YT2VM")
+            self.ultra_speed = self.config.get("ultra_speed", False)
 
             self.root.title(f"{self.app_name} {version}: {vm_name}")
             x_cood = int((self.root.winfo_screenwidth()/2) - (1150/2))
@@ -1347,16 +475,12 @@ class ChatPlaysApp:
                     style = ctypes.windll.user32.GetWindowLongW(hwnd, -16)
                     ctypes.windll.user32.SetWindowLongW(hwnd, -16, style & ~0x00C00000)
                     ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int))
-                except Exception:
-                    pass
+                except Exception: pass
             elif platform.system() == "Darwin":
                 self.root.overrideredirect(False)
-                try:
-                    self.root.wm_attributes('-titlebar', 0)
-                except Exception:
-                    pass
-            else:
-                self.root.overrideredirect(True)
+                try: self.root.wm_attributes('-titlebar', 0)
+                except Exception: pass
+            else: self.root.overrideredirect(True)
 
             self.root.option_add('*TCombobox*Listbox.background', '#18181B')
             self.root.option_add('*TCombobox*Listbox.foreground', 'white')
@@ -1364,8 +488,7 @@ class ChatPlaysApp:
             self.root.option_add('*TCombobox*Listbox.selectForeground', 'black')
 
             style = ttk.Style()
-            if platform.system() == "Darwin" and "aqua" in style.theme_names():
-                style.theme_use("aqua")
+            if platform.system() == "Darwin" and "aqua" in style.theme_names(): style.theme_use("aqua")
             elif "clam" in style.theme_names():
                 style.theme_use("clam")
                 style.configure("TCombobox", fieldbackground="#09090B", background="#27272A", foreground="white", bordercolor="#27272A", arrowcolor="white")
@@ -1418,78 +541,59 @@ class ChatPlaysApp:
                 try:
                     with open(snap_file, "r") as f:
                         saved_snap = f.read().strip()
-                        if saved_snap:
-                            self.current_snapshot = saved_snap
-                except Exception:
-                    pass
+                        if saved_snap: self.current_snapshot = saved_snap
+                except Exception: pass
 
             if not self.current_snapshot:
                 snaps_found = get_vbox_snapshots(vbox_manage_cmd, vm_name)
-                if snaps_found:
-                    self.current_snapshot = snaps_found[-1]
+                if snaps_found: self.current_snapshot = snaps_found[-1]
 
             self.vbox = None
             self.mgr = None
 
             if vbox_pkg == "virtualbox":
-                try:
-                    self.vbox = virtualbox.VirtualBox()
-                except Exception:
-                    pass
+                try: self.vbox = virtualbox.VirtualBox()
+                except Exception: pass
             elif vbox_pkg == "vboxapi":
                 try:
                     self.mgr = VirtualBoxManager(None, None)
                     self.vbox = self.mgr.getVirtualBox()
-                except Exception:
-                    pass
+                except Exception: pass
 
-            try:
-                set_obs_scene(obs_scene_main) 
-            except Exception:
-                pass
+            try: set_obs_scene(obs_scene_main) 
+            except Exception: pass
                 
             self.build_unified_dashboard()
             self.start_app_threads()
-            
-            if self.twenty_four_seven_mode and self.active_url:
-                self.go_live()
-                
+            if self.twenty_four_seven_mode and self.active_url: self.go_live()
             self.root.after(refresh_rate, self.process_ui_queue)
-            
         except Exception as e:
             err_msg = f"[error] init crashed: {e}"
             print(err_msg + f"\n{traceback.format_exc()}")
-            try:
-                messagebox.showerror("error", err_msg)
-            except Exception:
-                pass
+            try: messagebox.showerror("error", err_msg)
+            except: pass
 
     def build_custom_titlebar(self):
         self.title_bar = tk.Frame(self.root, bg="#000000", relief="flat", bd=0, height=35)
         self.title_bar.pack(expand=0, fill="x", side="top")
         self.title_bar.pack_propagate(False)
-        
         self.title_label = tk.Label(self.title_bar, text=f"{self.app_name} {version}", bg="#000000", fg=self.accent_main, font=("segoe ui", 10, "bold"))
         self.title_label.pack(side="left", pady=4, padx=15)
-        
         self.close_btn = tk.Label(self.title_bar, text="X", bg="#000000", fg="#ffffff", font=("segoe ui", 12, "bold"), width=5, cursor="hand2", anchor="center")
         self.close_btn.pack(side="right", fill="y")
         self.close_btn.bind("<Button-1>", lambda e: self.on_closing())
         self.close_btn.bind("<Enter>", lambda e: self.close_btn.config(bg="#ef4444"))
         self.close_btn.bind("<Leave>", lambda e: self.close_btn.config(bg="#000000"))
-        
         self.max_btn = tk.Label(self.title_bar, text="+", bg="#000000", fg="#ffffff", font=("segoe ui", 14, "bold"), width=5, cursor="hand2", anchor="center")
         self.max_btn.pack(side="right", fill="y")
         self.max_btn.bind("<Button-1>", self.toggle_maximize)
         self.max_btn.bind("<Enter>", lambda e: self.max_btn.config(bg="#3f3f46"))
         self.max_btn.bind("<Leave>", lambda e: self.max_btn.config(bg="#000000"))
-        
         self.min_btn = tk.Label(self.title_bar, text="-", bg="#000000", fg="#ffffff", font=("segoe ui", 12, "bold"), width=5, cursor="hand2", anchor="center")
         self.min_btn.pack(side="right", fill="y")
         self.min_btn.bind("<Button-1>", lambda e: self.minimize())
         self.min_btn.bind("<Enter>", lambda e: self.min_btn.config(bg="#3f3f46"))
         self.min_btn.bind("<Leave>", lambda e: self.min_btn.config(bg="#000000"))
-        
         self.title_bar.bind("<B1-Motion>", self.move_window)
         self.title_bar.bind("<Button-1>", self.get_pos)
         self.title_label.bind("<B1-Motion>", self.move_window)
@@ -1513,48 +617,30 @@ class ChatPlaysApp:
             self.is_maximized = False
         self.root.geometry(f"+{event.x_root - self.xwin}+{event.y_root - self.ywin}")
 
-    def minimize(self):
-        self.root.iconify()
+    def minimize(self): self.root.iconify()
 
     def load_settings(self):
         all_vms = get_all_vbox_vms(vbox_manage_cmd)
         default_vm = all_vms[instance_id - 1] if (all_vms and len(all_vms) >= instance_id) else (all_vms[0] if all_vms else "Windows10ChatVm")
         default_config = {
-            "youtube_url": "",
-            "vm_name": default_vm,
-            "vbox_path": vbox_manage_cmd,
-            "auto_start": False,
-            "enable_chat": True,
-            "strict_live_check": True,
-            "keyboard_layout": "US",
-            "command_prefix": "!",
-            "stats_interval": 15,
-            "typing_speed": 0.015,
-            "key_delay": 0.015,
-            "mouse_delay": 0.005,
-            "max_wait_time": 20.0,
-            "enable_starting_scene": True,
-            "app_name": "YT2VM",
-            "ultra_speed": False,
-            "show_scancodes": False,
-            "custom_commands": {}
+            "youtube_url": "", "vm_name": default_vm, "vbox_path": vbox_manage_cmd, "auto_start": False,
+            "enable_chat": True, "strict_live_check": True, "keyboard_layout": "US", "command_prefix": "!",
+            "stats_interval": 15, "typing_speed": 0.015, "key_delay": 0.015, "mouse_delay": 0.005,
+            "max_wait_time": 20.0, "enable_starting_scene": True, "app_name": "YT2VM", "ultra_speed": False, 
+            "show_scancodes": False, "custom_commands": {}
         }
         if os.path.exists(settings_file):
             try:
-                with open(settings_file, "r") as f:
-                    default_config.update(json.load(f))
-            except Exception:
-                pass
+                with open(settings_file, "r") as f: default_config.update(json.load(f))
+            except Exception: pass
         return default_config
 
     def save_settings(self):
         try:
             tmp_file = settings_file + ".tmp"
-            with open(tmp_file, "w") as f:
-                json.dump(self.config, f, indent=4)
+            with open(tmp_file, "w") as f: json.dump(self.config, f, indent=4)
             os.replace(tmp_file, settings_file)
-        except Exception:
-            pass
+        except Exception: pass
 
     def trigger_command(self, action_tuple):
         if self.cmd_queue.qsize() > 200:
@@ -1568,12 +654,10 @@ class ChatPlaysApp:
             self.log("[system]", "[warn] macro dropped: system overloaded", "err")
             self.force_session_refresh = True
             return
-        for action in action_chain:
-            self.cmd_queue.put(action)
+        for action in action_chain: self.cmd_queue.put(action)
 
     def clear_commands(self):
-        with self.cmd_queue.mutex:
-            self.cmd_queue.queue.clear()
+        with self.cmd_queue.mutex: self.cmd_queue.queue.clear()
 
     def on_closing(self):
         self.running = False
@@ -1587,38 +671,28 @@ class ChatPlaysApp:
             if not os.path.exists(allmsglogs_file):
                 messagebox.showinfo("extract", "no messages logged yet.")
                 return
-            save_path = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                initialfile="extracted_messages.txt",
-                title="save extracted messages",
-                filetypes=[("text files", "*.txt")]
-            )
-            if not save_path:
-                return
+            save_path = filedialog.asksaveasfilename(defaultextension=".txt", initialfile="extracted_messages.txt", title="save extracted messages", filetypes=[("text files", "*.txt")])
+            if not save_path: return
             count = 0
             with open(save_path, "w", encoding="utf-8") as out_f:
                 with open(allmsglogs_file, "r", encoding="utf-8") as in_f:
                     for line in in_f:
                         line = line.strip()
-                        if not line or line in ["[", "]"]:
-                            continue
+                        if not line or line in ["[", "]"]: continue
                         try:
                             entry = json.loads(line.rstrip(","))
                             out_f.write(f"[{entry.get('time', '')}] {entry.get('username', '')}: {entry.get('message', '')}\n")
                             count += 1
-                        except:
-                            pass
+                        except: pass
             self.log("[system]", f"extracted {count} messages to {save_path}", "sysmsg")
             messagebox.showinfo("success", f"extracted {count} messages!")
-        except Exception as e:
-            self.log("[system]", f"[error] extract failed: {e}", "err")
+        except Exception as e: self.log("[system]", f"[error] extract failed: {e}", "err")
 
     def spawn_multistream(self, suffix_id=""):
         try:
             self.log("[system]", f"[debug] spawning multi-stream instance {suffix_id}...", "sysmsg")
             script_path = os.path.abspath(sys.argv[0])
-            base_dir = os.path.dirname(script_path)
-            base_name = os.path.basename(script_path)
+            base_dir, base_name = os.path.dirname(script_path), os.path.basename(script_path)
             name, ext = os.path.splitext(base_name)
             multi_script_path = os.path.join(base_dir, f"{name}_multi{suffix_id}{ext}")
             try:
@@ -1628,10 +702,8 @@ class ChatPlaysApp:
                 self.log("[system]", f"[error] failed to copy script: {e}. using original.", "err")
                 multi_script_path = script_path
             args = [sys.executable, multi_script_path, f"--multistream{suffix_id}"]
-            if platform.system() == "Windows":
-                subprocess.Popen(args, creationflags=0x00000010, close_fds=True)
-            else:
-                subprocess.Popen(args, start_new_session=True, close_fds=True)
+            if platform.system() == "Windows": subprocess.Popen(args, creationflags=0x00000010, close_fds=True)
+            else: subprocess.Popen(args, start_new_session=True, close_fds=True)
             self.log("[system]", f"[debug] successfully spawned instance {suffix_id}!", "sysmsg")
         except Exception as e:
             err_msg = f"[error] spawn_multistream crashed: {e}"
@@ -1643,7 +715,6 @@ class ChatPlaysApp:
         try:
             self.tabview = ttk.Notebook(self.root, style="TNotebook")
             self.tabview.pack(fill="both", expand=True, padx=10, pady=(10, 10))
-            
             self.tab_dash = ttk.Frame(self.tabview, style="TFrame")
             self.tab_vbox = ttk.Frame(self.tabview, style="TFrame")
             self.tab_cmds = ttk.Frame(self.tabview, style="TFrame")
@@ -1662,7 +733,6 @@ class ChatPlaysApp:
             dash_left.pack(side="left", fill="both", expand=False, padx=20, pady=20)
             dash_right = ttk.Frame(self.tab_dash, style="TFrame")
             dash_right.pack(side="right", fill="both", expand=True, padx=(0, 20), pady=20)
-            
             def create_card(parent, title):
                 border = tk.Frame(parent, bg="#27272A", bd=0)
                 border.pack(fill="x", pady=(0, 20))
@@ -1702,8 +772,7 @@ class ChatPlaysApp:
             self.lbl_likes_val.grid(row=3, column=1, sticky="e", pady=4)
             
             actions_card = create_card(dash_left, "SYSTEM CONTROLS")
-            def quick_cmd(c, a=""):
-                self.trigger_command((c, a, "[console]"))
+            def quick_cmd(c, a=""): self.trigger_command((c, a, "[console]"))
             btn_grid = tk.Frame(actions_card, bg="#18181B")
             btn_grid.pack(fill="x", padx=10, pady=(0, 15))
             btn_grid.columnconfigure(0, weight=1)
@@ -1758,13 +827,11 @@ class ChatPlaysApp:
                     refresh_vms()
                     
             tk.Button(path_frame, text="Browse", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=browse_vbox).pack(side="left", ipady=5, ipadx=15)
-            
             tk.Label(vbox_content, text="Target VM Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=15, padx=(0, 20))
             vm_frame = tk.Frame(vbox_content, bg="#18181B")
             vm_frame.grid(row=2, column=1, sticky="w", pady=15)
             self.cb_vm_new = ttk.Combobox(vm_frame, width=45, state="readonly", font=("Segoe UI", 11))
             self.cb_vm_new.pack(side="left", padx=(0, 10))
-            
             tk.Label(vbox_content, text="Target Snapshot", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=15, padx=(0, 20))
             snap_frame = tk.Frame(vbox_content, bg="#18181B")
             snap_frame.grid(row=3, column=1, sticky="w", pady=15)
@@ -1780,10 +847,8 @@ class ChatPlaysApp:
                     self.cb_snap_new.set("")
                 else:
                     self.cb_snap_new['values'] = snaps
-                    if self.current_snapshot in snaps:
-                        self.cb_snap_new.set(self.current_snapshot)
-                    else:
-                        self.cb_snap_new.set(snaps[-1])
+                    if self.current_snapshot in snaps: self.cb_snap_new.set(self.current_snapshot)
+                    else: self.cb_snap_new.set(snaps[-1])
                         
             tk.Button(snap_frame, text="Refresh", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=refresh_snaps).pack(side="left", ipady=5, ipadx=15)
             
@@ -1792,16 +857,13 @@ class ChatPlaysApp:
                 if vms:
                     self.cb_vm_new['values'] = vms
                     current_conf = self.config.get("vm_name")
-                    if current_conf in vms:
-                        self.cb_vm_new.set(current_conf)
-                    else:
-                        self.cb_vm_new.set(vms[0])
+                    if current_conf in vms: self.cb_vm_new.set(current_conf)
+                    else: self.cb_vm_new.set(vms[0])
                 refresh_snaps()
                 
             tk.Button(vm_frame, text="Refresh", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=refresh_vms).pack(side="left", ipady=5, ipadx=15)
             refresh_vms()
             self.cb_vm_new.bind("<<ComboboxSelected>>", refresh_snaps)
-            
             tk.Button(vbox_content, text="Save VM Configuration", font=("Segoe UI", 11, "bold"), bg="#10B981", fg="#000000", activebackground="#059669", activeforeground="#000000", bd=0, cursor="hand2", command=self.save_vbox_settings).grid(row=8, column=1, sticky="w", pady=40, ipady=8, ipadx=20)
             
             self.build_commands_tab()
@@ -1828,64 +890,49 @@ class ChatPlaysApp:
             tk.Label(sett_left, text="Keyboard Layout", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_layout_new = ttk.Combobox(sett_left, values=available_layouts, width=30, state="readonly", font=("Segoe UI", 11))
             self.cb_layout_new.grid(row=2, column=1, sticky="w", pady=10)
-            if self.config.get("keyboard_layout") in available_layouts:
-                self.cb_layout_new.set(self.config["keyboard_layout"])
-            else:
-                self.cb_layout_new.set("US")
+            if self.config.get("keyboard_layout") in available_layouts: self.cb_layout_new.set(self.config["keyboard_layout"])
+            else: self.cb_layout_new.set("US")
                 
             self.var_auto_new = tk.BooleanVar(value=self.config.get("auto_start", False))
             ttk.Checkbutton(sett_left, text="Auto-start VM on launch", variable=self.var_auto_new, style="Toggle.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
-            
             self.var_chat_new = tk.BooleanVar(value=self.config.get("enable_chat", True))
             ttk.Checkbutton(sett_left, text="Enable chat listener", variable=self.var_chat_new, style="Toggle.TCheckbutton").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
-            
             self.say_admin_var = tk.BooleanVar(value=self.say_admin_only)
             ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
-            
             self.var_starting_scene = tk.BooleanVar(value=self.config.get("enable_starting_scene", True))
             ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
-            
             self.var_strict_live = tk.BooleanVar(value=self.config.get("strict_live_check", True))
             ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
-            
             self.var_scancodes_new = tk.BooleanVar(value=self.config.get("show_scancodes", False))
             ttk.Checkbutton(sett_left, text="Show Scancodes in UI / Ultrachat", variable=self.var_scancodes_new, style="Toggle.TCheckbutton").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
-            
             tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=9, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "c2vm", "ycpv", "ytpvm"], width=30, state="readonly", font=("Segoe UI", 11))
             self.cb_app_name.grid(row=9, column=1, sticky="w", pady=10)
             self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
             
             tk.Label(sett_right, text="PERFORMANCE & TIMINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg="#10B981").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
-            
             self.var_ultra_speed = tk.BooleanVar(value=self.config.get("ultra_speed", False))
             ttk.Checkbutton(sett_right, text="ULTRA SPEED MODE (Zero Delay)", variable=self.var_ultra_speed, style="Toggle.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
-            
             tk.Label(sett_right, text="Stats Update Interval (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_stats_int = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
             self.entry_stats_int.grid(row=2, column=1, sticky="w", pady=10, ipady=5)
             self.entry_stats_int.insert(0, str(self.config.get("stats_interval", 15)))
-            
             tk.Label(sett_right, text="Typing Speed (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=3, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_type_spd = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
             self.entry_type_spd.grid(row=3, column=1, sticky="w", pady=10, ipady=5)
             self.entry_type_spd.insert(0, str(self.config.get("typing_speed", 0.015)))
-            
             tk.Label(sett_right, text="Key Press Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=4, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_key_del = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
             self.entry_key_del.grid(row=4, column=1, sticky="w", pady=10, ipady=5)
             self.entry_key_del.insert(0, str(self.config.get("key_delay", 0.015)))
-            
             tk.Label(sett_right, text="Mouse Click Delay (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=5, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_mouse_del = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
             self.entry_mouse_del.grid(row=5, column=1, sticky="w", pady=10, ipady=5)
             self.entry_mouse_del.insert(0, str(self.config.get("mouse_delay", 0.005)))
-            
             tk.Label(sett_right, text="Max !wait Time (s)", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=6, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_max_wait = tk.Entry(sett_right, width=15, font=("Consolas", 12), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor="#10B981", justify="center")
             self.entry_max_wait.grid(row=6, column=1, sticky="w", pady=10, ipady=5)
             self.entry_max_wait.insert(0, str(self.config.get("max_wait_time", 20.0)))
-            
             btn_save_frame = tk.Frame(sett_content, bg="#18181B")
             btn_save_frame.pack(fill="x", pady=(20, 0))
             tk.Button(btn_save_frame, text="SAVE ALL SETTINGS", font=("Segoe UI", 11, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.save_general_settings).pack(ipady=8, ipadx=40)
@@ -2190,7 +1237,7 @@ class ChatPlaysApp:
         self.config["echo_commands"] = self.echo_commands
         self.save_settings()
         state = "ON" if self.echo_commands else "OFF"
-        self.log("[system]", f"Action echo is now {state}", "sysmsg")
+        self.log("[system]", f"action echo is now {state}", "sysmsg")
 
     def cycle_layout(self):
         global keyboard_layout
@@ -2772,13 +1819,14 @@ class ChatPlaysApp:
             try:
                 subprocess.run(["taskkill", "/F", "/IM", "VirtualBoxVM.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
                 subprocess.run(["taskkill", "/F", "/IM", "VirtualBox.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                subprocess.run(["taskkill", "/F", "/IM", "VBoxSVC.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
             except Exception as ex:
                 self.log("[system]", f"[error] taskkill failed: {ex}", "err")
         time.sleep(2)
 
     def _start_vm_safely(self):
         if self.config.get("enable_starting_scene", True):
-            set_obs_scene(OBS_SCENE_STARTING)
+            set_obs_scene(obs_scene_starting)
         self.log("[system]", f"[debug] executing startvm for {vm_name}...", "sysmsg")
         success = False
         err_text = ""
@@ -3020,8 +2068,8 @@ class ChatPlaysApp:
 
             def handle_input_error(err_obj, action="input"):
                 self.force_session_refresh = True
-                self.log("[system]", f"[error] com lost during {action}: {err_obj}", "err")
-                console_log("ERROR", f"input com error: {err_obj}\n{traceback.format_exc()}")
+                self.log("[system]", f"[warn] com lost during {action} ({err_obj}). rebuilding immediately...", "err")
+                console_log("ERROR", f"input com error: {err_obj}")
                 raise Exception("ABORT")
 
             def safe_put_scancodes(codes):

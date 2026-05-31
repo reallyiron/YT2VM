@@ -164,6 +164,26 @@ for path in possible_paths:
         vbox_manage_cmd = path
         break
 
+def get_all_vbox_vms(vbox_path="VBoxManage"):
+    vms = []
+    try:
+        res = subprocess.run([vbox_path, "list", "vms"], capture_output=True, text=True, timeout=2)
+        for line in res.stdout.splitlines():
+            if '"' in line: vms.append(line.split('"')[1])
+    except Exception: pass
+    return vms if vms else ["Windows10ChatVm", "Windows8ChatVm"]
+
+def get_vbox_snapshots(vbox_path, vm_name):
+    snaps = []
+    try:
+        res = subprocess.run([vbox_path, "snapshot", vm_name, "list"], capture_output=True, text=True, timeout=2)
+        for line in res.stdout.splitlines():
+            if "Name:" in line and "(UUID:" in line:
+                part = line.split("Name:")[1].split("(UUID:")[0].strip()
+                if part: snaps.append(part)
+    except Exception: pass
+    return snaps
+
 default_blocked_terms = [] 
 banned_words = []
 custom_commands = {}

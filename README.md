@@ -4,7 +4,7 @@ The project is finally out!
 
 # What does it do?
 
-E
+Parses your YouTube Live Chat to commands and inject them to Virtualbox VM (script is wrong btw the owner said its for vmware)😭
 
 # Installation and Dependencies
 

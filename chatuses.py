@@ -1,3 +1,4 @@
+# Pytchat signal fix for running inside threads
 import signal as _signal_module
 import threading as _threading_module
 _orig_signal = _signal_module.signal
@@ -13,6 +14,7 @@ import urllib.request, urllib.error, urllib.parse
 from ctypes import wintypes
 sys.coinit_flags = 0
 
+# Hide the annoying VirtualBox COM warning from the black terminal
 class _StderrFilter:
     def __init__(self, orig): self.orig = orig
     def write(self, msg):
@@ -58,7 +60,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "v41.1.clean_pure_vbox"
+version = "v44.0.chaos_engine"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 settings_file = f"settings{suffix}.json"
@@ -176,10 +178,8 @@ def get_vbox_snapshots(vbox_path, vm_name):
     return snaps
 
 available_vms = get_all_vbox_vms(vbox_manage_cmd)
-vm_name = "Windows10ChatVm"
-if available_vms:
-    if len(available_vms) >= instance_id: vm_name = available_vms[instance_id - 1]
-    else: vm_name = available_vms[0]
+
+vm_name = "Windows10ChatVm" 
 
 default_blocked_terms = [] 
 banned_words = []
@@ -354,13 +354,13 @@ if flask_available:
         return jsonify(data)
     @obs_web_overlay_app.route('/debug_data')
     def get_debug_data():
-        qsize = "REMOVED"
         comstate = "FALSE"
         threads = threading.active_count()
         rebuild_sec = 0
         if 'main_gui_application' in globals():
             comstate = "TRUE" if getattr(main_gui_application, 'shared_kb', None) else "FALSE"
-        return jsonify({"qsize": qsize, "comstate": comstate, "threads": threads, "rebuild": f"{rebuild_sec}s ago", "failed": total_commands_failed})
+            rebuild_sec = int(time.time() - getattr(main_gui_application, 'last_com_rebuild_time', time.time()))
+        return jsonify({"qsize": "UNLIMITED", "comstate": comstate, "threads": threads, "rebuild": f"{rebuild_sec}s ago", "failed": total_commands_failed})
     @obs_web_overlay_app.route('/history')
     def get_history(): 
         with history_lock: return jsonify(list(web_chat_history))
@@ -409,6 +409,9 @@ class ChatPlaysApp:
             self.maintenance_lock = threading.Lock()
             self.maintenance_gen = 0
             self.recent_bot_messages = collections.deque(maxlen=50)
+            self.cancel_macros = False
+            
+            # LOAD ISOLATED SETTINGS FIRST
             self.config = self.load_settings()
             
             self.last_queue_warn_time = 0
@@ -418,10 +421,12 @@ class ChatPlaysApp:
             self._last_status = ""
             
             self.ultra_speed = self.config.get("ultra_speed", False)
+            self.enable_ocr = self.config.get("enable_ocr", False)
             self.log_queue = queue.Queue(maxsize=300)
             
             global vm_name, keyboard_layout, vbox_manage_cmd
             
+            # ENFORCE EXACT JSON VM NAME (No array guessing!)
             vm_name = self.config.get("vm_name", vm_name)
             keyboard_layout = self.config.get("keyboard_layout", keyboard_layout)
             vbox_manage_cmd = self.config.get("vbox_path", vbox_manage_cmd).strip().strip('"').strip("'")
@@ -526,18 +531,25 @@ class ChatPlaysApp:
 
     def load_settings(self):
         all_vms = get_all_vbox_vms(vbox_manage_cmd)
-        default_vm = all_vms[instance_id - 1] if (all_vms and len(all_vms) >= instance_id) else (all_vms[0] if all_vms else "Windows10ChatVm")
+        # Smart First-Time Boot Fallback (Only used if JSON doesn't exist yet)
+        fallback_vm = all_vms[instance_id - 1] if (all_vms and len(all_vms) >= instance_id) else (all_vms[0] if all_vms else "Windows10ChatVm")
+        
         default_config = {
-            "youtube_url": "", "vm_name": default_vm, "vbox_path": vbox_manage_cmd, "auto_start": False,
+            "youtube_url": "", "vm_name": fallback_vm, "vbox_path": vbox_manage_cmd, "auto_start": False,
             "enable_chat": True, "strict_live_check": True, "keyboard_layout": "US", "command_prefix": "!",
             "stats_interval": 15, "typing_speed": 0.015, "key_delay": 0.015, "mouse_delay": 0.005,
             "max_wait_time": 20.0, "enable_starting_scene": True, "app_name": "YT2VM", "ultra_speed": False, 
-            "custom_commands": {}
+            "enable_ocr": False, "custom_commands": {}
         }
+        
+        # Hard load isolated settings for this specific multi-stream
         if os.path.exists(settings_file):
             try:
-                with open(settings_file, "r") as f: default_config.update(json.load(f))
+                with open(settings_file, "r") as f: 
+                    saved_data = json.load(f)
+                    default_config.update(saved_data)
             except Exception: pass
+            
         return default_config
 
     def save_settings(self):
@@ -547,34 +559,35 @@ class ChatPlaysApp:
             os.replace(tmp_file, settings_file)
         except Exception: pass
 
+    def _async_cmd_runner(self, action_chain):
+        try:
+            if 'pythoncom' in sys.modules: pythoncom.CoInitialize()
+        except: pass
+        
+        for action in action_chain:
+            if getattr(self, 'cancel_macros', False): break
+            cmd_type, arg, user = action
+            if cmd_type == "wait":
+                try:
+                    w_time = min(float(arg), 3600.0)
+                    if w_time > 0: time.sleep(w_time)
+                except Exception: pass
+            else:
+                self.run_cmd_worker(action)
+                
+        try:
+            if 'pythoncom' in sys.modules: pythoncom.CoUninitialize()
+        except: pass
+
     def trigger_command(self, action_tuple):
-        def thread_worker():
-            try:
-                if 'pythoncom' in sys.modules: pythoncom.CoInitialize()
-            except: pass
-            self.run_cmd_worker(action_tuple)
-        threading.Thread(target=thread_worker, daemon=True).start()
+        threading.Thread(target=self._async_cmd_runner, args=([action_tuple],), daemon=True).start()
 
     def trigger_command_chain(self, action_chain):
-        if len(action_chain) >= 4:
-            self.log("[system]", f"[info] executing macro sequence ({len(action_chain)} steps)", "sysmsg")
-            
-        def process_macro():
-            try:
-                if 'pythoncom' in sys.modules: pythoncom.CoInitialize()
-            except: pass
-            for action in action_chain:
-                cmd_type, arg, user = action
-                if cmd_type == "wait":
-                    try: time.sleep(min(float(arg), 3600.0))
-                    except: pass
-                else:
-                    self.run_cmd_worker(action)
-
-        threading.Thread(target=process_macro, daemon=True).start()
+        threading.Thread(target=self._async_cmd_runner, args=(action_chain,), daemon=True).start()
 
     def clear_commands(self):
-        pass
+        self.cancel_macros = True
+        self.root.after(2000, lambda: setattr(self, 'cancel_macros', False))
 
     def on_closing(self):
         self.running = False
@@ -782,30 +795,42 @@ class ChatPlaysApp:
             sett_left.pack(side="left", fill="both", expand=True, padx=(0, 10))
             sett_right = tk.Frame(sett_cols, bg="#18181B")
             sett_right.pack(side="right", fill="both", expand=True, padx=(10, 0))
+            
             tk.Label(sett_left, text="GENERAL SETTINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg=self.accent_main).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
             tk.Label(sett_left, text="Command Prefix", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=1, column=0, sticky="e", pady=10, padx=(0, 20))
             self.entry_prefix_new = tk.Entry(sett_left, width=15, font=("Consolas", 13), bg="#09090B", fg="white", insertbackground="white", bd=0, highlightthickness=1, highlightbackground="#27272A", highlightcolor=self.accent_main, justify="center")
             self.entry_prefix_new.grid(row=1, column=1, sticky="w", pady=10, ipady=5)
             self.entry_prefix_new.insert(0, str(self.config.get("command_prefix", "!")))
+            
             tk.Label(sett_left, text="Keyboard Layout", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=2, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_layout_new = ttk.Combobox(sett_left, values=available_layouts, width=30, state="readonly", font=("Segoe UI", 11))
             self.cb_layout_new.grid(row=2, column=1, sticky="w", pady=10)
             if self.config.get("keyboard_layout") in available_layouts: self.cb_layout_new.set(self.config["keyboard_layout"])
             else: self.cb_layout_new.set("US")
+            
             self.var_auto_new = tk.BooleanVar(value=self.config.get("auto_start", False))
             ttk.Checkbutton(sett_left, text="Auto-start VM on launch", variable=self.var_auto_new, style="Toggle.TCheckbutton").grid(row=3, column=0, columnspan=2, sticky="w", pady=6)
+            
             self.var_chat_new = tk.BooleanVar(value=self.config.get("enable_chat", True))
             ttk.Checkbutton(sett_left, text="Enable chat listener", variable=self.var_chat_new, style="Toggle.TCheckbutton").grid(row=4, column=0, columnspan=2, sticky="w", pady=6)
+            
             self.say_admin_var = tk.BooleanVar(value=self.say_admin_only)
             ttk.Checkbutton(sett_left, text="Require Admin for !say", variable=self.say_admin_var, command=self.update_say_admin, style="Toggle.TCheckbutton").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
+            
             self.var_starting_scene = tk.BooleanVar(value=self.config.get("enable_starting_scene", True))
             ttk.Checkbutton(sett_left, text="Enable 'Starting' OBS Scene", variable=self.var_starting_scene, style="Toggle.TCheckbutton").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
+            
             self.var_strict_live = tk.BooleanVar(value=self.config.get("strict_live_check", True))
             ttk.Checkbutton(sett_left, text="Strict Live Check (Only connect if currently LIVE)", variable=self.var_strict_live, style="Toggle.TCheckbutton").grid(row=7, column=0, columnspan=2, sticky="w", pady=6)
-            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=8, column=0, sticky="e", pady=10, padx=(0, 20))
+            
+            self.var_ocr = tk.BooleanVar(value=self.config.get("enable_ocr", False))
+            ttk.Checkbutton(sett_left, text="Auto-Restart on iPXE Screen (OCR - Needs pytesseract)", variable=self.var_ocr, style="Toggle.TCheckbutton").grid(row=8, column=0, columnspan=2, sticky="w", pady=6)
+            
+            tk.Label(sett_left, text="App Name", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=9, column=0, sticky="e", pady=10, padx=(0, 20))
             self.cb_app_name = ttk.Combobox(sett_left, values=["YT2VM", "c2vm", "ycpv", "ytpvm"], width=30, state="readonly", font=("Segoe UI", 11))
-            self.cb_app_name.grid(row=8, column=1, sticky="w", pady=10)
+            self.cb_app_name.grid(row=9, column=1, sticky="w", pady=10)
             self.cb_app_name.set(self.config.get("app_name", "YT2VM"))
+            
             tk.Label(sett_right, text="PERFORMANCE & TIMINGS", font=("Segoe UI", 12, "bold"), bg="#18181B", fg="#10B981").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 15))
             self.var_ultra_speed = tk.BooleanVar(value=self.config.get("ultra_speed", False))
             ttk.Checkbutton(sett_right, text="ULTRA SPEED MODE (Zero Delay)", variable=self.var_ultra_speed, style="Toggle.TCheckbutton").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
@@ -928,7 +953,6 @@ class ChatPlaysApp:
         self.refresh_macro_list()
         self.entry_macro_name.delete(0, 'end')
         self.entry_macro_actions.delete(0, 'end')
-        console_log("SYSTEM", f"saved custom command: {name}")
 
     def delete_custom_cmd(self):
         sel = self.macro_listbox.curselection()
@@ -940,7 +964,6 @@ class ChatPlaysApp:
             self.config["custom_commands"] = self.custom_commands
             self.save_settings()
             self.refresh_macro_list()
-            console_log("SYSTEM", f"deleted custom command: {name}")
 
     def refresh_macro_list(self):
         self.macro_listbox.delete(0, 'end')
@@ -1003,6 +1026,7 @@ class ChatPlaysApp:
         self.config["strict_live_check"] = self.var_strict_live.get()
         self.config["app_name"] = self.cb_app_name.get()
         self.config["ultra_speed"] = self.var_ultra_speed.get()
+        self.config["enable_ocr"] = self.var_ocr.get()
         try: self.config["stats_interval"] = float(self.entry_stats_int.get())
         except: self.config["stats_interval"] = 15
         try: self.config["typing_speed"] = float(self.entry_type_spd.get())
@@ -1019,8 +1043,8 @@ class ChatPlaysApp:
         self.twenty_four_seven_mode = self.config["auto_start"]
         self.app_name = self.config["app_name"]
         self.ultra_speed = self.config["ultra_speed"]
+        self.enable_ocr = self.config["enable_ocr"]
         self.root.title(f"{self.app_name} {version}: {vm_name}")
-        console_log("SYSTEM", "general settings & timings saved!")
 
     def update_gui_console(self):
         try:
@@ -1124,10 +1148,11 @@ class ChatPlaysApp:
     def is_video_currently_live(self, vid):
         if vid == "[DEBUG_MODE]": return True
         try:
-            req = urllib.request.Request(f"https://www.youtube.com/watch?v={vid}", headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(f"https://www.youtube.com/watch?v={vid}", headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
             with urllib.request.urlopen(req, timeout=10) as response:
                 html = response.read().decode('utf-8').lower()
-            if 'live_stream_offline' in html: return False
+            if '"islive":true' in html or '\\"islive\\":true' in html or 'watching now' in html: return True
+            if 'live_stream_offline' in html and '"islive":true' not in html: return False
             return True
         except Exception: return True
 
@@ -1232,6 +1257,36 @@ class ChatPlaysApp:
             with open(session_file, "w") as f: f.write(f"{url}|{mode}|{layout}")
         except: pass
 
+    def _async_cmd_runner(self, action_chain):
+        try:
+            if 'pythoncom' in sys.modules: pythoncom.CoInitialize()
+        except: pass
+        
+        for action in action_chain:
+            if getattr(self, 'cancel_macros', False): break
+            cmd_type, arg, user = action
+            if cmd_type == "wait":
+                try:
+                    w_time = min(float(arg), 3600.0)
+                    if w_time > 0: time.sleep(w_time)
+                except Exception: pass
+            else:
+                self.run_cmd_worker(action)
+                
+        try:
+            if 'pythoncom' in sys.modules: pythoncom.CoUninitialize()
+        except: pass
+
+    def trigger_command(self, action_tuple):
+        threading.Thread(target=self._async_cmd_runner, args=([action_tuple],), daemon=True).start()
+
+    def trigger_command_chain(self, action_chain):
+        threading.Thread(target=self._async_cmd_runner, args=(action_chain,), daemon=True).start()
+
+    def clear_commands(self):
+        self.cancel_macros = True
+        self.root.after(2000, lambda: setattr(self, 'cancel_macros', False))
+
     def parse_command(self, msg, user, is_mod=False, is_owner=False):
         global total_commands_executed
         self.last_command_time = time.time()
@@ -1270,20 +1325,38 @@ class ChatPlaysApp:
             if not raw_cmd.startswith(self.command_prefix): continue
             cmd = "!" + raw_cmd[len(self.command_prefix):]
             
-            aliases = {"!c": "!combo", "!k": "!key", "!t": "!type", "!s": "!send", "!m": "!move", "!d": "!drag", "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick", "!snapshot": "!makesnapshot", "!disablechat": "!pausechat"}
+            aliases = {
+                "!c": "!combo", "!k": "!key", "!t": "!type", "!s": "!send", "!m": "!move", "!d": "!drag", 
+                "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick", 
+                "!snapshot": "!makesnapshot", "!disablechat": "!pausechat",
+                "!forcerebootvirtualbox": "!forcefixvm", "!forcereboot": "!forcefixvm", "!forcerestart": "!forcefixvm",
+                "!forceshutdown": "!killvm"
+            }
             if cmd in aliases: cmd = aliases[cmd]
             arg = parts[1].strip() if len(parts) > 1 else ""
             
             core_cmd = cmd.lstrip("!").lower()
-            valid_user_cmds = ["run", "startvm", "type", "send", "key", "combo", "keydown", "keyup", "move", "abs", "click", "rclick", "mclick", "scroll", "drag", "wait", "cmd", "roll", "coinflip"]
-            all_valid_cmds = valid_user_cmds + ["pausechat", "enablechat", "ping", "uptime", "opme", "enablecv", "votestop", "clear", "say", "shutdown", "makesnapshot", "restartvm", "revert", "forcefixvm"]
+            valid_user_cmds = ["run", "startvm", "type", "send", "key", "combo", "keydown", "keyup", "move", "abs", "click", "rclick", "mclick", "scroll", "drag", "wait", "cmd", "roll", "coinflip", "tts", "ttsloop", "ttsxp", "ttsxploop"]
+            all_valid_cmds = valid_user_cmds + ["pausechat", "enablechat", "ping", "uptime", "enablecv", "votestop", "clear", "say", "shutdown", "killvm", "makesnapshot", "restartvm", "revert", "forcefixvm", "efail"]
             
             if core_cmd not in all_valid_cmds:
                 self.log("[system]", f"[err] Can't find command: {self.command_prefix}{core_cmd}", "err")
                 continue
 
-            req_args = ["type", "send", "key", "combo", "keydown", "keyup", "move", "abs", "drag", "wait", "cmd", "run", "makesnapshot"]
+            req_args = ["type", "send", "key", "combo", "keydown", "keyup", "move", "abs", "drag", "wait", "cmd", "run", "makesnapshot", "tts", "ttsloop", "ttsxp", "ttsxploop"]
+            examples = {
+                "type": f"{self.command_prefix}type hello world", "send": f"{self.command_prefix}send hello world",
+                "key": f"{self.command_prefix}key enter", "combo": f"{self.command_prefix}combo win r",
+                "keydown": f"{self.command_prefix}keydown shift", "keyup": f"{self.command_prefix}keyup shift",
+                "move": f"{self.command_prefix}move left 50", "abs": f"{self.command_prefix}abs 960 540",
+                "drag": f"{self.command_prefix}drag 100 100", "wait": f"{self.command_prefix}wait 5",
+                "cmd": f"{self.command_prefix}cmd echo hello", "run": f"{self.command_prefix}run calc",
+                "makesnapshot": f"{self.command_prefix}makesnapshot Backup1",
+                "tts": f"{self.command_prefix}tts hello there", "ttsloop": f"{self.command_prefix}ttsloop spam message",
+                "ttsxp": f"{self.command_prefix}ttsxp windows xp speech", "ttsxploop": f"{self.command_prefix}ttsxploop loop this xp"
+            }
             if core_cmd in req_args and not arg:
+                self.log("[system]", f"[info] Invalid args! Example: {examples.get(core_cmd, f'{self.command_prefix}{core_cmd} [args]')}", "sysmsg")
                 continue
 
             total_commands_executed += 1
@@ -1314,16 +1387,13 @@ class ChatPlaysApp:
                 h, m = divmod(m, 60)
                 self.log("[system]", f"bot uptime: {h}h {m}m {s}s", "sysmsg")
                 continue
-            if cmd == "!opme":
-                 if clean_user not in admins: admins.append(clean_user)
-                 return
             if cmd == "!enablecv":
                  if is_owner: self.changevm_enabled = True
                  return
                  
             if cmd in self.disabled_commands and not is_admin: continue
             
-            if cmd in ["!votestop", "!clear", "!say", "!shutdown", "!makesnapshot", "!forcefixvm"]:
+            if cmd in ["!votestop", "!clear", "!say", "!shutdown", "!killvm", "!makesnapshot", "!forcefixvm"]:
                 if cmd == "!say" and not self.say_admin_only:
                      if any(bad_word in arg.lower() for bad_word in banned_words): pass
                      else: self.log("[announcement]", arg, "sysmsg")
@@ -1336,6 +1406,7 @@ class ChatPlaysApp:
                         with history_lock: web_chat_history.clear()
                     elif cmd == "!say": self.log("[announcement]", arg, "sysmsg")
                     elif cmd == "!shutdown": action_chain.append(("shutdown", "", user))
+                    elif cmd == "!killvm": action_chain.append(("killvm", "", user))
                     elif cmd == "!forcefixvm": action_chain.append(("forcefixvm", "", user))
                 else:
                     if cmd == "!forcefixvm":
@@ -1344,13 +1415,16 @@ class ChatPlaysApp:
                     action_chain.append(("makesnapshot", arg, user))
                 continue
                 
-            if cmd == "!restartvm":
-                if is_admin: action_chain.append(("restartvm", "", user))
-                else: self.process_vote(user, f"{self.command_prefix}restartvm", 2)
-                continue
-            if cmd == "!revert":
-                if is_admin: action_chain.append(("revert", "", user))
-                else: self.process_vote(user, f"{self.command_prefix}revert", 2)
+            if cmd in ["!restartvm", "!revert", "!efail"]:
+                display_vote_cmd = cmd.replace("!", self.command_prefix)
+                if is_admin: 
+                    with self.vote_lock:
+                        if display_vote_cmd in self.active_votes:
+                            del self.active_votes[display_vote_cmd]
+                            self.log("[system]", f"[info] admin forced {cmd.replace('!', '')}, cancelled ongoing vote.", "sysmsg")
+                    action_chain.append((cmd.replace("!", ""), "", user))
+                else: 
+                    self.process_vote(user, display_vote_cmd, 2)
                 continue
                 
             if core_cmd in valid_user_cmds: action_chain.append((core_cmd, arg, user))
@@ -1383,8 +1457,9 @@ class ChatPlaysApp:
                             vid = self.resolve_live_video_id(target_url)
                             if vid and len(vid) == 11:
                                 if self.config.get("strict_live_check", True) and not self.is_video_currently_live(vid):
-                                    self.log("[system]", f"[warn] video {vid} is not currently live! refusing to connect.", "err")
-                                    connected_url = target_url
+                                    if getattr(self, "last_live_warn_time", 0) < time.time() - 30:
+                                        self.log("[system]", f"[warn] video {vid} appears offline! (Uncheck 'Strict Live Check' in Settings if this is wrong)", "err")
+                                        self.last_live_warn_time = time.time()
                                     time.sleep(5)
                                     continue
                             if chat and hasattr(chat, 'terminate'):
@@ -1411,8 +1486,11 @@ class ChatPlaysApp:
                                      is_connected = False
                         except Exception as parse_err:
                             err_msg = str(parse_err)
-                            if "ReadTimeout" in err_msg or "timeout" in err_msg.lower() or "429" in err_msg: self.log("[system]", f"[warn] youtube chat connection dropped. retrying in {retry_delay}s...", "sysmsg")
-                            else: self.log("[system]", f"[err] chat init error: {parse_err}", "err")
+                            if "ReadTimeout" in err_msg or "timeout" in err_msg.lower() or "429" in err_msg or "11001" in err_msg or "getaddrinfo" in err_msg.lower() or "name or service not known" in err_msg.lower(): 
+                                self.log("[system]", f"[warn] connection dropped. retrying in {retry_delay}s...", "sysmsg")
+                            else:
+                                console_log("ERROR", f"chat init error: {parse_err}\n{traceback.format_exc()}")
+                                self.log("[system]", f"[error] chat init error: {parse_err}", "err")
                             chat = None
                             time.sleep(retry_delay)
                             retry_delay = min(retry_delay * 2, 60) 
@@ -1513,6 +1591,15 @@ class ChatPlaysApp:
             self.log("[system]", f"[err] Native shutdown failed: {ex}", "err")
         time.sleep(2)
 
+    def _kill_all_vbox_processes(self):
+        try:
+            self.log("[system]", "[warn] executing global vbox process annihilation...", "sysmsg")
+            if platform.system() == "Windows":
+                subprocess.run(["taskkill", "/F", "/IM", "VirtualBox.exe", "/IM", "VBoxSVC.exe", "/IM", "VBoxNetDHCP.exe", "/IM", "VBoxNetNAT.exe", "/T"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        except Exception as ex: 
+            self.log("[system]", f"[err] Process annihilation failed: {ex}", "err")
+        time.sleep(3)
+
     def _do_vm_maintenance(self, cmd_type, target_snap=None):
         if self.vm_maintenance: return
         self.vm_maintenance = True
@@ -1526,11 +1613,14 @@ class ChatPlaysApp:
                 res = subprocess.run([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], capture_output=True, text=True)
                 if res.returncode == 0: self.log("[system]", f"[info] VBox started successfully.", "sysmsg")
                 else: self.log("[system]", f"[err] VBox start failed: {res.stderr[:100]}", "err")
-            elif cmd_type in ["shutdown", "restartvm", "revert", "forcefixvm"]:
-                subprocess.run([vbox_manage_cmd, "controlvm", vm_name, "poweroff"], capture_output=True, text=True, timeout=10)
-                time.sleep(2)
+            elif cmd_type in ["shutdown", "killvm", "restartvm", "revert", "forcefixvm", "efail"]:
+                if cmd_type in ["efail", "killvm"]:
+                    self._kill_all_vbox_processes()
+                else:
+                    subprocess.run([vbox_manage_cmd, "controlvm", vm_name, "poweroff"], capture_output=True, text=True, timeout=10)
+                    time.sleep(2)
                 
-                if cmd_type in ["revert", "forcefixvm"]:
+                if cmd_type in ["revert", "forcefixvm", "efail"]:
                     snap = target_snap
                     if not snap:
                         snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
@@ -1540,7 +1630,8 @@ class ChatPlaysApp:
                         res = subprocess.run([vbox_manage_cmd, "snapshot", vm_name, "restore", snap], capture_output=True, text=True, timeout=300)
                         if res.returncode == 0: self.log("[system]", f"[info] VBox restore successful.", "sysmsg")
                         else: self.log("[system]", f"[err] VBox restore failed: {res.stderr[:100]}", "err")
-                if cmd_type in ["startvm", "restartvm", "revert", "forcefixvm"]:
+                
+                if cmd_type in ["startvm", "restartvm", "revert", "forcefixvm", "efail"]:
                     subprocess.run([vbox_manage_cmd, "startvm", vm_name, "--type", "gui"], capture_output=True, text=True)
                     
             elif cmd_type == "makesnapshot":
@@ -1566,7 +1657,7 @@ class ChatPlaysApp:
             cmd_clean = cmd if cmd.startswith(self.command_prefix) else self.command_prefix + cmd
             core_cmd = cmd_clean.lstrip("!").lstrip(self.command_prefix).lower()
             if core_cmd == "admin_cmd": core_cmd = "cmd"
-            maintenance_cmds = ["startvm", "shutdown", "restartvm", "revert", "makesnapshot", "forcefixvm"]
+            maintenance_cmds = ["startvm", "shutdown", "killvm", "restartvm", "revert", "makesnapshot", "forcefixvm", "efail"]
             
             if self.vm_maintenance: return
             
@@ -1594,8 +1685,8 @@ class ChatPlaysApp:
                 raise Exception(f"ABORT {err_obj}")
 
             def safe_put_scancodes(codes):
-                if getattr(self, 'force_session_refresh', False): raise Exception("ABORT")
-                for attempt in range(20):
+                if getattr(self, 'force_session_refresh', False) and getattr(self, 'shared_kb', None) is None: raise Exception("ABORT")
+                for attempt in range(100):
                     kb_obj = getattr(self, 'shared_kb', None)
                     if kb_obj:
                         try:
@@ -1605,7 +1696,7 @@ class ChatPlaysApp:
                             return
                         except Exception as e:
                             time.sleep(0.01 * lm)
-                            last_e = e
+                            self.last_e = e
                     else:
                         self.force_session_refresh = True
                         time.sleep(0.1 * lm)
@@ -1613,8 +1704,8 @@ class ChatPlaysApp:
                 except: raise Exception("ABORT Scancodes dropped")
 
             def safe_put_mouse_event(dx, dy, dz, dw, button_state):
-                if getattr(self, 'force_session_refresh', False): raise Exception("ABORT")
-                for attempt in range(20):
+                if getattr(self, 'force_session_refresh', False) and getattr(self, 'shared_mouse', None) is None: raise Exception("ABORT")
+                for attempt in range(100):
                     mouse_obj = getattr(self, 'shared_mouse', None)
                     if mouse_obj:
                         try:
@@ -1623,7 +1714,7 @@ class ChatPlaysApp:
                             return
                         except Exception as e:
                             time.sleep(0.01 * lm)
-                            last_e = e
+                            self.last_e = e
                     else:
                         self.force_session_refresh = True
                         time.sleep(0.1 * lm)
@@ -1631,8 +1722,8 @@ class ChatPlaysApp:
                 except: raise Exception("ABORT Mouse dropped")
 
             def safe_put_mouse_event_absolute(x, y, dz, dw, button_state):
-                if getattr(self, 'force_session_refresh', False): raise Exception("ABORT")
-                for attempt in range(20):
+                if getattr(self, 'force_session_refresh', False) and getattr(self, 'shared_mouse', None) is None: raise Exception("ABORT")
+                for attempt in range(100):
                     mouse_obj = getattr(self, 'shared_mouse', None)
                     if mouse_obj:
                         try:
@@ -1641,7 +1732,7 @@ class ChatPlaysApp:
                             return
                         except Exception as e:
                             time.sleep(0.01 * lm)
-                            last_e = e
+                            self.last_e = e
                     else:
                         self.force_session_refresh = True
                         time.sleep(0.1 * lm)
@@ -1652,13 +1743,15 @@ class ChatPlaysApp:
                 if getattr(self, 'force_session_refresh', False): raise Exception("ABORT")
                 count = 1
                 if count_str.isdigit(): count = int(count_str)
-                for _ in range(min(count, 50)):
-                    safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
-                    time.sleep(base_mouse_del * lm)
-                    safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
-                    time.sleep(base_mouse_del * lm)
+                with self.input_lock:
+                    for _ in range(min(count, 50)):
+                        safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns | btn_code)
+                        time.sleep(base_mouse_del * lm)
+                        safe_put_mouse_event(0, 0, 0, 0, self.vbox_mouse_btns & ~btn_code)
+                        time.sleep(base_mouse_del * lm)
 
             if core_cmd in maintenance_cmds:
+                self.clear_commands()
                 self._do_vm_maintenance(core_cmd, arg if core_cmd == "makesnapshot" else self.current_snapshot)
                 return
 
@@ -1697,6 +1790,18 @@ class ChatPlaysApp:
                     self.run_cmd_worker(("type", res, user))
                     time.sleep(0.1)
                     self.run_cmd_worker(("key", "enter", user))
+                    return
+                elif core_cmd in ["tts", "ttsloop", "ttsxp", "ttsxploop"]:
+                    safe_text = arg.replace("'", "").replace('"', "")
+                    if core_cmd == "tts":
+                        payload = f"powershell -c \"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{safe_text}')\""
+                    elif core_cmd == "ttsloop":
+                        payload = f"powershell -c \"Add-Type -AssemblyName System.Speech; $s=(New-Object System.Speech.Synthesis.SpeechSynthesizer); while($true){{$s.Speak('{safe_text}')}}\""
+                    elif core_cmd == "ttsxp":
+                        payload = f'mshta vbscript:Execute("CreateObject(""SAPI.SpVoice"").Speak(""{safe_text}"")(window.close)")'
+                    elif core_cmd == "ttsxploop":
+                        payload = f'mshta vbscript:Execute("Set s=CreateObject(""SAPI.SpVoice""):Do:s.Speak(""{safe_text}""):Loop")'
+                    self.run_cmd_worker(("run", payload, user))
                     return
                 elif core_cmd == "cmd" or core_cmd in ["run", "open_app"]:
                     is_admin = (core_cmd == "cmd")
@@ -1747,7 +1852,7 @@ class ChatPlaysApp:
                     self.run_cmd_worker(("key", "enter", user))
 
                 elif core_cmd == "combo":
-                    keys = arg.split("+")
+                    keys = arg.replace("+", " ").split()
                     pressed_codes = []
                     valid_combo = True
                     for k in keys:
@@ -1837,12 +1942,16 @@ class ChatPlaysApp:
             self.consecutive_failures = 0
             self.last_success_time = time.time()
         except Exception as loop_e:
-            err_str = str(loop_e)
-            if "ABORT" not in err_str:
+            err_str = str(loop_e).lower()
+            if "0x80004005" in err_str or "e_fail" in err_str or "-2147467259" in err_str or "unspecified error" in err_str:
+                self.log("[system]", "[error] FATAL E_FAIL DETECTED! Auto-Triggering Global Nuke...", "err")
+                self.clear_commands()
+                threading.Thread(target=self._do_vm_maintenance, args=("efail", self.current_snapshot), daemon=True).start()
+            elif "abort" not in err_str.upper():
                 global total_commands_failed
                 total_commands_failed += 1
                 self.consecutive_failures = getattr(self, 'consecutive_failures', 0) + 1
-                err_msg = err_str.replace("\n", " ")[:100]
+                err_msg = str(loop_e).replace("\n", " ")[:100]
                 if time.time() - getattr(self, 'last_err_spam', 0) > 2.0:
                     console_log("ERROR", f"execution failed: {display_cmd} {arg}: {loop_e}\n{traceback.format_exc()}")
                     self.log("[system]", f"[err] cmd fault: {err_msg}", "err")
@@ -1897,6 +2006,12 @@ class ChatPlaysApp:
                             self.vbox = self.mgr.getVirtualBox()
                     except Exception as e:
                         self.set_status("vbox api error")
+                        self.com_fail_count = getattr(self, 'com_fail_count', 0) + 1
+                        if self.com_fail_count > 15:
+                            self.log("[system]", "[error] VBox API permanently dead! Auto-recovering...", "err")
+                            self.com_fail_count = 0
+                            self.clear_commands()
+                            threading.Thread(target=self._do_vm_maintenance, args=("efail", self.current_snapshot), daemon=True).start()
                         time.sleep(2)
                         continue
                     
@@ -1943,14 +2058,23 @@ class ChatPlaysApp:
                                     self.shared_mouse = session.console.mouse
                                     self.set_status("running")
                                     set_obs_scene(obs_scene_main)
+                                    self.com_fail_count = 0
                                 else:
                                     self.set_status("lock failed")
+                                    self.com_fail_count = getattr(self, 'com_fail_count', 0) + 1
+                                    if self.com_fail_count > 15:
+                                        self.log("[system]", "[error] COM API lock permanently dead! Rebooting system...", "err")
+                                        self.com_fail_count = 0
+                                        self.clear_commands()
+                                        threading.Thread(target=self._do_vm_maintenance, args=("efail", self.current_snapshot), daemon=True).start()
                                     time.sleep(1)
                             else:
                                 self.set_status("stopped")
+                                self.com_fail_count = 0
                                 time.sleep(1)
                         except Exception as e:
                             self.set_status("not found")
+                            self.com_fail_count = 0
                             time.sleep(1)
 
                 try:
@@ -1965,13 +2089,52 @@ class ChatPlaysApp:
                                     except: pass
                 except: pass
 
-                time.sleep(1)
+                time.sleep(0.5)
             except Exception as loop_e:
-                time.sleep(1)
+                time.sleep(0.5)
 
         try:
             if 'pythoncom' in sys.modules: pythoncom.CoUninitialize()
         except Exception: pass
+
+    def ocr_watchdog_loop(self):
+        while self.running:
+            if getattr(self, 'vm_maintenance', False) or not getattr(self, 'enable_ocr', False):
+                time.sleep(5)
+                continue
+            
+            if not ocr_available and getattr(self, 'enable_ocr', False):
+                self.log("[system]", "[error] Screen check enabled but pytesseract/PIL is missing! Run: pip install pytesseract pillow", "err")
+                self.enable_ocr = False
+                self.var_ocr.set(False)
+                self.save_settings()
+                continue
+                
+            try:
+                if not getattr(self, 'is_com_active', False): 
+                    snap_path = f"boot_check_{instance_id}.png"
+                    res = subprocess.run([vbox_manage_cmd, "controlvm", vm_name, "screenshotpng", snap_path], capture_output=True, timeout=5)
+                    
+                    if res.returncode == 0 and os.path.exists(snap_path):
+                        img = Image.open(snap_path)
+                        img_crop = img.crop((0, 0, img.width, img.height // 2))
+                        try:
+                            text = pytesseract.image_to_string(img_crop).lower()
+                            if "ipxe" in text or "booting from lan" in text or "no bootable" in text or "fatal" in text:
+                                self.log("[system]", "[error] iPXE / Boot freeze detected via Screen Check! Auto-reverting...", "err")
+                                self.trigger_command(("revert", "", "watchdog"))
+                                time.sleep(45) 
+                        except pytesseract.TesseractNotFoundError:
+                            self.log("[system]", "[error] Tesseract-OCR software is not installed on your PC! Disabling screen check.", "err")
+                            self.enable_ocr = False
+                            self.var_ocr.set(False)
+                            self.save_settings()
+                        img.close()
+                        try: os.remove(snap_path)
+                        except: pass
+            except Exception:
+                pass
+            time.sleep(10)
 
     def error_watcher_loop(self):
         if platform.system() != "Windows": return
@@ -2027,14 +2190,37 @@ class ChatPlaysApp:
             try: user32.EnumWindows(foreach_window, 0)
             except Exception: pass
             
+            log_crash_found = False
+            if not getattr(self, 'vm_maintenance', False):
+                try:
+                    res = subprocess.run([vbox_manage_cmd, "showvminfo", vm_name, "--machinereadable"], capture_output=True, text=True, timeout=2)
+                    for line in res.stdout.splitlines():
+                        if line.startswith("CfgFile="):
+                            cfg_path = line.split("=", 1)[1].strip('"')
+                            log_dir = os.path.join(os.path.dirname(cfg_path), "Logs")
+                            log_file = os.path.join(log_dir, "VBox.log")
+                            if os.path.exists(log_file):
+                                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                                    lines = f.readlines()[-30:]
+                                    for l in lines:
+                                        l_low = l.lower()
+                                        if "booting from lan" in l_low or "ipxe" in l_low or "no bootable medium" in l_low:
+                                            if getattr(self, 'last_log_error', "") != l_low:
+                                                self.last_log_error = l_low
+                                                self.log("[system]", "[error] iPXE or broken boot detected via VBox Logs!", "err")
+                                            log_crash_found = True
+                                            break
+                            break
+                except Exception: pass
+            
             api_frozen_timeout = (time.time() - getattr(self, 'executor_tick', time.time())) > 25 and not getattr(self, 'is_com_active', False)
             com_stuck = getattr(self, 'is_com_active', False) and (time.time() - getattr(self, 'active_com_time', time.time())) > 90
-            is_frozen = hung_state["found"] or api_frozen_timeout or com_stuck
+            is_frozen = hung_state["found"] or api_frozen_timeout or com_stuck or log_crash_found
             
             if is_frozen:
                 if getattr(self, 'vm_frozen_since', None) is None:
                     self.vm_frozen_since = time.time()
-                    reason = "ui" if hung_state["found"] else ("com stuck" if com_stuck else "api")
+                    reason = "ui" if hung_state["found"] else ("iPXE boot" if log_crash_found else ("com stuck" if com_stuck else "api"))
                     self.log("[system]", f"[warn] virtualbox {reason} frozen. watchdog active...", "sysmsg")
                 else:
                     frozen_duration = time.time() - self.vm_frozen_since
@@ -2042,13 +2228,14 @@ class ChatPlaysApp:
                         time_since_last_action = time.time() - getattr(self, 'last_watchdog_action_time', 0)
                         if time_since_last_action > 120: self.watchdog_action_level = 0
                         if getattr(self, 'watchdog_action_level', 0) == 0:
-                            self.log("[system]", "[err] vm frozen for 20s! auto-reverting...", "err")
+                            self.log("[system]", "[error] vm frozen for 20s! auto-reverting...", "sysmsg")
                             self.watchdog_action_level = 1
                             self.last_watchdog_action_time = time.time()
                             self.vm_frozen_since = None
-                            self.trigger_command(("revert", "", "watchdog"))
+                            self.clear_commands()
+                            threading.Thread(target=self._do_vm_maintenance, args=("revert", self.current_snapshot), daemon=True).start()
                         else:
-                            self.log("[system]", "[err] vm still frozen! killing tasks...", "err")
+                            self.log("[system]", "[error] vm still frozen! killing tasks...", "sysmsg")
                             self.watchdog_action_level = 2
                             self.last_watchdog_action_time = time.time()
                             self.vm_frozen_since = None
@@ -2069,14 +2256,15 @@ class ChatPlaysApp:
                 time_since_last_api_action = time.time() - getattr(self, 'last_api_watchdog_action_time', 0)
                 if time_since_last_api_action > 120: self.api_watchdog_level = 0
                 if getattr(self, 'api_watchdog_level', 0) == 0:
-                    self.log("[system]", "[err] virtualbox api unresponsive! auto-reverting...", "err")
+                    self.log("[system]", "[error] virtualbox api unresponsive! auto-reverting...", "sysmsg")
                     self.api_watchdog_level = 1
                     self.last_api_watchdog_action_time = time.time()
                     self.last_success_time = time.time()
                     self.consecutive_failures = 0
-                    self.trigger_command(("revert", "", "watchdog"))
+                    self.clear_commands()
+                    threading.Thread(target=self._do_vm_maintenance, args=("revert", self.current_snapshot), daemon=True).start()
                 else:
-                    self.log("[system]", "[err] virtualbox api still dead! killing tasks...", "err")
+                    self.log("[system]", "[error] virtualbox api still dead! killing tasks...", "sysmsg")
                     self.api_watchdog_level = 2
                     self.last_api_watchdog_action_time = time.time()
                     self.last_success_time = time.time()
@@ -2107,12 +2295,15 @@ class ChatPlaysApp:
             if not hasattr(self, 'error_watcher_thread') or not self.error_watcher_thread.is_alive():
                 self.error_watcher_thread = threading.Thread(target=self.error_watcher_loop, daemon=True)
                 self.error_watcher_thread.start()
+            if not hasattr(self, 'ocr_thread') or not self.ocr_thread.is_alive():
+                self.ocr_thread = threading.Thread(target=self.ocr_watchdog_loop, daemon=True)
+                self.ocr_thread.start()
             if flask_available and (not hasattr(self, 'flask_thread') or not self.flask_thread.is_alive()):
                 self.flask_thread = threading.Thread(target=start_flask, daemon=True)
                 self.flask_thread.start()
         except Exception as e:
             console_log("ERROR", f"start threads crashed: {e}\n{traceback.format_exc()}")
-            self.log("[system]", f"[err] RAW FAULT threads crashed: {type(e).__name__}: {e}", "err")
+            self.log("[system]", f"[error] start threads crashed: {e}", "err")
 
     def start_stats_thread(self):
         if hasattr(self, 'stats_thread') and self.stats_thread.is_alive(): return

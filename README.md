@@ -24,7 +24,7 @@ FAQ
 
 # Do I have to credit you?
 
-Sure, please. If you use or promote this project, mention reallyiron, please.
+No. free to use forever now
 
 # Is this script malware?
 

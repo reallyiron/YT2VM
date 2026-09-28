@@ -446,14 +446,33 @@ def run_vbox(args, timeout=10):
             _VBOX_MISSING_WARNED = True
             dbg("vbox", "VBoxManage not installed - VirtualBox commands are disabled")
         return None
+    global _VBOX_LOCKED
     if DEBUG_ON:
-        return dbg_run("vbox", [vbox_manage_cmd] + list(args), timeout=timeout)
-    try:
-        return subprocess.run([vbox_manage_cmd] + args, capture_output=True, text=True, timeout=timeout)
-    except Exception:
-        return None
+        r = dbg_run("vbox", [vbox_manage_cmd] + list(args), timeout=timeout)
+    else:
+        try:
+            r = subprocess.run([vbox_manage_cmd] + args, capture_output=True, text=True, timeout=timeout)
+        except Exception:
+            r = None
+    if r is not None:
+        _VBOX_LOCKED = is_vbox_lock_error(r.stderr) or is_vbox_lock_error(r.stdout)
+    return r
+
+
+def is_vbox_lock_error(txt):
+    """True if VBoxManage output means the VM session is locked / already in use
+    by a (possibly hung or crashed) process."""
+    t = str(txt or "").lower()
+    return any(m in t for m in (
+        "is already locked", "already locked by a session",
+        "vbox_e_invalid_object_state", "0x80bb0007",
+        "locked for a session", "session is locked",
+        "the machine is not mutable", "vbox_e_object_in_use",
+        "0x80bb000c", "a session for the machine",
+        "cannot lock", "e_accessdenied while ", "already has a lock"))
 
 VBOX_LAST_ERROR = ""
+_VBOX_LOCKED = False
 _SNAP_WARNED = set()
 
 
@@ -1787,33 +1806,46 @@ class VMwareController:
             dbg("vnc", f"alt+numpad failed for {ch!r}", e)
             return False
 
-    def _flush(self):
-        # vncdotool is async - force the queued events out to the server now
+    def _flush(self, hard=False):
+        # vncdotool sends async. A tiny pause forces the queue out, but doing it
+        # after EVERY key made a full network round-trip per character, which is
+        # what made typing crawl on a slow PC. Only flush hard where ordering
+        # actually matters (after a modifier press); otherwise skip it.
+        if not hard:
+            return
         try:
-            if hasattr(self.client, "pause"): self.client.pause(0.02)
-        except Exception: pass
+            if hasattr(self.client, "pause"): self.client.pause(0.01)
+        except Exception:
+            pass
+
+    MAX_TYPE = 4000   # hard ceiling so one giant command can never wedge typing
 
     def type_text(self, text):
         if not self._need(): return
+        # protect the box: an enormous string would take minutes and can brick a
+        # slow host, so cap it and tell the user rather than freezing.
+        if len(text) > self.MAX_TYPE:
+            dbg("vmware", f"type request {len(text)} chars > {self.MAX_TYPE}, truncating")
+            console_log("SYSTEM", f"typing truncated to {self.MAX_TYPE} chars (command too long)")
+            text = text[:self.MAX_TYPE]
         lay = (getattr(self, "guest_layout", "") or keyboard_layout or "US").upper()
         lay = {"DK": "DANISH", "DA": "DANISH", "US": "US", "EN": "US",
                "DE": "GERMAN", "FR": "FRENCH", "UK": "UK", "GB": "UK",
                "TR": "TURKISH"}.get(lay, lay)
         SHIFT = chr(0xFFE1)
-        ALT_R = chr(0xFFEA)   # right alt = AltGr on windows guests
+        ALT_R = chr(0xFFEA)
         ALT_L = chr(0xFFE9)
         CTRL_L = chr(0xFFE3)
         altgr_mode = str(self.config_get("altgr_mode", "alt_r")).lower()
+        # per-character delay: 0 by default so a fast PC rips through it; users on
+        # a slow VM can raise vmware_settle if the guest drops keys.
         try:
-            per_char = max(0.0, float(self.config_get("vmware_settle", 1.0))) * 0.015
+            per_char = max(0.0, float(self.config_get("vmware_settle", 1.0)) - 1.0) * 0.01
         except Exception:
-            per_char = 0.015
+            per_char = 0.0
         fails = 0
         with self.lock:
             for ch in text:
-                # every character starts clean, so a stuck Shift/AltGr from the
-                # previous key can never swallow the rest of the string (that was
-                # the truncation - it stopped mid-command after an AltGr char)
                 try:
                     if ch == " ":
                         self.client.keyPress("space")
@@ -1825,6 +1857,9 @@ class VMwareController:
                         base, need_shift, need_altgr = vnc_char_for(ch, lay)
                         if base is None or (need_altgr and altgr_mode == "numpad"):
                             self._alt_numpad(ch)
+                        elif not need_shift and not need_altgr:
+                            # the common case: plain key, no modifier, no flush
+                            self.client.keyPress(base)
                         else:
                             held = []
                             try:
@@ -1836,18 +1871,15 @@ class VMwareController:
                                         self.client.keyDown(ALT_L); held.append(ALT_L)
                                     else:
                                         self.client.keyDown(ALT_R); held.append(ALT_R)
-                                    time.sleep(0.04)
+                                    self._flush(hard=True)   # modifier must land first
                                 self.client.keyPress(base)
+                                self._flush(hard=True)       # key before release
                             finally:
                                 for mod in reversed(held):
                                     try: self.client.keyUp(mod)
                                     except Exception: pass
-                                if need_altgr:
-                                    time.sleep(0.03)
-                    self._flush()
                     if per_char: time.sleep(per_char)
                 except Exception as e:
-                    # one bad character must NOT kill the whole command
                     fails += 1
                     dbg("vmware", f"type char {ch!r} failed (continuing)", e)
                     try: self._clear_stuck_modifiers(self.client)
@@ -1856,8 +1888,11 @@ class VMwareController:
                         self.status = f"type error: {e}"
                         self.client = None
                         return
-            try: self._clear_stuck_modifiers(self.client)
-            except Exception: pass
+            try:
+                self._clear_stuck_modifiers(self.client)
+                self._flush(hard=True)
+            except Exception:
+                pass
             self._last_ok = time.time()
             dbg("vmware", f"typed {len(text)} chars over vnc"
                           + (f" ({fails} retried)" if fails else ""))
@@ -3130,7 +3165,8 @@ class ChatPlaysApp:
                                  ("Stop VM", "#EF4444", lambda: self._vm_action("shutdown")),
                                  ("Restart VM", "#F59E0B", lambda: self._vm_action("restartvm")),
                                  ("Toggle Chat", "#27272A", self.toggle_pause_chat),
-                                 ("Revert Snapshot", "#8B5CF6", lambda: self._vm_action("revert"))):
+                                 ("Revert Snapshot", "#8B5CF6", lambda: self._vm_action("revert")),
+                                 ("Minimize", "#27272A", lambda: self._minimize_window())):
                 tk.Button(qa, text=lbl, font=("Segoe UI", 9, "bold"), bg=col,
                           fg=("black" if col not in ("#27272A", "#8B5CF6", "#EF4444") else "white"),
                           bd=0, cursor="hand2", command=fn).pack(side="left", padx=(0, 8), ipady=6, ipadx=14)
@@ -3989,8 +4025,12 @@ class ChatPlaysApp:
                     self._typed_buf[clean_user] = ["", now]
                     return False, f"blocked spelled term '{hit}'"
         # 6) length cap so one message can't flood the guest (skipped when unlocked)
+        # a soft cap only when protection is on...
         if not unlocked and len(str(arg)) > int(self.config.get("max_type_len", 200)):
             return False, "message too long"
+        # ...but a HARD cap always, so a 50k-char paste can never wedge the box
+        if len(str(arg)) > 4000:
+            return False, "command too long (max 4000 chars)"
         return True, ""
 
     def run_diagnostics(self):
@@ -5425,6 +5465,41 @@ class ChatPlaysApp:
         return False
 
     def _do_vm_maintenance(self, action, arg, user):
+        """Run a viewer/console VM action. If VirtualBox reports the session is
+        LOCKED (a hung or crashed process still holding the VM), close ALL
+        VirtualBox processes and retry the exact same action once - so a locked
+        VM self-heals instead of every start/revert/restart being refused."""
+        global _VBOX_LOCKED
+        if getattr(self, "backend", "virtualbox") == "vmware":
+            return self._do_vm_maintenance_inner(action, arg, user)
+        _VBOX_LOCKED = False
+        ok = self._do_vm_maintenance_inner(action, arg, user)
+        # a lock can surface either as a False result or via the run_vbox flag,
+        # and also shows up as the machine state being stuck 'aborted'
+        state = ""
+        try: state = self._vm_state()
+        except Exception: pass
+        if _VBOX_LOCKED or (not ok and state in ("aborted", "unknown")) or state == "aborted":
+            self.log("[system]", "[warn] VM session is LOCKED - killing all VirtualBox processes and retrying...", "sysmsg")
+            dbg("recovery", f"lock detected on '{action}' (locked={_VBOX_LOCKED}, state={state}) - full kill + retry")
+            try:
+                self._kill_vbox_tasks()        # kill this VM's process
+                self._kill_vbox_global()       # kill VBoxSVC / VBoxSDS (the lock holder)
+                self._dismiss_crash_dialogs()  # clear any crash popup
+            except Exception as e:
+                dbg("recovery", "kill during lock recovery failed", e)
+            time.sleep(2.0)
+            # clear a stale saved/aborted state that would block a fresh start
+            try:
+                if self._vm_state() in ("aborted", "saved"):
+                    run_vbox(["discardstate", vm_name], timeout=20)
+            except Exception: pass
+            _VBOX_LOCKED = False
+            self.log("[system]", f"retrying '{action}' after unlock...", "sysmsg")
+            ok = self._do_vm_maintenance_inner(action, arg, user)
+        return ok
+
+    def _do_vm_maintenance_inner(self, action, arg, user):
         action = action.lower()
         dbg("vm", f"maintenance '{action}' requested by {user}")
         if getattr(self, "backend", "virtualbox") == "vmware":
@@ -5831,6 +5906,24 @@ class ChatPlaysApp:
                         console_log("SYSTEM", "falling back to VBoxManage CLI for keyboard (mouse needs the API). fix fully with:  pip install --upgrade virtualbox   (or install the VirtualBox SDK's vboxapi)")
                         self.log("[system]", "[warn] pyvbox mismatch after VBox update - using CLI keyboard fallback. run: pip install --upgrade virtualbox", "err")
                     return False
+                _locked = ("already locked" in _m or "0x80bb0007" in _m or "being locked" in _m
+                           or "object_in_use" in _m or "0x80bb000c" in _m or "session is locked" in _m)
+                if _locked and not getattr(self, "_lock_recovering", False):
+                    self._lock_recovering = True
+                    def _unlock():
+                        try:
+                            self.log("[system]", "[warn] COM session LOCKED - clearing VirtualBox processes...", "sysmsg")
+                            self._kill_vbox_tasks(); self._kill_vbox_global(); self._dismiss_crash_dialogs()
+                            time.sleep(2)
+                            if self._vm_state() in ("aborted", "saved"):
+                                run_vbox(["discardstate", vm_name], timeout=20)
+                            self.force_session_refresh = True
+                        except Exception as ue:
+                            dbg("recovery", "unlock failed", ue)
+                        finally:
+                            self._lock_recovering = False
+                    threading.Thread(target=_unlock, daemon=True).start()
+                    return False
                 _transient = ("subscriptable" in _m or "not ready" in _m or "console" in _m
                               or "0x80bb0007" in _m or "invalid_vm_state" in _m or "e_accessdenied" in _m
                               or "-2147418113" in _m or "not currently" in _m or "being locked" in _m
@@ -5844,6 +5937,8 @@ class ChatPlaysApp:
                 return False
 
     def _cli_put_string(self, text):
+        if text and len(text) > 4000:
+            text = text[:4000]
         """VBoxManage can type a whole string directly - far more reliable than
         pushing hex scancodes one at a time when the API path is unavailable."""
         if not text: return True
@@ -6126,6 +6221,32 @@ class ChatPlaysApp:
                 self._last_vnc_warn = time.time()
                 self.log("[system]", f"[warn] vmware input: {st}", "err")
 
+    def _run_watched(self, cmd, arg, user, timeout=45):
+        """Run one command with a hard timeout. On a slow PC a long VNC type can
+        take a while, but it must never hang the executor forever - if it blows
+        the timeout we drop the stale VNC client so the next command reconnects
+        cleanly instead of the whole bot freezing."""
+        done = threading.Event()
+
+        def _work():
+            try:
+                self.run_cmd_worker(cmd, arg, user)
+            except Exception as e:
+                dbg("exec", f"watched cmd '{cmd}' crashed", e)
+            finally:
+                done.set()
+
+        th = threading.Thread(target=_work, daemon=True, name="cmd-worker")
+        th.start()
+        if not done.wait(timeout):
+            dbg("exec", f"command '{cmd} {str(arg)[:30]}' exceeded {timeout}s - dropping vnc session")
+            self.log("[system]", f"[warn] '{cmd}' took too long; recovering.", "sysmsg")
+            try:
+                if getattr(self, "vmware", None) and self.vmware.client:
+                    self.vmware.disconnect()
+            except Exception:
+                pass
+
     def run_cmd_worker(self, cmd, arg, user):
         global total_commands_failed
         display_cmd = f"{cmd} {arg}".strip()
@@ -6152,6 +6273,9 @@ class ChatPlaysApp:
             base = cmd[1:] if cmd.startswith("!") else cmd
 
             if base in ("type", "send"):
+                if len(arg) > 4000:
+                    arg = arg[:4000]
+                    self.log("[system]", "[warn] input truncated to 4000 chars.", "sysmsg")
                 _td = max(type_delay if not self.ultra_speed else 0.0, 0.006)
                 if getattr(self, "cli_input", False) and arg:
                     if self._cli_put_string(arg):
@@ -6291,7 +6415,7 @@ class ChatPlaysApp:
                         self.run_cmd_worker(cmd, arg, user)
                     continue
                 if getattr(self, "backend", "virtualbox") == "vmware":
-                    self.run_cmd_worker(cmd, arg, user)
+                    self._run_watched(cmd, arg, user)
                     continue
                 if not self._vm_is_running():
                     continue
@@ -6350,7 +6474,11 @@ class ChatPlaysApp:
         try:
             console_log("ERROR", f"self-relaunch triggered: {reason}")
             script_path = os.path.abspath(sys.argv[0])
-            args = [sys.executable, script_path] + [a for a in sys.argv[1:] if a.startswith("--multistream")]
+            keep = [a for a in sys.argv[1:] if a.startswith("--multistream") or a == "--no-install" or a == "--quiet"]
+            args = [sys.executable, script_path] + keep
+            # tell the fresh instance it is a crash relaunch, so it starts
+            # minimized and does not pop over the stream
+            if "--relaunched" not in args: args.append("--relaunched")
             if platform.system() == "Windows": subprocess.Popen(args, creationflags=0x00000010, close_fds=True)
             else: subprocess.Popen(args, start_new_session=True, close_fds=True)
         except Exception: pass
@@ -7032,6 +7160,12 @@ class ChatPlaysApp:
         self.apply_theme("light" if is_dark else "original")
 
     # ── KEYS ─────────────────────────────────────────────────────────────────
+    def _minimize_window(self):
+        try:
+            self.root.iconify()
+        except Exception:
+            pass
+
     def _vm_action(self, action, arg=""):
         """Dashboard/console VM control. Runs the maintenance action directly in
         a thread so it works for BOTH backends and reports what actually happened,
@@ -8017,6 +8151,19 @@ if __name__ == "__main__":
     try:
         main_ui_root = tk.Tk()
         main_gui_application = ChatPlaysApp(main_ui_root)
+        # when this instance was started by a crash relaunch, minimize it so it
+        # never pops over the stream. also minimize if the user asked for it.
+        if ("--relaunched" in sys.argv or "--minimized" in sys.argv
+                or os.environ.get("YT2VM_MINIMIZED") == "1"):
+            def _minimize_after_start():
+                try:
+                    main_ui_root.iconify()
+                    if "--relaunched" in sys.argv:
+                        console_log("SYSTEM", "recovered from a crash - running minimized so the stream is not interrupted.")
+                except Exception:
+                    pass
+            # do it after the window has actually mapped, or iconify is ignored
+            main_ui_root.after(400, _minimize_after_start)
         main_ui_root.mainloop()
     except Exception as fatal_error:
         traceback.print_exc()

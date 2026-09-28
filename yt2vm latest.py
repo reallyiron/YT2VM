@@ -12,6 +12,22 @@ import tkinter.font as tkfont
 import threading, time, sys, traceback, random, subprocess, os, re, json, platform, ctypes, collections, queue, shutil, gc
 import urllib.request, urllib.error, urllib.parse
 from ctypes import wintypes
+
+
+def _hide_console():
+    if platform.system() != "Windows":
+        return
+    if "--console" in sys.argv or os.environ.get("YT2VM_CONSOLE") == "1":
+        return
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+
+_hide_console()
 sys.coinit_flags = 0
 
 class _StderrFilter:
@@ -26,8 +42,7 @@ class _StderrFilter:
         m = str(msg)
         if "CoInitializeSecurity was already called" in m:
             return
-        # obsws_python dumps a full traceback to stderr whenever OBS is closed.
-        # Mute that block (we already log one clean line) but keep real errors.
+
         if any(tok in m for tok in self.SUPPRESS):
             self._muting = True
             return
@@ -40,15 +55,13 @@ class _StderrFilter:
 sys.stderr = _StderrFilter(sys.stderr)
 
 
-# ── AUTO-INSTALL DEPENDENCIES ────────────────────────────────────────────────
-# Installs what is missing on first run. Skip with --no-install, or by setting
-# YT2VM_NO_INSTALL=1. It never reinstalls what is already importable, and it
-# handles Arch/CachyOS "externally-managed-environment" by retrying correctly.
-REQUIRED_PACKAGES = [
+
+
+_rqp = [
     ("pytchat", "pytchat", "reading YouTube live chat"),
     ("flask", "flask", "OBS overlay web server"),
 ]
-OPTIONAL_PACKAGES = [
+_opp = [
     ("obsws_python", "obsws-python", "OBS scene / media control"),
     ("customtkinter", "customtkinter", "modern rounded widgets"),
     ("ttkbootstrap", "ttkbootstrap", "themed ttk widgets"),
@@ -57,13 +70,12 @@ OPTIONAL_PACKAGES = [
     ("vncdotool", "vncdotool", "VMware input over VNC"),
 ]
 if platform.system() == "Windows":
-    REQUIRED_PACKAGES.append(("win32com", "pywin32", "VirtualBox native COM"))
-    OPTIONAL_PACKAGES.append(("virtualbox", "virtualbox", "legacy pyvbox fallback"))
+    _rqp.append(("win32com", "pywin32", "VirtualBox native COM"))
+    _opp.append(("virtualbox", "virtualbox", "legacy pyvbox fallback"))
 else:
-    OPTIONAL_PACKAGES.append(("virtualbox", "virtualbox", "VirtualBox python API"))
+    _opp.append(("virtualbox", "virtualbox", "VirtualBox python API"))
 
-INSTALL_FLAG = "deps_installed.flag"
-
+_if = "deps_installed.flag"
 
 def _missing_packages(pkgs):
     import importlib.util
@@ -76,9 +88,7 @@ def _missing_packages(pkgs):
             out.append((module, pipname, why))
     return out
 
-
 def _pip_install(pipnames):
-    """Try a normal install, then the fallbacks distros need."""
     base = [sys.executable, "-m", "pip", "install", "--upgrade"]
     attempts = [base + pipnames,
                 base + ["--user"] + pipnames,
@@ -97,17 +107,16 @@ def _pip_install(pipnames):
             return False, str(e)
     return False, "all install attempts failed"
 
-
 def ensure_packages(force=False):
     if "--no-install" in sys.argv or os.environ.get("YT2VM_NO_INSTALL") == "1":
         return
-    if not force and os.path.exists(INSTALL_FLAG):
+    if not force and os.path.exists(_if):
         return
-    need_req = _missing_packages(REQUIRED_PACKAGES)
-    need_opt = _missing_packages(OPTIONAL_PACKAGES)
+    need_req = _missing_packages(_rqp)
+    need_opt = _missing_packages(_opp)
     if not need_req and not need_opt:
         try:
-            with open(INSTALL_FLAG, "w") as f: f.write("ok")
+            with open(_if, "w") as f: f.write("ok")
         except Exception: pass
         return
     print("=" * 60)
@@ -118,7 +127,7 @@ def ensure_packages(force=False):
     print("  (skip this next time with:  python yt2vm.py --no-install)")
     print("=" * 60)
     failed = []
-    # required first, one at a time so a single failure can't block the rest
+
     for module, pipname, why in need_req:
         ok, err = _pip_install([pipname])
         print(f"  [{'ok' if ok else 'FAILED'}] {pipname}" + ("" if ok else f"  -> {err[:90]}"))
@@ -139,16 +148,18 @@ def ensure_packages(force=False):
             print("  On Arch/CachyOS you may also need:  sudo pacman -S tk")
     else:
         try:
-            with open(INSTALL_FLAG, "w") as f: f.write("ok")
+            with open(_if, "w") as f: f.write("ok")
         except Exception: pass
     print("=" * 60)
 
-
 ensure_packages() if "--no-install" not in sys.argv else None
-
+try:
+    if os.cpu_count() and os.cpu_count() <= 2:
+        os.environ.setdefault("YT2VM_SUGGEST_LOWPOWER", "1")
+except Exception:
+    pass
 
 def platform_report():
-    """One-line summary of what this machine can actually drive."""
     sysname = platform.system()
     bits = [f"platform: {sysname}"]
     try:
@@ -238,48 +249,41 @@ musiclogs_file = "musiclog.json"
 heartbeat_file = f"heartbeat{suffix}.txt"
 crashguard_file = f"crashguard{suffix}.txt"
 
-refresh_rate = 100  
-keyboard_layout = "US" 
+refresh_rate = 100
+keyboard_layout = "US"
 available_layouts = ["US", "UK", "DANISH", "GERMAN", "FRENCH", "TURKISH", "NORWEGIAN", "SWEDISH"]
 vote_timeout = 60
 
 obs_host = "localhost"
-obs_port = 4454 + instance_id  
-obs_password = ""  
+obs_port = 4454 + instance_id
+obs_password = ""
 obs_scene_main = "main2" if is_multistream else "main"
 obs_scene_revert = "revert2" if is_multistream else "revert"
 obs_scene_error = "serverdown2" if is_multistream else "serverdown"
 obs_scene_changevm = "changevm2" if is_multistream else "changevm"
 obs_scene_starting = "starting2" if is_multistream else "starting"
 
-admins = [] 
+admins = []
 owners = []
 gui_log_queue = queue.Queue(maxsize=300)
 log_lock = threading.Lock()
 
 
-# ── DEBUG SYSTEM ─────────────────────────────────────────────────────────────
-# Enable with --debug on the command line, YT2VM_DEBUG=1, or debug_mode in
-# settings. Everything important reports through dbg(), and the full trail is
-# written to debug_log.txt so a failure can be diagnosed after the fact.
-DEBUG_FILE = f"debug_log{suffix}.txt"
-# debug is ON by default now - a silent log helps nobody. use --quiet to stop it.
+
+
+_dbf = f"debug_log{suffix}.txt"
+
 DEBUG_ON = ("--quiet" not in sys.argv) and (os.environ.get("YT2VM_DEBUG") != "0")
 _dbg_lock = threading.Lock()
 _dbg_ring = collections.deque(maxlen=800)
 
-
-DBG_VISIBLE = {"vnc", "vmware", "backend", "vmfinder", "recovery"}
-_dbg_sink = None
-
+_dv = {"vnc", "vmware", "backend", "vmfinder", "recovery"}
+_ds = None
 
 def dbg(category, msg, exc=None):
-    """Structured debug line: time, thread, category, message.
-    Lines in DBG_VISIBLE are also mirrored into the app's Event Log so the user
-    can see what is happening without digging through a file."""
     try:
-        if _dbg_sink is not None and str(category) in DBG_VISIBLE:
-            _dbg_sink(f"[{category}] {msg}" + (f" ({type(exc).__name__}: {exc})" if exc else ""))
+        if _ds is not None and str(category) in _dv:
+            _ds(f"[{category}] {msg}" + (f" ({type(exc).__name__}: {exc})" if exc else ""))
     except Exception:
         pass
     if not DEBUG_ON:
@@ -295,18 +299,17 @@ def dbg(category, msg, exc=None):
                 line += "\n" + "".join("       " + l for l in tb.splitlines(True))
         with _dbg_lock:
             _dbg_ring.append(line)
-            print(line, flush=True)
+            if "--console" in sys.argv or os.environ.get("YT2VM_CONSOLE") == "1":
+                print(line, flush=True)
             try:
-                with open(DEBUG_FILE, "a", encoding="utf-8") as f:
+                with open(_dbf, "a", encoding="utf-8") as f:
                     f.write(line + "\n")
             except Exception:
                 pass
     except Exception:
         pass
 
-
 def dbg_run(category, cmd, timeout=15, **kw):
-    """subprocess.run with the command, exit code, stdout and stderr logged."""
     dbg(category, f"RUN {cmd if isinstance(cmd, str) else ' '.join(str(c) for c in cmd)}")
     t0 = time.time()
     try:
@@ -326,7 +329,6 @@ def dbg_run(category, cmd, timeout=15, **kw):
     except Exception as e:
         dbg(category, "  EXCEPTION", e)
         return None
-
 
 def safe_json_dump(filename, data):
     tmp_file = filename + ".tmp"
@@ -391,7 +393,8 @@ def console_log(level, msg):
     timestamp = time.strftime("%H:%M:%S")
     date_stamp = time.strftime("%Y-%m-%d")
     log_line = f"[{timestamp}] [{level.lower()}] {msg.lower()}"
-    print(log_line, flush=True)
+    if "--console" in sys.argv or os.environ.get("YT2VM_CONSOLE") == "1":
+        print(log_line, flush=True)
     try: gui_log_queue.put_nowait((level, log_line))
     except queue.Full: pass
     try:
@@ -399,7 +402,7 @@ def console_log(level, msg):
             with open(log_file, "a", encoding="utf-8") as f: f.write(f"[{date_stamp} {timestamp}] [{level.lower()}] {msg.lower()}\n")
     except Exception: pass
 
-possible_paths = [
+_pp = [
     r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe",
     r"C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe",
     r"D:\Program Files\Oracle\VirtualBox\VBoxManage.exe",
@@ -408,7 +411,7 @@ possible_paths = [
     "/usr/bin/VBoxManage", "/usr/local/bin/VBoxManage", "/opt/VirtualBox/VBoxManage",
     "VBoxManage"]
 
-VMRUN_PATHS = [
+_vrp = [
     r"C:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe",
     r"C:\Program Files\VMware\VMware Workstation\vmrun.exe",
     r"D:\Program Files (x86)\VMware\VMware Workstation\vmrun.exe",
@@ -417,36 +420,32 @@ VMRUN_PATHS = [
     "/usr/bin/vmrun", "/usr/local/bin/vmrun", "/opt/vmware/bin/vmrun"]
 
 def find_vmrun():
-    for pth in VMRUN_PATHS:
+    for pth in _vrp:
         if os.path.exists(pth): return pth
     found = shutil.which("vmrun")
-    return found or VMRUN_PATHS[0]
+    return found or _vrp[0]
 vbox_manage_cmd, _vbox_how = "VBoxManage", "not found"
 _which = shutil.which("VBoxManage") or shutil.which("vboxmanage")
 if _which:
     vbox_manage_cmd, _vbox_how = _which, "PATH"
 else:
-    for path in possible_paths:
+    for path in _pp:
         if os.path.exists(path):
             vbox_manage_cmd, _vbox_how = path, "known location"
             break
 
-_VBOX_MISSING_WARNED = False
-
+_vmw = False
 
 def run_vbox(args, timeout=10):
-    """All VBoxManage calls funnel through here, so --debug traces every one.
-    Returns None immediately when VirtualBox is not installed or the VMware
-    backend is active, instead of raising FileNotFoundError on a timer."""
-    global _VBOX_MISSING_WARNED
+    global _vmw
     if _active_backend() == "vmware":
         return None
     if resolve_vbox_path(vbox_manage_cmd)[1] == "not found":
-        if not _VBOX_MISSING_WARNED:
-            _VBOX_MISSING_WARNED = True
+        if not _vmw:
+            _vmw = True
             dbg("vbox", "VBoxManage not installed - VirtualBox commands are disabled")
         return None
-    global _VBOX_LOCKED
+    global _vlk
     if DEBUG_ON:
         r = dbg_run("vbox", [vbox_manage_cmd] + list(args), timeout=timeout)
     else:
@@ -455,13 +454,10 @@ def run_vbox(args, timeout=10):
         except Exception:
             r = None
     if r is not None:
-        _VBOX_LOCKED = is_vbox_lock_error(r.stderr) or is_vbox_lock_error(r.stdout)
+        _vlk = is_vbox_lock_error(r.stderr) or is_vbox_lock_error(r.stdout)
     return r
 
-
 def is_vbox_lock_error(txt):
-    """True if VBoxManage output means the VM session is locked / already in use
-    by a (possibly hung or crashed) process."""
     t = str(txt or "").lower()
     return any(m in t for m in (
         "is already locked", "already locked by a session",
@@ -471,16 +467,14 @@ def is_vbox_lock_error(txt):
         "0x80bb000c", "a session for the machine",
         "cannot lock", "e_accessdenied while ", "already has a lock"))
 
-VBOX_LAST_ERROR = ""
-_VBOX_LOCKED = False
-_SNAP_WARNED = set()
-
+_vle = ""
+_vlk = False
+_sw = set()
 
 def _active_backend():
-    """Which backend is selected, without needing the app instance."""
-    global _RUNTIME_BACKEND
+    global _rb
     try:
-        if _RUNTIME_BACKEND: return _RUNTIME_BACKEND
+        if _rb: return _rb
     except NameError:
         pass
     try:
@@ -490,81 +484,64 @@ def _active_backend():
         pass
     return "virtualbox"
 
-
-_RUNTIME_BACKEND = ""
-
+_rb = ""
 
 def resolve_vbox_path(preferred=""):
-    """Locate VBoxManage: an explicit setting, then PATH, then known install
-    directories. Returns (path, how_it_was_found)."""
     if preferred and (os.path.exists(preferred) or shutil.which(preferred)):
         return preferred, "configured"
     found = shutil.which("VBoxManage") or shutil.which("vboxmanage")
     if found:
         return found, "PATH"
-    for pth in possible_paths:
+    for pth in _pp:
         if os.path.exists(pth):
             return pth, "known location"
     return "VBoxManage", "not found"
 
-
 def get_all_vbox_vms(vbox_path="VBoxManage", quiet=False):
-    """List every VirtualBox VM.
-
-    Previously this used a 2 second timeout and, on failure, returned two
-    HARDCODED fake names - so a machine with no VirtualBox looked like it had
-    VMs that did not exist. It now uses a realistic timeout (VBoxManage has to
-    start VBoxSVC on first call, which can take several seconds), reports the
-    real reason it failed, and returns an empty list rather than fiction."""
-    global VBOX_LAST_ERROR
+    global _vle
     vms = []
     if _active_backend() == "vmware":
-        VBOX_LAST_ERROR = ""
+        _vle = ""
         return []
     path, how = resolve_vbox_path(vbox_path)
     dbg("vmfinder", f"listing vms using {path!r} (found via {how})")
     if how == "not found":
-        VBOX_LAST_ERROR = ("VBoxManage not found. Install VirtualBox, or set the path "
+        _vle = ("VBoxManage not found. Install VirtualBox, or set the path "
                            "on the VM Config page.")
-        dbg("vmfinder", VBOX_LAST_ERROR)
-        if not quiet: console_log("ERROR", VBOX_LAST_ERROR)
+        dbg("vmfinder", _vle)
+        if not quiet: console_log("ERROR", _vle)
         return []
     try:
         res = subprocess.run([path, "list", "vms"], capture_output=True, text=True, timeout=20)
         dbg("vmfinder", f"rc={res.returncode} stdout={len(res.stdout or '')}b stderr={(res.stderr or '').strip()[:120]}")
         if res.returncode != 0:
-            VBOX_LAST_ERROR = (res.stderr or "").strip() or f"VBoxManage exited {res.returncode}"
-            if not quiet: console_log("ERROR", f"vm list failed: {VBOX_LAST_ERROR[:160]}")
+            _vle = (res.stderr or "").strip() or f"VBoxManage exited {res.returncode}"
+            if not quiet: console_log("ERROR", f"vm list failed: {_vle[:160]}")
             return []
         for line in (res.stdout or "").splitlines():
             if '"' in line:
                 name = line.split('"')[1]
                 if name: vms.append(name)
-        VBOX_LAST_ERROR = "" if vms else "VirtualBox reported no VMs on this machine."
+        _vle = "" if vms else "VirtualBox reported no VMs on this machine."
         dbg("vmfinder", f"found {len(vms)} vm(s): {vms}")
         if not vms and not quiet:
             console_log("SYSTEM", "no virtualbox vms found - create one in VirtualBox first.")
     except subprocess.TimeoutExpired:
-        VBOX_LAST_ERROR = "VBoxManage timed out (VBoxSVC may be starting or hung)."
-        dbg("vmfinder", VBOX_LAST_ERROR)
-        if not quiet: console_log("ERROR", VBOX_LAST_ERROR)
+        _vle = "VBoxManage timed out (VBoxSVC may be starting or hung)."
+        dbg("vmfinder", _vle)
+        if not quiet: console_log("ERROR", _vle)
     except FileNotFoundError:
-        VBOX_LAST_ERROR = f"VBoxManage not executable at {path}"
-        dbg("vmfinder", VBOX_LAST_ERROR)
-        if not quiet: console_log("ERROR", VBOX_LAST_ERROR)
+        _vle = f"VBoxManage not executable at {path}"
+        dbg("vmfinder", _vle)
+        if not quiet: console_log("ERROR", _vle)
     except Exception as e:
-        VBOX_LAST_ERROR = f"{type(e).__name__}: {e}"
+        _vle = f"{type(e).__name__}: {e}"
         dbg("vmfinder", "vm list crashed", e)
         if not quiet: console_log("ERROR", f"vm list error: {e}")
     return vms
 
 def get_vbox_snapshots(vbox_path, vm_name):
-    """List VirtualBox snapshots.
-
-    Guarded three ways, because this is polled on a timer: it does nothing when
-    the VMware backend is active, nothing when VBoxManage is not installed, and
-    it logs a given failure only once instead of spamming the log every poll."""
-    global _SNAP_WARNED
+    global _sw
     snaps = []
     if not vm_name:
         return snaps
@@ -572,8 +549,8 @@ def get_vbox_snapshots(vbox_path, vm_name):
         return snaps
     path, how = resolve_vbox_path(vbox_path)
     if how == "not found":
-        if "nopath" not in _SNAP_WARNED:
-            _SNAP_WARNED.add("nopath")
+        if "nopath" not in _sw:
+            _sw.add("nopath")
             dbg("snapshots", "VBoxManage not installed - skipping snapshot lookups")
         return snaps
     try:
@@ -583,29 +560,29 @@ def get_vbox_snapshots(vbox_path, vm_name):
             err = (res.stderr or "").strip()
             if "does not have any snapshots" not in err.lower():
                 key = f"rc:{vm_name}"
-                if key not in _SNAP_WARNED:
-                    _SNAP_WARNED.add(key)
+                if key not in _sw:
+                    _sw.add(key)
                     dbg("snapshots", f"list failed for {vm_name}: {err[:140]}")
             return snaps
         for line in (res.stdout or "").splitlines():
             if "Name:" in line and "(UUID:" in line:
                 part = line.split("Name:")[1].split("(UUID:")[0].strip()
                 if part: snaps.append(part)
-        _SNAP_WARNED.discard(f"err:{vm_name}")
+        _sw.discard(f"err:{vm_name}")
         dbg("snapshots", f"{vm_name}: {len(snaps)} snapshot(s) {snaps}")
     except subprocess.TimeoutExpired:
         key = f"to:{vm_name}"
-        if key not in _SNAP_WARNED:
-            _SNAP_WARNED.add(key)
+        if key not in _sw:
+            _sw.add(key)
             dbg("snapshots", f"timeout listing snapshots for {vm_name}")
     except FileNotFoundError:
-        if "nopath" not in _SNAP_WARNED:
-            _SNAP_WARNED.add("nopath")
+        if "nopath" not in _sw:
+            _sw.add("nopath")
             dbg("snapshots", f"VBoxManage not found at {path} - skipping snapshot lookups")
     except Exception as e:
         key = f"err:{vm_name}"
-        if key not in _SNAP_WARNED:
-            _SNAP_WARNED.add(key)
+        if key not in _sw:
+            _sw.add(key)
             dbg("snapshots", f"error listing snapshots for {vm_name}: {type(e).__name__}: {e}")
     return snaps
 
@@ -620,11 +597,11 @@ vm_name = ""
 if available_vms:
     vm_name = available_vms[instance_id - 1] if len(available_vms) >= instance_id else available_vms[0]
 else:
-    vm_name = "Windows10ChatVm"   # placeholder until one is picked in VM Config
+    vm_name = "Windows10ChatVm"
 
-default_blocked_terms = []
+_dbt = []
 
-DANGEROUS_PAYLOAD = [
+_dpl = [
     "shutdown", "logoff", "poweroff", "slidetoshutdown", "format ", "diskpart",
     "bcdedit", "vssadmin", "cipher /w", "del /f", "del /q", "rd /s", "rmdir /s",
     "reg delete", "regdelete", "rundll32", "taskkill", "net user", "net localgroup",
@@ -633,7 +610,7 @@ DANGEROUS_PAYLOAD = [
     "attrib +h", "icacls", "takeown", "sc delete", "schtasks /create",
     "wscript", "cscript", "vssadmin delete", "cipher", "fsutil",
 ]
-IP_GRABBER_TERMS = [
+_igt = [
     "iplogger", "grabify", "ipgrabber", "ipinfo", "ifconfig.me", "icanhazip",
     "whatismyip", "whatismyipaddress", "ipify", "ip-api", "ipapi", "freegeoip",
     "geoip", "iplocation", "iptracker", "ip-tracker", "blasze", "yip.su", "2no.co",
@@ -643,9 +620,6 @@ _LEET_MAP = {"0":"o","1":"i","2":"z","3":"e","4":"a","5":"s","6":"g","7":"t","8"
              "9":"g","@":"a","$":"s","!":"i","|":"i","+":"t"}
 
 def normalize_payload(text):
-    """Collapse a string to bare letters so obfuscation can't sneak a blocked
-    word past: lowercases, maps leetspeak, strips non-letters, collapses repeats.
-    's-h.u.u.t_d0wn' and '$hutd0wn' both normalize to 'shutdown'."""
     out = []
     for ch in str(text).lower():
         ch = _LEET_MAP.get(ch, ch)
@@ -656,33 +630,32 @@ def normalize_payload(text):
     return "".join(res)
 
 def payload_is_dangerous(text):
-    """Return the matched term if this text would run something destructive."""
     raw = str(text).lower()
-    for frag in DANGEROUS_PAYLOAD:
+    for frag in _dpl:
         if frag in raw: return frag
     norm = normalize_payload(text)
-    for frag in DANGEROUS_PAYLOAD + IP_GRABBER_TERMS:
+    for frag in _dpl + _igt:
         nf = normalize_payload(frag)
         if nf and len(nf) >= 4 and nf in norm: return frag
     return None
 banned_words = []
 custom_commands = {}
 
-default_keydata = {"VERSION": 4, "RAW":{"esc":[1],"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"-":[12],"=":[13],"backspace":[14],"tab":[15],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"[":[26],"]":[27],"enter":[28],"ctrl":[29],"lctrl":[29],"rctrl":[224,29],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],";":[39],"'":[40],"`":[41],"shift":[42],"lshift":[42],"\\":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],",":[51],".":[52],"/":[53],"rshift":[54],"alt":[56],"lalt":[56],"ralt":[224,56],"space":[57],"capslock":[58],"f1":[59],"f2":[60],"f3":[61],"f4":[62],"f5":[63],"f6":[64],"f7":[65],"f8":[66],"f9":[67],"f10":[68],"f11":[87],"f12":[88],"numlock":[69],"scrolllock":[70],"home":[224,71],"up":[224,72],"pageup":[224,73],"left":[224,75],"right":[224,77],"end":[224,79],"down":[224,80],"pagedown":[224,81],"insert":[224,82],"delete":[224,83],"del":[224,83],"win":[224,91],"lwin":[224,91],"rwin":[224,92],"cmd":[224,91],"super":[224,91],"menu":[224,93],"plus":[13],"minus":[12],"return":[28],"numpad0":[82],"numpad1":[79],"numpad2":[80],"numpad3":[81],"numpad4":[75],"numpad5":[76],"numpad6":[77],"numpad7":[71],"numpad8":[72],"numpad9":[73],"numpad_dot":[83],"numpad_enter":[224,28],"numpad_plus":[78],"numpad_minus":[74],"numpad_mul":[55],"numpad_div":[224,53],"printscreen":[224,55,224,183],"pause":[225,29,69,225,157,197],"vol_mute":[224,32],"vol_down":[224,46],"vol_up":[224,48],"media_next":[224,25],"media_prev":[224,16],"media_stop":[224,36],"media_play_pause":[224,34]},"LAYOUTS":{"US":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"\\":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53]},"shift":{"!":[2],"@":[3],"#":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"|":[43],":":[39],"\"":[40],"~":[41],"<":[51],">":[52],"?":[53]},"altgr":{}},"UK":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"#":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53],"\\":[86]},"shift":{"!":[2],"\"":[3],"£":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"~":[43],":":[39],"@":[40],"¬":[41],"<":[51],">":[52],"?":[53],"|":[86]},"altgr":{"€":[5],"\\":[86]}},"DANISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"æ":[39],"ø":[40],"½":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Æ":[39],"Ø":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[86],"~":[27],"€":[18],"µ":[50]}},"GERMAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"z":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"y":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"ß":[12],"´":[13],"ü":[26],"+":[27],"#":[43],"ö":[39],"ä":[40],"^":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"§":[4],"$":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Ü":[26],"*":[27],"'":[43],"Ö":[39],"Ä":[40],"°":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"²":[3],"³":[4],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"@":[16],"€":[18],"~":[27],"|":[86],"µ":[50]}},"FRENCH":{"noshift":{"&":[2],"é":[3],"\"":[4],"'":[5],"(":[6],"-":[7],"è":[8],"_":[9],"ç":[10],"à":[11],")":[12],"=":[13],"a":[16],"z":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"^":[26],"$":[27],"q":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"m":[39],"ù":[40],"²":[41],"*":[43],"w":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],",":[50],";":[51],":":[52],"!":[53],"<":[86]," ":[57]},"shift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"°":[12],"+":[13],"¨":[26],"£":[27],"%":[40],"µ":[43],"?":[50],".":[51],"/":[52],"§":[53],">":[86]},"altgr":{"~":[3],"#":[4],"{":[5],"[":[6],"|":[7],"`":[8],"\\":[9],"^":[10],"@":[11],"]":[12],"}":[13],"€":[18]}},"TURKISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"ı":[23],"o":[24],"p":[25],"ğ":[26],"ü":[27],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"ş":[39],"i":[40],"\"":[41],",":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],"ö":[51],"ç":[52],".":[53],"<":[86]," ":[57],"*":[12],"-":[13]},"shift":{"!":[2],"'":[3],"^":[4],"+":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"_":[13],"Ğ":[26],"Ü":[27],"Ş":[39],"İ":[40],"é":[41],";":[43],"Ö":[51],"Ç":[52],":":[53],">":[86]},"altgr":{"@":[3],"#":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[13],"€":[18],"~":[41],"`":[43]}},"NORWEGIAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"\\":[13],"å":[26],"¨":[27],"@":[43],"ø":[39],"æ":[40],"|":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ø":[39],"Æ":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"~":[27],"€":[18],"µ":[50]}},"SWEDISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"ö":[39],"ä":[40],"§":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ö":[39],"Ä":[40],"½":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"~":[27],"|":[86],"€":[18],"µ":[50]}}}}
+_dkd = {"VERSION": 4, "RAW":{"esc":[1],"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"-":[12],"=":[13],"backspace":[14],"tab":[15],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"[":[26],"]":[27],"enter":[28],"ctrl":[29],"lctrl":[29],"rctrl":[224,29],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],";":[39],"'":[40],"`":[41],"shift":[42],"lshift":[42],"\\":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],",":[51],".":[52],"/":[53],"rshift":[54],"alt":[56],"lalt":[56],"ralt":[224,56],"space":[57],"capslock":[58],"f1":[59],"f2":[60],"f3":[61],"f4":[62],"f5":[63],"f6":[64],"f7":[65],"f8":[66],"f9":[67],"f10":[68],"f11":[87],"f12":[88],"numlock":[69],"scrolllock":[70],"home":[224,71],"up":[224,72],"pageup":[224,73],"left":[224,75],"right":[224,77],"end":[224,79],"down":[224,80],"pagedown":[224,81],"insert":[224,82],"delete":[224,83],"del":[224,83],"win":[224,91],"lwin":[224,91],"rwin":[224,92],"cmd":[224,91],"super":[224,91],"menu":[224,93],"plus":[13],"minus":[12],"return":[28],"numpad0":[82],"numpad1":[79],"numpad2":[80],"numpad3":[81],"numpad4":[75],"numpad5":[76],"numpad6":[77],"numpad7":[71],"numpad8":[72],"numpad9":[73],"numpad_dot":[83],"numpad_enter":[224,28],"numpad_plus":[78],"numpad_minus":[74],"numpad_mul":[55],"numpad_div":[224,53],"printscreen":[224,55,224,183],"pause":[225,29,69,225,157,197],"vol_mute":[224,32],"vol_down":[224,46],"vol_up":[224,48],"media_next":[224,25],"media_prev":[224,16],"media_stop":[224,36],"media_play_pause":[224,34]},"LAYOUTS":{"US":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"\\":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53]},"shift":{"!":[2],"@":[3],"#":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"|":[43],":":[39],"\"":[40],"~":[41],"<":[51],">":[52],"?":[53]},"altgr":{}},"UK":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"#":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53],"\\":[86]},"shift":{"!":[2],"\"":[3],"£":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"~":[43],":":[39],"@":[40],"¬":[41],"<":[51],">":[52],"?":[53],"|":[86]},"altgr":{"€":[5],"\\":[86]}},"DANISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"æ":[39],"ø":[40],"½":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Æ":[39],"Ø":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[86],"~":[27],"€":[18],"µ":[50]}},"GERMAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"z":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"y":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"ß":[12],"´":[13],"ü":[26],"+":[27],"#":[43],"ö":[39],"ä":[40],"^":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"§":[4],"$":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Ü":[26],"*":[27],"'":[43],"Ö":[39],"Ä":[40],"°":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"²":[3],"³":[4],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"@":[16],"€":[18],"~":[27],"|":[86],"µ":[50]}},"FRENCH":{"noshift":{"&":[2],"é":[3],"\"":[4],"'":[5],"(":[6],"-":[7],"è":[8],"_":[9],"ç":[10],"à":[11],")":[12],"=":[13],"a":[16],"z":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"^":[26],"$":[27],"q":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"m":[39],"ù":[40],"²":[41],"*":[43],"w":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],",":[50],";":[51],":":[52],"!":[53],"<":[86]," ":[57]},"shift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"°":[12],"+":[13],"¨":[26],"£":[27],"%":[40],"µ":[43],"?":[50],".":[51],"/":[52],"§":[53],">":[86]},"altgr":{"~":[3],"#":[4],"{":[5],"[":[6],"|":[7],"`":[8],"\\":[9],"^":[10],"@":[11],"]":[12],"}":[13],"€":[18]}},"TURKISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"ı":[23],"o":[24],"p":[25],"ğ":[26],"ü":[27],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"ş":[39],"i":[40],"\"":[41],",":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],"ö":[51],"ç":[52],".":[53],"<":[86]," ":[57],"*":[12],"-":[13]},"shift":{"!":[2],"'":[3],"^":[4],"+":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"_":[13],"Ğ":[26],"Ü":[27],"Ş":[39],"İ":[40],"é":[41],";":[43],"Ö":[51],"Ç":[52],":":[53],">":[86]},"altgr":{"@":[3],"#":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[13],"€":[18],"~":[41],"`":[43]}},"NORWEGIAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"\\":[13],"å":[26],"¨":[27],"@":[43],"ø":[39],"æ":[40],"|":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ø":[39],"Æ":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"~":[27],"€":[18],"µ":[50]}},"SWEDISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"ö":[39],"ä":[40],"§":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ö":[39],"Ä":[40],"½":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"~":[27],"|":[86],"€":[18],"µ":[50]}}}}
 
 _needs_update = False
 if os.path.exists(scancodes_file):
     try:
         with open(scancodes_file, "r", encoding="utf-8") as f: _loaded_data = json.load(f)
-        if "LAYOUTS" not in _loaded_data or "RAW" not in _loaded_data or _loaded_data.get("VERSION") != default_keydata.get("VERSION"): _needs_update = True
+        if "LAYOUTS" not in _loaded_data or "RAW" not in _loaded_data or _loaded_data.get("VERSION") != _dkd.get("VERSION"): _needs_update = True
     except Exception: _needs_update = True
 else: _needs_update = True
 
 if _needs_update:
     try:
-        with open(scancodes_file, "w", encoding="utf-8") as f: json.dump(default_keydata, f, indent=4, ensure_ascii=False)
-        _loaded_data = default_keydata.copy()
-    except Exception: _loaded_data = default_keydata.copy()
+        with open(scancodes_file, "w", encoding="utf-8") as f: json.dump(_dkd, f, indent=4, ensure_ascii=False)
+        _loaded_data = _dkd.copy()
+    except Exception: _loaded_data = _dkd.copy()
 
 scancodes = _loaded_data["RAW"]
 _layouts = _loaded_data["LAYOUTS"]
@@ -763,7 +736,6 @@ def clean_text(text):
     return ''.join(c for c in text if c <= '\uFFFF')
 
 def safe_int(val, default=0, lo=None, hi=None):
-    """Chat is untrusted input - '!move left abc' must not raise."""
     try:
         n = int(str(val).strip())
     except Exception:
@@ -774,7 +746,6 @@ def safe_int(val, default=0, lo=None, hi=None):
     if lo is not None and n < lo: n = lo
     if hi is not None and n > hi: n = hi
     return n
-
 
 def escape_html(text):
     if not isinstance(text, str): return str(text)
@@ -792,11 +763,7 @@ def add_to_history(user, msg, tag, is_mod=False, is_owner=False):
 _obs_warned_at = 0
 _obs_down_until = 0
 
-
 def obs_reachable():
-    """Probe the OBS websocket port before connecting. obsws_python prints a
-    full traceback to stderr when the port is refused, so we avoid calling it
-    at all when OBS is not running, and back off for a while."""
     global _obs_down_until, _obs_warned_at
     if time.time() < _obs_down_until:
         return False
@@ -812,9 +779,7 @@ def obs_reachable():
         dbg("obs", f"port {obs_host}:{obs_port} refused; backing off 30s")
         return False
 
-
 def _obs_note_fail(e):
-    """OBS not running is normal - log one short line, not a stack trace."""
     global _obs_warned_at
     msg = str(e)
     if "refused" in msg.lower() or "10061" in msg or "timed out" in msg.lower():
@@ -824,7 +789,6 @@ def _obs_note_fail(e):
         dbg("obs", f"connect refused: {msg[:120]}")
     else:
         dbg("obs", "obs error", e)
-
 
 def set_obs_scene(scene_name):
     try:
@@ -873,7 +837,7 @@ if flask_available:
     @obs_web_overlay_app.route('/stats')
     def stats_overlay(): return render_template_string(html_stats, version=version)
     @obs_web_overlay_app.route('/stats_data')
-    def get_stats_data(): 
+    def get_stats_data():
         uptime_sec = int(time.time() - script_start_time)
         d, r = divmod(uptime_sec, 86400)
         h, r = divmod(r, 3600)
@@ -881,7 +845,7 @@ if flask_available:
         uptime_str = f"{d}d {h}h {m}m {s}s" if d > 0 else f"{h}h {m}m {s}s"
         return jsonify({"uptime": uptime_str, "commands": total_commands_executed, "failed": total_commands_failed, "viewers": current_viewers, "likes": current_likes})
     @obs_web_overlay_app.route('/updates')
-    def get_updates(): 
+    def get_updates():
         with buffer_lock:
             data = list(messages_buffer)
             messages_buffer.clear()
@@ -898,7 +862,7 @@ if flask_available:
             rebuild_sec = int(time.time() - getattr(main_gui_application, 'last_com_rebuild_time', time.time()))
         return jsonify({"qsize": qsize, "comstate": comstate, "threads": threads, "rebuild": f"{rebuild_sec}s ago", "failed": total_commands_failed})
     @obs_web_overlay_app.route('/history')
-    def get_history(): 
+    def get_history():
         with history_lock: return jsonify(list(web_chat_history))
     @obs_web_overlay_app.route('/status_update')
     def get_status_update(): return jsonify({"status": current_status, "vote": current_vote_info, "viewers": current_viewers, "likes": current_likes, "chat_visible": overlay_chat_visible, "split_mode": split_overlay_mode})
@@ -915,7 +879,7 @@ if flask_available:
 def start_flask():
     global flask_port
     if flask_available:
-        try: 
+        try:
             if 'flask.cli' in sys.modules: sys.modules['flask.cli'].show_server_banner = lambda *x: None
             if platform.system() == "Windows":
                 try:
@@ -925,7 +889,7 @@ def start_flask():
                             pid = line.strip().split()[-1]
                             if pid.isdigit() and int(pid) > 0 and int(pid) != os.getpid():
                                 subprocess.call(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                time.sleep(0.5) 
+                                time.sleep(0.5)
                 except Exception: pass
             for port in range(flask_port, flask_port + 10):
                 try:
@@ -948,13 +912,7 @@ def list_serial_ports():
         else: ports = ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyUSB0"]
     return ports
 
-
 class PicoController:
-    """Sends line-based commands to a Pico 2 W acting as a USB HID device on a
-    real physical machine. Protocol is simple newline-terminated text:
-      TYPE <t> | SEND <t> | KEY <k> | COMBO a+b | KEYDOWN <k> | KEYUP <k>
-      CLICK | RCLICK | MCLICK | MOVE dx dy | ABS x y | SCROLL n | DRAG dx dy
-    Only dispatch() needs changing if your firmware speaks a different protocol."""
     def __init__(self, port="", baud=115200):
         self.port = port
         self.baud = baud
@@ -1003,9 +961,8 @@ class PicoController:
             self.send_line((m[base] + " " + arg).strip())
 
 
-# Raw X11 keysym characters. vncdotool's named-key lookup is buggy for several
-# keys, so the keysym is sent directly instead of the name.
-VNC_KEYMAP = {
+
+_vkm = {
     "esc": chr(0xff1b), "escape": chr(0xff1b),
     "tab": chr(0xff09),
     "enter": chr(0xff0d), "return": chr(0xff0d),
@@ -1025,20 +982,16 @@ VNC_KEYMAP = {
     "up": chr(0xff52), "down": chr(0xff54), "left": chr(0xff51), "right": chr(0xff53),
     "printscreen": chr(0xff61), "pause": chr(0xff13),
 }
-for _i in range(1, 13): VNC_KEYMAP[f"f{_i}"] = chr(0xffbd + _i)
-for _c in "abcdefghijklmnopqrstuvwxyz0123456789": VNC_KEYMAP[_c] = _c
-
+for _i in range(1, 13): _vkm[f"f{_i}"] = chr(0xffbd + _i)
+for _c in "abcdefghijklmnopqrstuvwxyz0123456789": _vkm[_c] = _c
 
 def parse_combo_keys(args):
-    """Accept 'win r', 'win+r' and 'winr' as the same combo. If a separator is
-    present it is used directly; only a separator-less string falls back to a
-    greedy longest-name match, so a properly delimited combo is never re-split."""
     text = (args or "").strip().lower()
     if not text:
         return []
     if " " in text or "+" in text:
         return [k for k in text.replace("+", " ").split() if k]
-    known = sorted(VNC_KEYMAP.keys(), key=len, reverse=True)
+    known = sorted(_vkm.keys(), key=len, reverse=True)
     out, i = [], 0
     while i < len(text):
         for k in known:
@@ -1048,27 +1001,21 @@ def parse_combo_keys(args):
             out.append(text[i:]); break
     return out
 
-
-VNC_PASS_FILE = "vncpass.txt"
-
-# ── VNC LAYOUT TRANSLATION ───────────────────────────────────────────────────
-# VMware maps an incoming VNC keysym to a PHYSICAL KEY using a US layout, and
-# the guest OS then interprets that key with ITS layout. So sending ':' to a
-# Danish guest presses the US ':' key, which on a Danish keyboard is 'ae'.
-# The fix is to send the keysym whose US key position produces the character we
-# actually want under the guest's layout.
-_VNC_XLAT_CACHE = {}
+_vpf = "vncpass.txt"
 
 
-_LOCAL_IP_CACHE = {"ip": None, "at": 0}
 
+
+
+_vxc = {}
+
+_lic = {"ip": None, "at": 0}
 
 def load_saved_vnc_pass():
-    """Passwords the user has already told us about, newest first."""
     out = []
     try:
-        if os.path.exists(VNC_PASS_FILE):
-            with open(VNC_PASS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(_vpf):
+            with open(_vpf, "r", encoding="utf-8") as f:
                 for ln in f:
                     ln = ln.rstrip("\n")
                     if ln and ln not in out:
@@ -1077,9 +1024,7 @@ def load_saved_vnc_pass():
         pass
     return out
 
-
 def save_vnc_pass(pw):
-    """Remember a working password so we never have to ask again."""
     if pw is None:
         return
     try:
@@ -1087,27 +1032,20 @@ def save_vnc_pass(pw):
         if pw in existing:
             existing.remove(pw)
         existing.insert(0, pw)
-        with open(VNC_PASS_FILE, "w", encoding="utf-8") as f:
+        with open(_vpf, "w", encoding="utf-8") as f:
             f.write("\n".join(existing[:10]) + "\n")
         try:
             if os.name == "posix":
-                os.chmod(VNC_PASS_FILE, 0o600)
+                os.chmod(_vpf, 0o600)
         except Exception:
             pass
-        dbg("vnc", f"saved working vnc password to {VNC_PASS_FILE} (owner-only)")
+        dbg("vnc", f"saved working vnc password to {_vpf} (owner-only)")
     except Exception as e:
         dbg("vnc", "could not save vnc password", e)
 
-
 def get_local_ipv4(prefer_adapter="Ethernet", force=False):
-    """Find this PC's LAN IPv4.
-
-    On Windows it parses `ipconfig`, preferring 'Ethernet adapter Ethernet' and
-    reading its IPv4 line, while skipping VMware/VirtualBox virtual adapters
-    (which otherwise hand back a useless host-only 192.168.x.1). Falls back to a
-    UDP-socket trick that works on every platform without sending anything."""
-    if not force and _LOCAL_IP_CACHE["ip"] and time.time() - _LOCAL_IP_CACHE["at"] < 120:
-        return _LOCAL_IP_CACHE["ip"]
+    if not force and _lic["ip"] and time.time() - _lic["at"] < 120:
+        return _lic["ip"]
     ip = None
     if platform.system() == "Windows":
         try:
@@ -1179,10 +1117,9 @@ def get_local_ipv4(prefer_adapter="Ethernet", force=False):
             dbg("net", f"local ip {ip} via socket fallback")
         except Exception:
             ip = None
-    _LOCAL_IP_CACHE["ip"] = ip
-    _LOCAL_IP_CACHE["at"] = time.time()
+    _lic["ip"] = ip
+    _lic["at"] = time.time()
     return ip
-
 
 def _tcp_listening(host, port, timeout=0.4):
     import socket
@@ -1193,23 +1130,18 @@ def _tcp_listening(host, port, timeout=0.4):
         return False
 
 
-# host-side VNC servers that squat on 5900 and intercept our connection
-VNC_SQUATTER_PROCS = [
+_vsp = [
     "tvnserver.exe", "tvnviewer.exe", "winvnc.exe", "winvnc4.exe",
     "vncserver.exe", "vncserverui.exe", "vncviewer.exe",
     "x11vnc", "tigervncserver", "Xtightvnc",
 ]
-VNC_SQUATTER_SERVICES = ["tvnserver", "uvnc_service", "vncserver", "RealVNC Server"]
-
+_vss = ["tvnserver", "uvnc_service", "vncserver", "RealVNC Server"]
 
 def kill_vnc_squatters(reason=""):
-    """Stop any host VNC server (TightVNC, UltraVNC, RealVNC...) holding our
-    port. Otherwise the bot connects to the HOST's VNC server instead of the
-    guest and every keystroke goes to the wrong machine."""
     killed = []
     try:
         if platform.system() == "Windows":
-            for svc in VNC_SQUATTER_SERVICES:
+            for svc in _vss:
                 try:
                     r = subprocess.run(["sc", "stop", svc], capture_output=True, text=True, timeout=12)
                     if r.returncode == 0:
@@ -1217,7 +1149,7 @@ def kill_vnc_squatters(reason=""):
                         dbg("vnc", f"stopped service {svc}")
                 except Exception:
                     pass
-            for proc in VNC_SQUATTER_PROCS:
+            for proc in _vsp:
                 if not proc.lower().endswith(".exe"):
                     continue
                 try:
@@ -1229,7 +1161,7 @@ def kill_vnc_squatters(reason=""):
                 except Exception:
                     pass
         else:
-            for proc in VNC_SQUATTER_PROCS:
+            for proc in _vsp:
                 name = proc[:-4] if proc.lower().endswith(".exe") else proc
                 try:
                     r = subprocess.run(["pkill", "-f", name], capture_output=True, text=True, timeout=10)
@@ -1246,37 +1178,25 @@ def kill_vnc_squatters(reason=""):
         time.sleep(1.2)
     return killed
 
-
 def pick_free_vnc_port(start=5900, end=5920, host="127.0.0.1"):
-    """Find a port nothing else is listening on. TightVNC/RealVNC/UltraVNC on
-    the HOST default to 5900, which collides with the VM's VNC server."""
     for port in range(int(start), int(end) + 1):
         if not _tcp_listening(host, port):
             return port
     return int(start)
 
-
 def vnc_port_conflict(port, host="127.0.0.1"):
-    """True when something is ALREADY listening before our VM has opened it."""
     return _tcp_listening(host, port)
 
-
 def build_vnc_translation(layout):
-    """char wanted on the guest -> (us_base_key, need_shift, need_altgr)
-
-    VMware maps an incoming keysym to a physical key but does NOT apply the
-    shift/AltGr that keysym implies - sending '*' pressed the right key without
-    shift and produced '. So every character is resolved to the UNSHIFTED US key
-    at the correct physical position, and we hold shift or AltGr ourselves."""
     layout = (layout or "US").upper()
-    if layout in _VNC_XLAT_CACHE:
-        return _VNC_XLAT_CACHE[layout]
+    if layout in _vxc:
+        return _vxc[layout]
     table = {}
     try:
         tgt = _layouts.get(layout)
         us = _layouts.get("US")
         if tgt and us:
-            # physical key -> the UNSHIFTED us character that reaches it
+
             us_base = {}
             for ch, codes in (us.get("noshift") or {}).items():
                 us_base[tuple(codes)] = ch
@@ -1286,36 +1206,30 @@ def build_vnc_translation(layout):
                 for ch, codes in (tgt.get(level) or {}).items():
                     base = us_base.get(tuple(codes))
                     if base is None:
-                        table[ch] = (None, False, False)   # no us key -> alt+numpad
+                        table[ch] = (None, False, False)
                     else:
                         table[ch] = (base, need_shift, need_altgr)
     except Exception as e:
         dbg("vnc", f"could not build translation for {layout}", e)
-    _VNC_XLAT_CACHE[layout] = table
+    _vxc[layout] = table
     return table
 
-
-_VNC_LAYOUT_CHARS = {}
-
+_vlc = {}
 
 def _layout_can_type(ch, layout):
     key = layout.upper()
-    if key not in _VNC_LAYOUT_CHARS:
+    if key not in _vlc:
         chars = set()
         tgt = _layouts.get(key) or {}
         for level in ("noshift", "shift", "altgr"):
             chars.update((tgt.get(level) or {}).keys())
-        _VNC_LAYOUT_CHARS[key] = chars
-    return ch in _VNC_LAYOUT_CHARS[key]
-
+        _vlc[key] = chars
+    return ch in _vlc[key]
 
 def vnc_char_for(ch, layout):
-    """Return (us_base_key, need_shift, need_altgr).
-    base None means there is no reachable key - use Alt+numpad."""
     layout = (layout or "US").upper()
-    # Turkish has two separate i letters: I is the capital of dotless 'i' (ı),
-    # and the capital of ordinary 'i' is 'Ii'. Lowercasing naively lands on the
-    # wrong key, so map the pair explicitly.
+
+
     if layout == "TURKISH":
         tr_pair = {"I": "\u0131", "\u0130": "i"}
         if ch in tr_pair:
@@ -1323,8 +1237,7 @@ def vnc_char_for(ch, layout):
             if base is not None:
                 return base, True, altgr
             return None, False, False
-    # uppercase letters are shift + the lowercase key on every layout, and the
-    # letter positions match US on QWERTY/QWERTZ/AZERTY alike once translated
+
     if ch.isalpha() and ch.isupper() and ch.lower() != ch:
         base, _s, altgr = vnc_char_for(ch.lower(), layout)
         if base is not None:
@@ -1339,14 +1252,7 @@ def vnc_char_for(ch, layout):
         return None, False, False
     return ch, False, False
 
-
 class VMwareController:
-    """VMware Workstation backend.
-
-    Lifecycle runs through vmrun (start/stop/reset/snapshot). Input runs over
-    VNC with vncdotool, because VMware exposes no scancode API like VirtualBox.
-    VNC is keysym-based, so characters are sent as characters and VMware maps
-    them using RemoteDisplay.vnc.keyMap in the .vmx (we set 'us' or 'dk')."""
 
     def __init__(self, vmrun_path="", vmx="", host="127.0.0.1", port=5900, password="", keymap="us"):
         self.vmrun_path = vmrun_path or find_vmrun()
@@ -1355,9 +1261,8 @@ class VMwareController:
         self.port = int(port or 5900)
         self.password = password or ""
         self.keymap = keymap if keymap in ("us", "dk") else "us"
-        # the guest OS keyboard layout (DANISH, GERMAN...). This is what the
-        # translation uses; the .vmx keyMap is always pinned to "us" so the
-        # mapping stays predictable.
+
+
         self.guest_layout = "US"
         self.cfg = {}
         self.host_type = ""
@@ -1368,10 +1273,7 @@ class VMwareController:
         self._last_ok = 0
         self.lock = threading.RLock()
 
-    # ---- vmrun lifecycle ----
     def _host_type(self):
-        """vmrun needs the product: 'fusion' on macOS, 'ws' for Workstation,
-        'player' for VMware Player. Passing 'ws' on a Mac simply fails."""
         if getattr(self, "host_type", ""):
             return self.host_type
         if platform.system() == "Darwin":
@@ -1433,10 +1335,7 @@ class VMwareController:
     def delete_snapshot(self, name):
         return self._vmrun("deleteSnapshot", self.vmx, name, timeout=120)
 
-    # ---- .vmx VNC setup ----
     def read_vmx_vnc(self):
-        """Return the VNC settings currently in the .vmx, so the UI can show
-        what VMware will actually use rather than what we hoped we set."""
         info = {"enabled": None, "port": None, "keymap": None, "password": None, "key": None}
         try:
             for ln in open(self.vmx, "r", encoding="utf-8", errors="ignore"):
@@ -1453,8 +1352,6 @@ class VMwareController:
         return info
 
     def resolve_port_conflict(self, auto=True):
-        """If something else already owns our VNC port while the VM is OFF, that
-        is another VNC server (commonly TightVNC on 5900). Move to a free port."""
         try:
             if self.is_running():
                 return False, "vm is running - cannot check safely"
@@ -1466,8 +1363,7 @@ class VMwareController:
                "(TightVNC/RealVNC/UltraVNC usually take 5900)")
         if not auto:
             return True, msg
-        # first try to just stop the offender - keeping port 5900 is nicer than
-        # relocating, and TightVNC is rarely needed while streaming a VM
+
         if self.auto_kill_squatters:
             killed = kill_vnc_squatters(f"it was holding port {self.port}")
             if killed and not vnc_port_conflict(self.port, self.host):
@@ -1480,31 +1376,24 @@ class VMwareController:
         return True, f"{msg}. Moved this VM to port {newp}."
 
     def ensure_vnc_in_vmx(self):
-        """Write the VNC settings VMware needs. The VM must be powered off.
-
-        Importantly, when no password is set this REMOVES any existing
-        RemoteDisplay.vnc.password AND RemoteDisplay.vnc.key lines. VMware
-        stores the password in an encoded 'key' entry too, so leaving that
-        behind means VMware keeps demanding a password you thought you deleted."""
         if not self.vmx or not os.path.exists(self.vmx):
             return False
         self.resolve_port_conflict(auto=True)
         pw = str(self.password or "")
         if len(pw) > 8:
-            # VNC auth (DES) only uses the first 8 characters
+
             console_log("SYSTEM", "vnc passwords are limited to 8 characters - truncating.")
             pw = pw[:8]
             self.password = pw
         want = {
             "RemoteDisplay.vnc.enabled": '"TRUE"',
             "RemoteDisplay.vnc.port": f'"{self.port}"',
-            # pinned to us: the script translates characters itself, so VMware
-            # must NOT also remap them or everything gets mangled twice
+
             "RemoteDisplay.vnc.keyMap": '"us"',
         }
         if pw:
             want["RemoteDisplay.vnc.password"] = f'"{pw}"'
-        # when there is no password, these must be GONE, not just blank
+
         drop = set() if pw else {"remotedisplay.vnc.password", "remotedisplay.vnc.key"}
         try:
             with open(self.vmx, "r", encoding="utf-8", errors="ignore") as f:
@@ -1541,7 +1430,6 @@ class VMwareController:
             console_log("ERROR", f"could not edit vmx: {e}")
             return False
 
-    # ---- VNC input ----
     def config_get(self, key, default=None):
         try:
             return self.cfg.get(key, default)
@@ -1549,16 +1437,12 @@ class VMwareController:
             return default
 
     def _clear_stuck_modifiers(self, client):
-        """Release every modifier, in case a previous keyDown never got its keyUp."""
         for ks in (chr(0xFFE1), chr(0xFFE2), chr(0xFFE3), chr(0xFFE4),
                    chr(0xFFE9), chr(0xFFEA), chr(0xFE03), chr(0xFFEB), chr(0xFFEC)):
             try: client.keyUp(ks)
             except Exception: pass
 
     def _ask_vnc_password(self):
-        """Ask the user for the VNC password once, on the UI thread, and return
-        it (or None if they cancel). The answer is saved to vncpass.txt so this
-        only ever happens once per password."""
         if getattr(self, "_asking_pw", False):
             return None
         self._asking_pw = True
@@ -1586,7 +1470,7 @@ class VMwareController:
         root = getattr(VMwareController, "_ui_root", None)
         try:
             if root is not None:
-                root.after(0, _prompt)       # dialogs must run on the UI thread
+                root.after(0, _prompt)
                 done.wait(120)
             else:
                 _prompt()
@@ -1597,9 +1481,6 @@ class VMwareController:
 
     @staticmethod
     def _port_open(host, port, timeout=1.0):
-        """Fast TCP probe. api.connect() blocks for a long time on a refused
-        port, and doing that inside the executor thread stalls the whole bot -
-        so the port is checked first and we fail fast instead."""
         import socket
         try:
             with socket.create_connection((host, int(port)), timeout=timeout):
@@ -1608,9 +1489,6 @@ class VMwareController:
             return False
 
     def connect(self, timeout=6.0):
-        """Connect to the guest's VNC server without ever blocking the caller
-        indefinitely: probe the port, then run api.connect in a worker thread
-        with a hard timeout."""
         t0 = time.time()
         try:
             from vncdotool import api
@@ -1618,8 +1496,7 @@ class VMwareController:
             self.status = "vncdotool not installed (pip install vncdotool)"
             dbg("vnc", self.status)
             return False
-        # VMware's VNC may bind to loopback OR to this PC's LAN address, so probe
-        # both and use whichever actually answers.
+
         hosts = []
         for h in (self.host, "127.0.0.1", get_local_ipv4(), "localhost"):
             if h and h not in hosts:
@@ -1638,13 +1515,12 @@ class VMwareController:
         if live != self.host:
             dbg("vnc", f"vnc answered on {live} (not {self.host}) - switching to it")
             self.host = live
-        # the port answers, but is it OUR vm? if the vm is powered off then this
-        # is some other vnc server on the host (TightVNC etc) and connecting to
-        # it would send keystrokes to the wrong machine entirely.
+
+
         try:
             if not self.is_running():
                 self.client = None
-                # the vm is off, so whatever answered is a host vnc server - kill it
+
                 if self.auto_kill_squatters:
                     killed = kill_vnc_squatters(f"it answered on {self.host}:{self.port} while the VM was off")
                     if killed:
@@ -1662,17 +1538,16 @@ class VMwareController:
         dbg("vnc", f"port {self.host}:{self.port} is open, connecting...")
         self.disconnect()
 
-        # Try passwords in order: the configured one, then blank, then the common
-        # VMware default, then anything the user has told us before. The first
-        # one that works gets remembered.
+
+
         candidates = []
         def _add(p):
             key = "" if p is None else str(p)
             if key not in [("" if c is None else str(c)) for c in candidates]:
                 candidates.append(p)
         if self.password: _add(str(self.password))
-        _add(None)          # blank / no auth
-        _add("1234")        # common default
+        _add(None)
+        _add("1234")
         for saved in load_saved_vnc_pass(): _add(saved)
 
         last_err = None
@@ -1702,7 +1577,7 @@ class VMwareController:
             last_err = result.get("err")
             dbg("vnc", f"auth attempt with {'blank' if not pw else repr(pw)} failed: {str(last_err)[:80]}")
         else:
-            # every candidate failed - ask the user, then retry with what they give us
+
             self.client = None
             asked = self._ask_vnc_password()
             if asked is not None:
@@ -1764,19 +1639,12 @@ class VMwareController:
         self.client = None
 
     def _need(self, fresh=False):
-        """Keep ONE live session for the whole chain.
-
-        Reconnecting per action was breaking multi-command chains: VMware resets
-        the guest's keyboard state when a VNC client disconnects, so
-        '!combo win+r !type notepad' opened Run and then lost the typing. Only
-        reconnect when there is no client, when the caller forces it, or when the
-        session has been idle long enough to have gone stale."""
         idle = time.time() - getattr(self, "_last_ok", 0)
         if self.client is None or fresh or idle > 120:
             self.connect()
         if self.client is None:
             try:
-                from vncdotool import api  # noqa
+                from vncdotool import api
                 self.status = (self.status or "vnc not connected") + " (is VNC enabled in the .vmx and the VM running?)"
             except Exception:
                 self.status = "vncdotool not installed - run: pip install vncdotool"
@@ -1785,14 +1653,10 @@ class VMwareController:
         return True
 
     def _alt_numpad(self, ch):
-        """Type a character by holding Alt and entering its code on the numpad.
-        Windows accepts this regardless of the guest's keyboard layout, which is
-        the only way to reach keys that do not exist on a US keyboard (| < > on
-        Danish live on the extra ISO key next to left shift)."""
         try:
             code = str(ord(ch))
-            alt = chr(0xFFE9)                      # Alt_L
-            kp = {str(d): chr(0xFFB0 + d) for d in range(10)}   # KP_0..KP_9
+            alt = chr(0xFFE9)
+            kp = {str(d): chr(0xFFB0 + d) for d in range(10)}
             self.client.keyDown(alt); self._flush()
             try:
                 for digit in code:
@@ -1807,10 +1671,9 @@ class VMwareController:
             return False
 
     def _flush(self, hard=False):
-        # vncdotool sends async. A tiny pause forces the queue out, but doing it
-        # after EVERY key made a full network round-trip per character, which is
-        # what made typing crawl on a slow PC. Only flush hard where ordering
-        # actually matters (after a modifier press); otherwise skip it.
+
+
+
         if not hard:
             return
         try:
@@ -1818,12 +1681,11 @@ class VMwareController:
         except Exception:
             pass
 
-    MAX_TYPE = 4000   # hard ceiling so one giant command can never wedge typing
+    MAX_TYPE = 4000
 
     def type_text(self, text):
         if not self._need(): return
-        # protect the box: an enormous string would take minutes and can brick a
-        # slow host, so cap it and tell the user rather than freezing.
+
         if len(text) > self.MAX_TYPE:
             dbg("vmware", f"type request {len(text)} chars > {self.MAX_TYPE}, truncating")
             console_log("SYSTEM", f"typing truncated to {self.MAX_TYPE} chars (command too long)")
@@ -1837,8 +1699,7 @@ class VMwareController:
         ALT_L = chr(0xFFE9)
         CTRL_L = chr(0xFFE3)
         altgr_mode = str(self.config_get("altgr_mode", "alt_r")).lower()
-        # per-character delay: 0 by default so a fast PC rips through it; users on
-        # a slow VM can raise vmware_settle if the guest drops keys.
+
         try:
             per_char = max(0.0, float(self.config_get("vmware_settle", 1.0)) - 1.0) * 0.01
         except Exception:
@@ -1858,7 +1719,7 @@ class VMwareController:
                         if base is None or (need_altgr and altgr_mode == "numpad"):
                             self._alt_numpad(ch)
                         elif not need_shift and not need_altgr:
-                            # the common case: plain key, no modifier, no flush
+
                             self.client.keyPress(base)
                         else:
                             held = []
@@ -1871,9 +1732,9 @@ class VMwareController:
                                         self.client.keyDown(ALT_L); held.append(ALT_L)
                                     else:
                                         self.client.keyDown(ALT_R); held.append(ALT_R)
-                                    self._flush(hard=True)   # modifier must land first
+                                    self._flush(hard=True)
                                 self.client.keyPress(base)
-                                self._flush(hard=True)       # key before release
+                                self._flush(hard=True)
                             finally:
                                 for mod in reversed(held):
                                     try: self.client.keyUp(mod)
@@ -1898,7 +1759,7 @@ class VMwareController:
                           + (f" ({fails} retried)" if fails else ""))
 
     def press_key(self, name):
-        k = VNC_KEYMAP.get((name or "").lower().strip(), (name or "").lower().strip())
+        k = _vkm.get((name or "").lower().strip(), (name or "").lower().strip())
         with self.lock:
             if not self._need(): return
             try:
@@ -1911,11 +1772,9 @@ class VMwareController:
                 dbg("vmware", "press_key failed - dropping session", e)
 
     def key_combo(self, combo):
-        """Hold the chord down, then release in reverse order. vncdotool's
-        dash-joined combo string is unreliable, so keys are held explicitly."""
         names = parse_combo_keys(combo)
         if not names: return
-        mapped = [VNC_KEYMAP.get(k, k) for k in names]
+        mapped = [_vkm.get(k, k) for k in names]
         with self.lock:
             if not self._need(): return
             try:
@@ -1929,8 +1788,6 @@ class VMwareController:
             dbg("vmware", f"combo {names} sent over vnc")
 
     def click(self, button=1, count=1):
-        """VNC encodes clicks relative to the last mouse position, so a click
-        without a preceding move lands at (0,0). Always move first."""
         with self.lock:
             if not self._need(): return
             try:
@@ -1946,10 +1803,8 @@ class VMwareController:
                 dbg("vmware", "click failed", e)
 
     def test_connection(self):
-        """Connect, report exactly what happened, and send a harmless keypress
-        so you can confirm input really reaches the guest."""
         try:
-            from vncdotool import api  # noqa
+            from vncdotool import api
         except Exception:
             return False, "vncdotool is NOT installed. run: pip install vncdotool"
         if not self.vmx:
@@ -1968,9 +1823,9 @@ class VMwareController:
             return False, f"could not connect to {self.host}::{self.port} - {self.status}"
         try:
             with self.lock:
-                self.client.keyDown(VNC_KEYMAP["shift"]); self._flush()
+                self.client.keyDown(_vkm["shift"]); self._flush()
                 time.sleep(0.05)
-                self.client.keyUp(VNC_KEYMAP["shift"]); self._flush()
+                self.client.keyUp(_vkm["shift"]); self._flush()
             return True, f"connected to {self.host}::{self.port} and sent a test keypress (shift). If the guest ignored it, check RemoteDisplay.vnc.keyMap in the .vmx."
         except Exception as e:
             return False, f"connected but sending failed: {e}"
@@ -2007,10 +1862,7 @@ class VMwareController:
         except Exception as e:
             self.status = f"drag error: {e}"
 
-
 def find_vmx_files(root=None, max_depth=3):
-    """Look for VMware VMs, starting with the default Documents\\Virtual Machines
-    folder that VMware Workstation creates."""
     roots = []
     if root:
         roots = [root]
@@ -2046,8 +1898,7 @@ def find_vmx_files(root=None, max_depth=3):
             continue
     return sorted(set(found))
 
-
-NAV_GROUPS = [
+_ng = [
     ("MAIN",    ["Dashboard", "VM Config", "Commands", "Settings"]),
     ("CONTROL", ["Keys", "Mouse", "Macros", "Quick Type", "Win Apps"]),
     ("MACHINE", ["VMS", "Snapshots", "OS Voting", "Real PC", "System"]),
@@ -2055,23 +1906,16 @@ NAV_GROUPS = [
     ("TOOLS",   ["Automation", "Event Log", "Replay", "Backup", "Appearance", "Extra Things", "Help", "Diagnostics"]),
 ]
 
-
 class SidebarNav(tk.Frame):
-    """Control-panel shell: grouped sidebar on the left, page area in the middle,
-    live chat docked on the right, status bar along the bottom.
-
-    Implements the slice of the ttk.Notebook API the app already uses
-    (add / tabs / index / select / bind) so every existing page keeps working."""
 
     def __init__(self, master, app, **kw):
         super().__init__(master, bg="#0A0A0F", **kw)
         self.app = app
-        self._pages = []           # [(frame, label)]
-        self._buttons = {}         # label -> button widget
+        self._pages = []
+        self._buttons = {}
         self._current = None
         accent = getattr(app, "accent_main", "#00E5FF")
 
-        # ---- sidebar ----
         self.side = tk.Frame(self, bg="#0C0C11", width=196)
         self.side.pack(side="left", fill="y")
         self.side.pack_propagate(False)
@@ -2114,7 +1958,6 @@ class SidebarNav(tk.Frame):
         self.guide_btn.pack(fill="x", pady=(6, 0))
         self.guide_btn.bind("<Button-1>", lambda e: getattr(app, "show_welcome_guide", lambda **k: None)(force=True))
 
-        # ---- right: live chat ----
         self.chatpane = tk.Frame(self, bg="#0A0A0F", width=330)
         self.chatpane.pack(side="right", fill="y")
         self.chatpane.pack_propagate(False)
@@ -2139,7 +1982,6 @@ class SidebarNav(tk.Frame):
         tk.Button(arow, text="Clear", font=("Segoe UI", 8, "bold"), bg="#1C1C24", fg="#A1A1AA",
                   bd=0, cursor="hand2", command=self.clear_chat).pack(side="right", ipadx=8)
 
-        # ---- bottom status bar ----
         self.status = tk.Frame(self, bg="#0C0C11", height=26)
         self.status.pack(side="bottom", fill="x")
         self.status.pack_propagate(False)
@@ -2148,16 +1990,14 @@ class SidebarNav(tk.Frame):
         self.status_right = tk.Label(self.status, text="Stopped", bg="#0C0C11", fg="#71717A", font=("Segoe UI", 8, "bold"))
         self.status_right.pack(side="right", padx=14)
 
-        # ---- center page area ----
         self.content = tk.Frame(self, bg="#09090B")
         self.content.pack(side="left", fill="both", expand=True)
 
-    # ---- Notebook-compatible API ----
     def add(self, frame, text="", **kw):
         label = (text or "").strip()
         self._pages.append((frame, label))
         group = "TOOLS"
-        for gname, members in NAV_GROUPS:
+        for gname, members in _ng:
             if label in members:
                 group = gname; break
         if group not in self._group_frames:
@@ -2222,7 +2062,6 @@ class SidebarNav(tk.Frame):
             except Exception: pass
         return str(target)
 
-    # ---- live chat feed ----
     def push_chat(self, user, msg, tag="usr"):
         try:
             self.chatbox.configure(state="normal")
@@ -2250,7 +2089,6 @@ class SidebarNav(tk.Frame):
                 self.status_right.configure(text=right, fg="#10B981" if running else "#71717A")
         except Exception: pass
 
-
 def _hex_to_rgb(c):
     try:
         c = str(c).lstrip("#")
@@ -2259,31 +2097,19 @@ def _hex_to_rgb(c):
     except Exception:
         return 24, 24, 27
 
-
 def _rgb_to_hex(r, g, b):
     return "#%02x%02x%02x" % (max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b))))
-
 
 def shade(color, factor):
     r, g, b = _hex_to_rgb(color)
     return _rgb_to_hex(r * factor, g * factor, b * factor)
 
-
 def mix(c1, c2, t):
-    """Blend two colours. t=0 -> c1, t=1 -> c2. Used to fake translucency,
-    since tkinter widgets cannot actually be semi-transparent."""
     r1, g1, b1 = _hex_to_rgb(c1)
     r2, g2, b2 = _hex_to_rgb(c2)
     return _rgb_to_hex(r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t)
 
-
 def draw_glass(cv, x1, y1, x2, y2, radius, top, bottom, border=None, sheen=True, tag="glass"):
-    """Draw a frosted-glass panel: a vertical gradient clipped to rounded
-    corners, a bright sheen across the top, and a soft border.
-
-    tkinter has no blur or alpha, so the 'glass' look is built from a real
-    per-row gradient (corner inset computed from the circle equation) plus a
-    highlight band, which reads as translucent against a dark background."""
     w, h = int(x2 - x1), int(y2 - y1)
     if w <= 2 or h <= 2:
         return
@@ -2293,7 +2119,7 @@ def draw_glass(cv, x1, y1, x2, y2, radius, top, bottom, border=None, sheen=True,
         y = y1 + i
         t = i / max(1, steps - 1)
         col = mix(top, bottom, t)
-        # inset so the gradient follows the rounded corners
+
         inset = 0
         if i < r:
             dy = r - i
@@ -2303,7 +2129,7 @@ def draw_glass(cv, x1, y1, x2, y2, radius, top, bottom, border=None, sheen=True,
             inset = r - int((max(0.0, r * r - dy * dy)) ** 0.5)
         cv.create_line(x1 + inset, y, x2 - inset, y, fill=col, tags=tag)
     if sheen:
-        # bright top edge + soft highlight band = the glassy sheen
+
         hi = mix(top, "#ffffff", 0.30)
         cv.create_line(x1 + r, y1 + 1, x2 - r, y1 + 1, fill=hi, tags=tag)
         hi2 = mix(top, "#ffffff", 0.10)
@@ -2322,9 +2148,7 @@ def draw_glass(cv, x1, y1, x2, y2, radius, top, bottom, border=None, sheen=True,
                x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
         cv.create_polygon(pts, smooth=True, splinesteps=24, fill="", outline=border, tags=tag)
 
-
 class GlassCard(tk.Canvas):
-    """A frosted-glass panel you can pack other widgets into."""
 
     def __init__(self, master, radius=16, tint=None, parent_bg=None, border=None, **kw):
         pbg = parent_bg
@@ -2356,13 +2180,7 @@ class GlassCard(tk.Canvas):
         self._border = mix(tint, "#ffffff", 0.12)
         self._redraw()
 
-
 class RoundedButton(tk.Canvas):
-    """A real rounded-corner button. tkinter's Button is a hard rectangle, so
-    this draws a rounded rectangle on a Canvas and behaves like a Button.
-
-    Accepts the same keywords the app already passes to tk.Button, so it can be
-    swapped in globally without touching the call sites."""
 
     def __init__(self, master=None, cnf=None, text="", command=None,
                  bg=None, background=None, fg=None, foreground=None,
@@ -2429,7 +2247,7 @@ class RoundedButton(tk.Canvas):
         top = mix(base, "#ffffff", 0.16)
         bot = shade(base, 0.80)
         border = mix(base, "#ffffff", 0.26 if self._hovering() else 0.14)
-        # hover glow: a faint outer ring, so accent buttons feel lit
+
         if self._hovering() and not disabled:
             try:
                 pbg = self.cget("bg")
@@ -2439,7 +2257,7 @@ class RoundedButton(tk.Canvas):
         draw_glass(self, 3, 2, w - 3, h - 2, self._radius, top, bot, border)
         txt_fg = self._fg if not self._hovering() else self._hover_fg
         if disabled: txt_fg = "#6B6B78"
-        # subtle text shadow for depth
+
         self.create_text(w / 2 + 1, h / 2 + 1, text=self._text,
                          fill=shade(base, 0.6), font=self._font, justify="center")
         self.create_text(w / 2, h / 2, text=self._text, fill=txt_fg,
@@ -2509,12 +2327,9 @@ class RoundedButton(tk.Canvas):
         self.configure(**{key: value})
 
 
-# ── OPTIONAL: CustomTkinter ──────────────────────────────────────────────────
-# CustomTkinter draws nicer entries/combos/scrollbars/switches than stock tk.
-# It is used ONLY where it is a clear win. Buttons stay on RoundedButton because
-# CTkButton is a flat rounded rect - no gradient, sheen or hover glow - and it
-# rejects the tk kwargs (bd, highlightthickness, insertbackground) used all over
-# this file. If customtkinter is not installed, everything falls back to stock tk.
+
+
+
 try:
     import customtkinter as ctk
     ctk_available = True
@@ -2522,9 +2337,8 @@ except Exception:
     ctk = None
     ctk_available = False
 
-# ttkbootstrap restyles the ttk widgets (combobox, checkbutton, scrollbar,
-# radiobutton) which stock ttk renders poorly on a dark background. It is used
-# for those widgets only - our own canvas widgets keep the glass look.
+
+
 try:
     import ttkbootstrap as tb
     tb_available = True
@@ -2532,26 +2346,23 @@ except Exception:
     tb = None
     tb_available = False
 
-# our palettes -> closest ttkbootstrap theme
-TB_THEME_MAP = {
+_ttm = {
     "original": "darkly", "better": "superhero", "god": "vapor",
     "glass": "darkly", "aurora": "vapor",
     "light": "flatly", "daylight": "litera",
 }
 
-
 def apply_bootstrap_theme(name):
-    """Restyle ttk widgets with ttkbootstrap. Returns the Style or None."""
     if not tb_available:
         return None
     try:
-        want = TB_THEME_MAP.get(name, "darkly")
+        want = _ttm.get(name, "darkly")
         try:
             style = tb.Style()
             names = [str(n) for n in style.theme_names()]
         except Exception:
             style, names = None, []
-        # prefer a modern (2.0) theme name; fall back to the legacy one
+
         modern = {"darkly": ["dark", "darkly"], "superhero": ["dark", "superhero"],
                   "vapor": ["dark", "vapor"], "flatly": ["light", "flatly"],
                   "litera": ["light", "litera"]}
@@ -2577,9 +2388,7 @@ _CTK_DROP = ("bd", "borderwidth", "highlightthickness", "highlightbackground",
              "selectforeground", "cursor", "bg", "background", "fg", "foreground",
              "font", "show", "justify", "state", "width", "textvariable", "values")
 
-
 class CTkEntryCompat(ctk.CTkEntry if ctk_available else object):
-    """CTkEntry that tolerates the tk.Entry keywords used throughout this file."""
     def __init__(self, master=None, **kw):
         show = kw.get("show")
         justify = kw.get("justify")
@@ -2615,9 +2424,7 @@ class CTkEntryCompat(ctk.CTkEntry if ctk_available else object):
 
     config = configure
 
-
 def enable_ctk(theme_dark=True, accent="#00E5FF"):
-    """Switch the nicer widgets on. Safe to call when CTk is missing."""
     if not ctk_available:
         return False
     try:
@@ -2629,7 +2436,6 @@ def enable_ctk(theme_dark=True, accent="#00E5FF"):
         return True
     except Exception:
         return False
-
 
 if platform.system() != "Darwin":
     tk.Button = RoundedButton
@@ -2664,7 +2470,7 @@ class ChatPlaysApp:
 
             self.pico = None
             self.pico_enabled = False
-            self.pico_target = self.config.get("pico_target", "vm")   # vm | pico | both
+            self.pico_target = self.config.get("pico_target", "vm")
             self.relay_proc = None
             self._automation_started = False
             self.automations = self.config.get("automations", [])
@@ -2675,8 +2481,8 @@ class ChatPlaysApp:
             self.relay_host = self.config.get("relay_host", "127.0.0.1")
             self.relay_port = int(self.config.get("relay_port", 8080))
             if self.config.get("accent_color"):
-                pass  # applied below after accent_main is set
-            
+                pass
+
             self.cmd_queue = queue.Queue()
             self.music_queue = []
             self.banned_users = {}
@@ -2686,7 +2492,7 @@ class ChatPlaysApp:
             self.vnc_port = self.config.get("vnc_port", "5900")
             self.vnc_password = self.config.get("vnc_password", "1234")
             self.vmrun_path = self.config.get("vmrun_path", "") or find_vmrun()
-            global _RUNTIME_BACKEND
+            global _rb
             self.backend = str(self.config.get("backend", "virtualbox") or "virtualbox").lower()
             self.com_mode = ""
             if self.config.get("use_customtkinter", False):
@@ -2702,8 +2508,8 @@ class ChatPlaysApp:
             self.win_session = None
             self.cli_input = False
             if self.backend not in ("virtualbox", "vmware"): self.backend = "virtualbox"
-            _RUNTIME_BACKEND = self.backend
-            
+            _rb = self.backend
+
             global vm_name, keyboard_layout, vbox_manage_cmd
             vm_name = self.config.get("vm_name", vm_name)
             keyboard_layout = self.config.get("keyboard_layout", keyboard_layout)
@@ -2749,9 +2555,9 @@ class ChatPlaysApp:
             style.map("Vertical.TScrollbar", background=[("active", self.accent_main)])
             style.configure("Toggle.TCheckbutton", background="#18181B", foreground="#D4D4D8", font=("Segoe UI", 10), indicatorcolor="#27272A", padding=5)
             style.map("Toggle.TCheckbutton", indicatorcolor=[("selected", "#10B981")])
-            
+
             self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-            
+
             self.log_queue = queue.Queue(maxsize=300)
             self.connect_queue = queue.Queue()
             self.running = True
@@ -2759,7 +2565,7 @@ class ChatPlaysApp:
             self.listening_to_chat = self.config.get("enable_chat", True)
             self.disabled_commands = set()
             self.say_admin_only = True
-            self.blocked_terms = list(default_blocked_terms)
+            self.blocked_terms = list(_dbt)
             self.twenty_four_seven_mode = self.config.get("auto_start", False)
             self.blacklisted_users = set()
             self.timed_bans = {}
@@ -2810,15 +2616,15 @@ class ChatPlaysApp:
                     self.vbox = self.mgr.getVirtualBox()
                 except Exception: pass
 
-            try: set_obs_scene(obs_scene_main) 
+            try: set_obs_scene(obs_scene_main)
             except Exception: pass
-                
-            global _dbg_sink
-            _dbg_sink = lambda m: self.log("[debug]", m, "sysmsg")
+
+            global _ds
+            _ds = lambda m: self.log("[debug]", m, "sysmsg")
             try: VMwareController._ui_root = self.root
             except Exception: pass
             if DEBUG_ON:
-                console_log("SYSTEM", "DEBUG MODE ON - writing to " + DEBUG_FILE + "  (use --quiet to disable)")
+                console_log("SYSTEM", "DEBUG MODE ON - writing to " + _dbf + "  (use --quiet to disable)")
                 dbg("startup", platform_report())
                 dbg("startup", f"vbox={vbox_manage_cmd} ({_vbox_how})  vms={available_vms}")
             self.build_unified_dashboard()
@@ -2946,7 +2752,7 @@ class ChatPlaysApp:
             "youtube_url": "", "vm_name": default_vm, "vbox_path": vbox_manage_cmd, "auto_start": False,
             "enable_chat": True, "strict_live_check": True, "keyboard_layout": "US", "command_prefix": "!",
             "stats_interval": 15, "typing_speed": 0.015, "key_delay": 0.015, "mouse_delay": 0.005,
-            "enable_starting_scene": True, "app_name": "YT2VM", "ultra_speed": False, "osvoting_enabled": False, "ui_theme": "original", "auto_recover": True, "snippets": [], "sound_sources": [], "backend": "virtualbox", "allow_viewer_shell": False, "protect_vm": False, "rate_limit_enabled": True, "use_customtkinter": False, "use_ttkbootstrap": True, "viewer_cooldown": 1.5, "viewer_rate_limit": 7, "max_type_len": 200, "flask_bind_lan": False, "vmx_path": "", "vnc_keymap": "us", "vmware_settle": 1.0, "vnc_host": "127.0.0.1", "auto_kill_vnc": True, "altgr_mode": "alt_r", 
+            "enable_starting_scene": True, "app_name": "YT2VM", "ultra_speed": False, "osvoting_enabled": False, "ui_theme": "original", "auto_recover": True, "low_power": False, "snippets": [], "sound_sources": [], "backend": "virtualbox", "allow_viewer_shell": False, "protect_vm": False, "rate_limit_enabled": True, "use_customtkinter": False, "use_ttkbootstrap": True, "viewer_cooldown": 1.5, "viewer_rate_limit": 7, "max_type_len": 200, "flask_bind_lan": False, "vmx_path": "", "vnc_keymap": "us", "vmware_settle": 1.0, "vnc_host": "127.0.0.1", "auto_kill_vnc": True, "altgr_mode": "alt_r",
             "custom_commands": {}
         }
         if os.path.exists(settings_file):
@@ -2974,18 +2780,18 @@ class ChatPlaysApp:
             self.log("[system]", "[warn] macro dropped: system overloaded", "err")
             self.force_session_refresh = True
             return
-            
+
         def process_macro():
             for action in action_chain:
                 cmd_type, arg, user = action
                 if cmd_type == "wait":
                     try:
-                        w_time = min(float(arg), 3600.0) 
+                        w_time = min(float(arg), 3600.0)
                         if w_time > 0: time.sleep(w_time)
                     except Exception: pass
                 else:
                     self.cmd_queue.put(action)
-                    # let the previous action land before queueing the next one
+
                     if getattr(self, "backend", "virtualbox") == "vmware":
                         time.sleep(0.12)
 
@@ -3084,7 +2890,7 @@ class ChatPlaysApp:
             self.tab_sett = ttk.Frame(self.tabview, style="TFrame")
             self.tab_extra = ttk.Frame(self.tabview, style="TFrame")
             self.tab_music = ttk.Frame(self.tabview, style="TFrame")
-            
+
             self.tabview.add(self.tab_dash, text="  Dashboard  ")
             self.tabview.add(self.tab_vbox, text="  VM Config  ")
             self.tabview.add(self.tab_cmds, text="  Commands  ")
@@ -3137,7 +2943,7 @@ class ChatPlaysApp:
             self.tabview.add(self.tab_vms, text="  VMS  ")
             self.tab_diag = ttk.Frame(self.tabview, style="TFrame")
             self.tabview.add(self.tab_diag, text="  Diagnostics  ")
-            
+
             dash_top = tk.Frame(self.tab_dash, bg="#09090B")
             dash_top.pack(side="top", fill="x", padx=24, pady=(20, 0))
             tk.Label(dash_top, text="Welcome back", bg="#09090B", fg="#FFFFFF",
@@ -3166,7 +2972,8 @@ class ChatPlaysApp:
                                  ("Restart VM", "#F59E0B", lambda: self._vm_action("restartvm")),
                                  ("Toggle Chat", "#27272A", self.toggle_pause_chat),
                                  ("Revert Snapshot", "#8B5CF6", lambda: self._vm_action("revert")),
-                                 ("Minimize", "#27272A", lambda: self._minimize_window())):
+                                 ("Minimize", "#27272A", lambda: self._minimize_window()),
+                                 ("Low Power", "#27272A", lambda: self._toggle_low_power())):
                 tk.Button(qa, text=lbl, font=("Segoe UI", 9, "bold"), bg=col,
                           fg=("black" if col not in ("#27272A", "#8B5CF6", "#EF4444") else "white"),
                           bd=0, cursor="hand2", command=fn).pack(side="left", padx=(0, 8), ipady=6, ipadx=14)
@@ -3239,7 +3046,7 @@ class ChatPlaysApp:
             self.entry_cmd.pack(side="left", fill="x", expand=True, ipady=8)
             self.entry_cmd.bind("<Return>", self.on_manual_cmd)
             tk.Button(cmd_frame, text="Execute", font=("Segoe UI", 11, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.on_manual_cmd).pack(side="right", padx=(15, 0), ipady=6, ipadx=20)
-            
+
             self.lbl_music_playing = tk.Label(self.tab_music, text="NO MUSIC PLAYING", bg="#09090B", fg="#B026FF", font=("Consolas", 36, "bold"))
             self.lbl_music_playing.pack(pady=40)
             self.music_listbox = tk.Listbox(self.tab_music, bg="#18181B", fg="#00E5FF", font=("Consolas", 14), bd=0, highlightthickness=0)
@@ -3269,7 +3076,7 @@ class ChatPlaysApp:
                     self.entry_vbox_new.insert(0, fp)
                     refresh_vms()
             tk.Button(path_frame, text="Browse", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=browse_vbox).pack(side="left", ipady=5, ipadx=15)
-            # ── backend switch: VirtualBox <-> VMware ──
+
             tk.Label(vbox_content, text="Backend", font=("Segoe UI", 11, "bold"), bg="#18181B", fg="#D4D4D8").grid(row=0, column=0, sticky="e", pady=15, padx=(0, 20))
             be_frame = tk.Frame(vbox_content, bg="#18181B"); be_frame.grid(row=0, column=1, sticky="w", pady=15)
             self._cfg_backend_lbl = tk.Label(be_frame, text=getattr(self, "backend", "virtualbox").upper(),
@@ -3327,8 +3134,8 @@ class ChatPlaysApp:
                     current_conf = self.config.get("vm_name")
                     if current_conf in vms: self.cb_vm_new.set(current_conf)
                     else: self.cb_vm_new.set(vms[0])
-                elif VBOX_LAST_ERROR:
-                    self.cb_vm_new['values'] = [f"(no VMs - {VBOX_LAST_ERROR[:40]})"]
+                elif _vle:
+                    self.cb_vm_new['values'] = [f"(no VMs - {_vle[:40]})"]
                 refresh_snaps()
             tk.Button(vm_frame, text="Refresh", font=("Segoe UI", 10, "bold"), bg="#27272A", fg="white", activebackground="#3F3F46", activeforeground="white", bd=0, cursor="hand2", command=refresh_vms).pack(side="left", ipady=5, ipadx=15)
             refresh_vms()
@@ -3553,12 +3360,11 @@ class ChatPlaysApp:
         self.say_admin_only = self.say_admin_var.get()
 
     def switch_backend(self, name):
-        """Switch backend from VM Config and persist it immediately."""
-        global _RUNTIME_BACKEND
+        global _rb
         name = "vmware" if str(name).lower() == "vmware" else "virtualbox"
         self.backend = name
         self.config["backend"] = name
-        _RUNTIME_BACKEND = name
+        _rb = name
         self.save_settings()
         self._teardown_com_session()
         dbg("backend", f"switched to {name}")
@@ -3680,9 +3486,6 @@ class ChatPlaysApp:
         keyboard_layout = available_layouts[next_index]
 
     def _advance_vm_state(self):
-        """Cycle to the next VM. Works for both backends and never indexes an
-        empty list (that was the 'list index out of range' crash when VMware was
-        selected, because the VirtualBox VM list is empty then)."""
         global vm_name, available_vms
         if getattr(self, "backend", "virtualbox") == "vmware":
             vmxs = find_vmx_files()
@@ -3711,7 +3514,7 @@ class ChatPlaysApp:
         except Exception:
             pass
         if not available_vms:
-            self.log("[system]", f"[warn] no VMs available to switch to. {VBOX_LAST_ERROR}", "sysmsg")
+            self.log("[system]", f"[warn] no VMs available to switch to. {_vle}", "sysmsg")
             return
         try:
             current_index = available_vms.index(vm_name)
@@ -3743,7 +3546,7 @@ class ChatPlaysApp:
                 self.active_url = url
                 self.force_connect = True
                 self.config["youtube_url"] = url
-                self.save_settings() 
+                self.save_settings()
         except Exception as e:
             self.log("[system]", f"[error] go live error: {e}", "err")
             console_log("ERROR", f"[error] go live error: {e}\n{traceback.format_exc()}")
@@ -3751,11 +3554,11 @@ class ChatPlaysApp:
     def resolve_live_video_id(self, url):
         if not hasattr(self, 'resolved_id_cache'): self.resolved_id_cache = {}
         if url in self.resolved_id_cache: return self.resolved_id_cache[url]
-        if "v=" in url: 
+        if "v=" in url:
             vid = url.split("v=")[1].split("&")[0]
             self.resolved_id_cache[url] = vid
             return vid
-        if "youtu.be/" in url: 
+        if "youtu.be/" in url:
             vid = url.split("youtu.be/")[1].split("?")[0]
             self.resolved_id_cache[url] = vid
             return vid
@@ -3773,14 +3576,14 @@ class ChatPlaysApp:
                 match = re.search(r'rel="canonical" href="https://www.youtube.com/watch\?v=([^"]+)"', html)
                 if not match: match = re.search(r'"videoid":"([a-zA-Z0-9_-]{11})"', html)
                 if not match: match = re.search(r'watch\?v=([a-zA-Z0-9_-]{11})', html)
-                if match: 
+                if match:
                     vid = match.group(1)
                     if len(vid) == 11:
                         self.resolved_id_cache[url] = vid
                         return vid
             except Exception as e: self.log("[system]", f"[error] resolve live video error: {e}", "err")
         return url
-        
+
     def is_video_currently_live(self, vid):
         try:
             req = urllib.request.Request(f"https://www.youtube.com/watch?v={vid}", headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
@@ -3854,7 +3657,7 @@ class ChatPlaysApp:
             self.log("[system]", f"[error] manual cmd error: {e}", "err")
             console_log("ERROR", f"[error] manual cmd error: {e}\n{traceback.format_exc()}")
 
-    def log(self, user, message, tag="sysmsg", is_mod=False, is_owner=False): 
+    def log(self, user, message, tag="sysmsg", is_mod=False, is_owner=False):
         if not isinstance(message, str): message = str(message)
         if not isinstance(user, str): user = str(user)
         if user == "[system]" or user.lower() == "system" or user == "[SYSTEM]":
@@ -3876,14 +3679,27 @@ class ChatPlaysApp:
                 else: t = "usr"
                 nav.push_chat(user, message, t)
         except Exception: pass
-    
-    def set_status(self, text): 
+
+    def set_status(self, text):
         if isinstance(text, str): self.log_queue.put(("status", text.lower()))
 
     def process_ui_queue(self):
         try:
             self.main_heartbeat = time.time()
             self.update_gui_console()
+            _now = time.time()
+            _lp = self.config.get("low_power", False)
+            if (_now - getattr(self, "_last_slow_ui", 0)) < (2.0 if _lp else 1.0):
+                while not self.log_queue.empty():
+                    try:
+                        mt, dd = self.log_queue.get_nowait()
+                        if mt == "status": self.update_status_display(dd, "broke" in dd)
+                    except queue.Empty: break
+                    except Exception: pass
+                if self.running:
+                    self.root.after(250 if _lp else refresh_rate, self.process_ui_queue)
+                return
+            self._last_slow_ui = _now
             uptime_sec = int(time.time() - script_start_time)
             m, s = divmod(uptime_sec, 60)
             h, m = divmod(m, 60)
@@ -3917,7 +3733,7 @@ class ChatPlaysApp:
                 self.lbl_cmds_val.config(text=f"{total_commands_executed} ({total_commands_failed} failed)")
                 self.lbl_viewers_val.config(text=str(current_viewers))
                 self.lbl_likes_val.config(text=str(current_likes))
-            
+
             q_hash = str([x["title"] for x in getattr(self, 'music_queue', [])])
             if q_hash != getattr(self, 'last_q_hash', ""):
                 self.last_q_hash = q_hash
@@ -3928,11 +3744,11 @@ class ChatPlaysApp:
                 self.lbl_music_playing.config(text=f"PLAYING: {self.current_song['title']}")
             else:
                 self.lbl_music_playing.config(text="NO MUSIC PLAYING")
-                
+
             if time.time() - self.last_gc_time > 60:
                 self.last_gc_time = time.time()
                 gc.collect()
-            if time.time() - getattr(self, 'last_vbox_refresh', 0) > 10:
+            if time.time() - getattr(self, 'last_vbox_refresh', 0) > (30 if self.config.get('low_power', False) else 10):
                 self.last_vbox_refresh = time.time()
                 self.auto_refresh_vbox_ui()
             global current_vote_info
@@ -3959,7 +3775,7 @@ class ChatPlaysApp:
                 else: current_vote_info = {"active": False, "text": "no active votes"}
         except Exception: pass
         finally:
-            if self.running: self.root.after(refresh_rate, self.process_ui_queue)
+            if self.running: self.root.after((250 if self.config.get('low_power', False) else refresh_rate), self.process_ui_queue)
 
     def save_session_data_threadsafe(self):
         try:
@@ -3970,26 +3786,20 @@ class ChatPlaysApp:
         except: pass
 
     def _security_gate(self, clean_user, cmd, arg):
-        """Protect the VM from viewers. Returns (allowed, reason).
-
-        Handles: per-user cooldown, spam rate-limiting with auto-timeout,
-        destructive-payload blocking (obfuscation-resistant), and keeping
-        shell commands admin-only unless explicitly opened up."""
         now = time.time()
-        # 0) MASTER UNLOCK: it is a sandbox VM the streamer controls, so command
-        #    content is unrestricted by default. This turns OFF payload blocking
-        #    and the shell lockout. Spam/rate limits stay so one viewer can't
-        #    flood the queue - toggle those separately with 'rate_limit_enabled'.
+
+
+
         unlocked = not self.config.get("protect_vm", False)
-        # shell access: allowed when unlocked, or when explicitly opened
+
         if cmd in ("!cmd", "!run") and not unlocked and not self.config.get("allow_viewer_shell", False):
             return False, "shell commands are mod-only"
-        # 2) per-user cooldown
+
         cd = float(self.config.get("viewer_cooldown", 1.5) or 0)
         if cd > 0 and now - self.user_last_cmd.get(clean_user, 0) < cd:
             return False, "cooldown"
         self.user_last_cmd[clean_user] = now
-        # 3) rolling-window spam limit -> strike -> auto timeout
+
         if self.config.get("rate_limit_enabled", True):
             win = 10.0
             lim = int(self.config.get("viewer_rate_limit", 7) or 7)
@@ -4005,15 +3815,14 @@ class ChatPlaysApp:
                     self.log("[system]", f"[ban] {clean_user} auto timed out 5m (spam)", "sysmsg")
                     return False, "spam - auto timeout"
                 return False, "spam"
-        # 4) destructive payload / ip-grabber blocking on anything that types
+
         if not unlocked and cmd in ("!type", "!send", "!cmd", "!run", "!key"):
             hit = payload_is_dangerous(f"{cmd} {arg}")
             if hit:
                 n = self.user_strikes.get(clean_user, 0) + 1
                 self.user_strikes[clean_user] = n
                 return False, f"blocked term '{hit}'"
-            # 5) spelled-out attacks: track a rolling per-user typed buffer so a
-            #    banned word can't be assembled one !key at a time
+
             if cmd == "!key" and len(str(arg).strip()) == 1:
                 buf, bts = getattr(self, "_typed_buf", {}).get(clean_user, ["", 0.0])
                 if now - bts > 8.0: buf = ""
@@ -4024,17 +3833,15 @@ class ChatPlaysApp:
                 if hit:
                     self._typed_buf[clean_user] = ["", now]
                     return False, f"blocked spelled term '{hit}'"
-        # 6) length cap so one message can't flood the guest (skipped when unlocked)
-        # a soft cap only when protection is on...
+
         if not unlocked and len(str(arg)) > int(self.config.get("max_type_len", 200)):
             return False, "message too long"
-        # ...but a HARD cap always, so a 50k-char paste can never wedge the box
+
         if len(str(arg)) > 4000:
             return False, "command too long (max 4000 chars)"
         return True, ""
 
     def run_diagnostics(self):
-        """Check every dependency and path, and report exactly what is wrong."""
         L = []
         def add(ok, label, detail=""):
             mark = "OK  " if ok is True else ("WARN" if ok is None else "FAIL")
@@ -4044,11 +3851,11 @@ class ChatPlaysApp:
         L.append("")
         L.append("--- dependencies ---")
         import importlib.util
-        for mod, pip, why in REQUIRED_PACKAGES + OPTIONAL_PACKAGES:
+        for mod, pip, why in _rqp + _opp:
             found = False
             try: found = importlib.util.find_spec(mod) is not None
             except Exception: found = False
-            req = any(m == mod for m, _, _ in REQUIRED_PACKAGES)
+            req = any(m == mod for m, _, _ in _rqp)
             add(True if found else (False if req else None), f"{pip:<16}", why if found else f"missing - pip install {pip}")
         L.append("")
         L.append("--- virtualbox ---")
@@ -4058,7 +3865,7 @@ class ChatPlaysApp:
         if vms:
             add(True, "VMs found", f"{len(vms)}: " + ", ".join(vms[:6]) + (" ..." if len(vms) > 6 else ""))
         else:
-            add(False, "VMs found", VBOX_LAST_ERROR or "none")
+            add(False, "VMs found", _vle or "none")
         add(bool(vm_name), "target VM", vm_name or "(none selected)")
         try:
             add(True, "VM state", self._vm_state())
@@ -4094,7 +3901,7 @@ class ChatPlaysApp:
         add(True, "auto recover", "on" if self.config.get("auto_recover", True) else "off")
         add(True, "escalation level", str(getattr(self, "watchdog_action_level", 0)))
         add(True, "E_FAIL count", str(getattr(self, "efail_count", 0)))
-        add(True, "debug logging", f"ON -> {DEBUG_FILE}" if DEBUG_ON else "off (run with --debug)")
+        add(True, "debug logging", f"ON -> {_dbf}" if DEBUG_ON else "off (run with --debug)")
         return "\n".join(L)
 
     def build_diagnostics_tab(self):
@@ -4107,6 +3914,8 @@ class ChatPlaysApp:
                   bd=0, cursor="hand2", command=self._copy_diag).pack(side="right", padx=6, ipady=4, ipadx=10)
         tk.Button(top, text="Open debug log", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white",
                   bd=0, cursor="hand2", command=self._open_debug_log).pack(side="right", padx=6, ipady=4, ipadx=10)
+        tk.Button(top, text="Show/Hide Console", font=("Segoe UI", 9, "bold"), bg="#27272A", fg="white",
+                  bd=0, cursor="hand2", command=lambda: self._toggle_console()).pack(side="right", padx=6, ipady=4, ipadx=10)
         tk.Label(wrap, text="Run the app with  --debug  for a full command-by-command trace.",
                  font=("Segoe UI", 9), bg="#09090B", fg="#8A8A96").pack(anchor="w", pady=(4, 8))
         self.diag_text = scrolledtext.ScrolledText(wrap, font=("Consolas", 10), bg="#0B0B10", fg="#D4D4D8",
@@ -4143,11 +3952,11 @@ class ChatPlaysApp:
 
     def _open_debug_log(self):
         try:
-            if not os.path.exists(DEBUG_FILE):
+            if not os.path.exists(_dbf):
                 self.log("[system]", f"[warn] no debug log yet - run with --debug.", "sysmsg"); return
-            if platform.system() == "Windows": os.startfile(DEBUG_FILE)
-            elif platform.system() == "Darwin": subprocess.Popen(["open", DEBUG_FILE])
-            else: subprocess.Popen(["xdg-open", DEBUG_FILE])
+            if platform.system() == "Windows": os.startfile(_dbf)
+            elif platform.system() == "Darwin": subprocess.Popen(["open", _dbf])
+            else: subprocess.Popen(["xdg-open", _dbf])
         except Exception as e:
             self.log("[system]", f"[error] open debug log: {e}", "err")
 
@@ -4254,7 +4063,6 @@ class ChatPlaysApp:
         self._scan_vms(None)
 
     def _vnc_tick(self):
-        """Show at a glance whether keystrokes can actually reach the guest."""
         try:
             if getattr(self, "backend", "virtualbox") != "vmware":
                 self.vnc_live.config(text="VNC INPUT: n/a (backend is virtualbox)", fg="#71717A")
@@ -4276,7 +4084,7 @@ class ChatPlaysApp:
         except Exception:
             pass
         if self.running:
-            try: self.root.after(3000, self._vnc_tick)
+            try: self.root.after(6000 if self.config.get('low_power', False) else 3000, self._vnc_tick)
             except Exception: pass
 
     def _vmware(self):
@@ -4298,8 +4106,7 @@ class ChatPlaysApp:
             self.vmware.auto_kill_squatters = bool(self.config.get("auto_kill_vnc", True))
             self.vmware.password = self.vnc_password
             self.vmware.keymap = self.vnc_keymap
-        # the guest's real keyboard layout drives character translation, and it
-        # must be refreshed on BOTH paths (new controller and reused one)
+
         try:
             self.vmware.guest_layout = str(self.config.get("keyboard_layout", keyboard_layout) or "US").upper()
             self.vmware.cfg = self.config
@@ -4423,8 +4230,8 @@ class ChatPlaysApp:
                             msg = f"no conflict: port {vm.port} is free for this VM"
                 elif action == "forget_pw":
                     try:
-                        if os.path.exists(VNC_PASS_FILE): os.remove(VNC_PASS_FILE)
-                        msg = f"cleared {VNC_PASS_FILE}"
+                        if os.path.exists(_vpf): os.remove(_vpf)
+                        msg = f"cleared {_vpf}"
                     except Exception as e:
                         msg = f"could not clear: {e}"
                 elif action == "clear_pw":
@@ -4458,16 +4265,12 @@ class ChatPlaysApp:
         threading.Thread(target=_go, daemon=True).start()
 
     def _handle_mod_command(self, cmd, arg, user, is_owner):
-        """Mod/owner-only commands. Returns True if the command was handled.
-        These are extra perks for the mod team - flashes, OBS scenes, VM control,
-        bans/timeouts, and a few fun party effects. All gated to admins."""
         a = arg.strip()
         toks = a.split()
         target = toks[0].replace("@", "").lower().strip() if toks else ""
         rest = " ".join(toks[1:]).strip()
         def flash(t, k="info", d=6): self.send_flash(t, k, d)
 
-        # ---- bans / timeouts ----
         if cmd == "!ban":
             if target:
                 self.blacklisted_users.add(target)
@@ -4504,7 +4307,6 @@ class ChatPlaysApp:
             flash(f"{who}: {rest or 'behave!'}", "warn", 7)
             return True
 
-        # ---- OBS / overlay ----
         if cmd == "!scene":
             if a:
                 set_obs_scene(a)
@@ -4527,7 +4329,6 @@ class ChatPlaysApp:
             flash("CHAT NUKED", "err", 5)
             return True
 
-        # ---- useful mod utilities ----
         if cmd == "!whois":
             if target:
                 banned = target in self.blacklisted_users
@@ -4568,7 +4369,7 @@ class ChatPlaysApp:
             return True
         if cmd == "!blockword":
             if a:
-                DANGEROUS_PAYLOAD.append(a.lower())
+                _dpl.append(a.lower())
                 flash(f"blocked '{a}'", "warn", 5)
             return True
         if cmd in ("!unlock all", "!unlockall", "!protect"):
@@ -4592,6 +4393,11 @@ class ChatPlaysApp:
                 return True
             self.config["altgr_mode"] = mode; self.save_settings()
             flash(f"altgr mode -> {mode}", "info", 6)
+            return True
+        if cmd == "!lowpower":
+            v = not self.config.get("low_power", False)
+            self.config["low_power"] = v; self.save_settings()
+            flash(f"low power {'ON' if v else 'OFF'}", "info", 5)
             return True
         if cmd == "!settle":
             try:
@@ -4623,7 +4429,6 @@ class ChatPlaysApp:
             flash("mod cmds: ban/timeout/whois/slowmode/purge/scene/flash/lockdown/vmstatus/snapshotnow", "info", 12)
             return True
 
-        # ---- vm / system ----
         if cmd == "!skip":
             self.obs_media_action("OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
             self.current_song = None
@@ -4681,7 +4486,7 @@ class ChatPlaysApp:
             self.parse_command(macro_chain.get("value", macro_chain) if isinstance(macro_chain, dict) else macro_chain, user, is_mod, is_owner)
             return
         clean_user = user.replace("@", "").lower().strip()
-        if clean_user in self.blacklisted_users: return 
+        if clean_user in self.blacklisted_users: return
         if clean_user in getattr(self, 'timed_bans', {}):
             if time.time() < self.timed_bans[clean_user]: return
             else: del self.timed_bans[clean_user]
@@ -4713,10 +4518,10 @@ class ChatPlaysApp:
             is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in admins
             if is_admin and self._handle_mod_command(cmd, arg, user, is_owner):
                 continue
-            
+
             music_votes = {
-                "!skipsong": 4, "!pausesong": 3, "!stopsong": 2, 
-                "!resumesong": 3, "!voteshuffle": 4, "!votereplay": 3, 
+                "!skipsong": 4, "!pausesong": 3, "!stopsong": 2,
+                "!resumesong": 3, "!voteshuffle": 4, "!votereplay": 3,
                 "!votedrop": 4, "!voterandom": 3
             }
             if cmd in music_votes:
@@ -4732,17 +4537,17 @@ class ChatPlaysApp:
                 bypass = len(arg_parts) > 1 and arg_parts[-1].lower() == "true" and is_mod
                 threading.Thread(target=self.download_music_thread, args=(url, user, is_owner, is_mod, bypass), daemon=True).start()
                 continue
-                
+
             if cmd == "!testanticopyright" and is_owner and arg:
                 safe, res_msg = self.check_copyright(arg.split()[0])
                 self.log("[system]", f"Test Result: Safe={safe}, Msg={res_msg}", "sysmsg")
                 continue
-                
+
             if cmd in ["!volumeup", "!volumedown"]:
                 if is_mod and arg.isdigit():
                     self.trigger_command((cmd, arg, user))
                 continue
-                
+
             if cmd == "!pausechat":
                 if is_owner:
                     self.chat_paused = True
@@ -4852,7 +4657,7 @@ class ChatPlaysApp:
             return
         chat = None
         connected_url = None
-        retry_delay = 2 
+        retry_delay = 2
         error_count = 0
         chat_start_time = time.time()
         self.last_msg_time = time.time()
@@ -4868,7 +4673,7 @@ class ChatPlaysApp:
                     if target_url == "[DEBUG_MODE]":
                         chat = "[DEBUG_MODE]"
                         connected_url = target_url
-                        retry_delay = 2 
+                        retry_delay = 2
                     else:
                         try:
                             dbg("chat", f"resolving {target_url!r}")
@@ -4886,7 +4691,7 @@ class ChatPlaysApp:
                                 chat = pytchat.create(video_id=vid, interruptable=False)
                                 if chat.is_alive():
                                     connected_url = target_url
-                                    retry_delay = 2 
+                                    retry_delay = 2
                                     chat_start_time = time.time()
                                     self.last_msg_time = time.time()
                                     is_first_fetch = True
@@ -4899,7 +4704,7 @@ class ChatPlaysApp:
                                         else: self.log("[system]", "successfully connected to yt chat", "sysmsg")
                                 else:
                                      time.sleep(retry_delay)
-                                     retry_delay = min(retry_delay * 2, 60) 
+                                     retry_delay = min(retry_delay * 2, 60)
                                      if is_connected:
                                          self.log("[system]", "disconnected from yt connecting to stream", "sysmsg")
                                          is_connected = False
@@ -4921,7 +4726,7 @@ class ChatPlaysApp:
                                 self.log("[system]", f"[error] chat init error: {parse_err}", "err")
                             chat = None
                             time.sleep(retry_delay)
-                            retry_delay = min(retry_delay * 2, 60) 
+                            retry_delay = min(retry_delay * 2, 60)
                             if is_connected:
                                 self.log("[system]", "disconnected from yt connecting to stream", "sysmsg")
                                 is_connected = False
@@ -4954,7 +4759,7 @@ class ChatPlaysApp:
                             for c in new_items:
                                 self.last_msg_time = time.time()
                                 self.processed_msg_ids.add(c.id)
-                                if not self.listening_to_chat: continue 
+                                if not self.listening_to_chat: continue
                                 msg_lower = c.message.lower().strip()
                                 clean_name = c.author.name.replace("@", "").lower().strip()
                                 if clean_name == "nightbot": continue
@@ -5009,10 +4814,6 @@ class ChatPlaysApp:
             time.sleep(0.5)
 
     def _dismiss_crash_dialogs_linux(self):
-        """Linux/macOS equivalent: find an error window with wmctrl or xdotool,
-        send Return (activates the default OK button), wait 2s, then kill the
-        owning process if it is still up. Silently does nothing if neither tool
-        is installed (pacman -S wmctrl xdotool)."""
         pats = ("error", "critical", "guru meditation", "not responding", "failed")
         def list_windows():
             out = []
@@ -5065,11 +4866,6 @@ class ChatPlaysApp:
         return len(found)
 
     def _dismiss_crash_dialogs(self):
-        """Find a VirtualBox crash/error dialog, click its OK button, wait 2s,
-        and force-kill the owning process if the window is still there.
-
-        Matches things like 'VirtualBoxVM.exe - Application Error',
-        'VirtualBox - Error', and the Windows 'has stopped working' box."""
         if platform.system() != "Windows":
             try: return self._dismiss_crash_dialogs_linux()
             except Exception: return 0
@@ -5078,12 +4874,12 @@ class ChatPlaysApp:
             from ctypes import wintypes
         except Exception:
             return 0
-        # exact/likely crash titles
+
         PATTERNS = ("application error", "virtualbox - error", "virtualboxvm.exe",
                     "has stopped working", "vboxsvc.exe", "runtime error",
                     "virtualbox error", "critical error", "vboxmanage", "guru meditation",
                     "not responding", "fatal error", "vboxheadless")
-        # or: any window mentioning virtualbox/vbox together with an error-ish word
+
         VBOX_WORDS = ("virtualbox", "vbox")
         ERR_WORDS = ("error", "crash", "stopped", "fail", "exception", "terminate", "responding")
         BM_CLICK, WM_CLOSE, WM_COMMAND, IDOK = 0x00F5, 0x0010, 0x0111, 1
@@ -5105,7 +4901,7 @@ class ChatPlaysApp:
                     if not hit and any(v in t for v in VBOX_WORDS) and any(w in t for w in ERR_WORDS):
                         hit = True
                     if hit:
-                        # only touch real dialog/message boxes, never the VM window itself
+
                         cls = ctypes.create_unicode_buffer(64)
                         try: u32.GetClassNameW(hwnd, cls, 64)
                         except Exception: pass
@@ -5119,7 +4915,7 @@ class ChatPlaysApp:
             return out
 
         def click_ok(hwnd):
-            # find an OK / Close button child and click it
+
             clicked = False
             EnumChild = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
             def cb(child, _l):
@@ -5137,7 +4933,7 @@ class ChatPlaysApp:
             try: u32.EnumChildWindows(hwnd, EnumChild(cb), 0)
             except Exception: pass
             if not clicked:
-                # no OK button found: tell the dialog OK, then fake Enter/Space
+
                 WM_KEYDOWN, WM_KEYUP, VK_RETURN, VK_SPACE = 0x0100, 0x0101, 0x0D, 0x20
                 try:
                     u32.SendMessageW(hwnd, WM_COMMAND, IDOK, 0)
@@ -5156,7 +4952,7 @@ class ChatPlaysApp:
             click_ok(hwnd)
 
         if found:
-            time.sleep(2.0)   # give it a moment to close on its own
+            time.sleep(2.0)
             still = [(h, t) for (h, t) in window_titles() if u32.IsWindow(h)]
             for hwnd, title in still:
                 pid = wintypes.DWORD(0)
@@ -5174,12 +4970,12 @@ class ChatPlaysApp:
                 else:
                     try: u32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
                     except Exception: pass
-            # a crash box means the VM is dead - make sure state is clean
+
             try:
                 if self._vm_state() == "aborted":
                     run_vbox(["discardstate", vm_name], timeout=20)
             except Exception: pass
-        # WerFault holds these boxes open; clear it either way
+
         try:
             subprocess.run(["taskkill", "/F", "/IM", "WerFault.exe"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
@@ -5187,25 +4983,18 @@ class ChatPlaysApp:
         return handled
 
     def _crash_dialog_watcher(self):
-        """Poll for VirtualBox crash dialogs so a stream never sits blocked
-        behind an unclicked OK button."""
         while self.running:
             try:
                 if self.config.get("auto_recover", True):
                     self._dismiss_crash_dialogs()
             except Exception:
                 pass
-            time.sleep(5)
+            time.sleep(20 if (self._idle() or self.config.get("low_power", False)) else 5)
 
     def _vbox_pids(self):
-        """Find the PIDs of the VirtualBoxVM processes belonging to THIS vm.
-        VBoxManage launches them as: VirtualBoxVM.exe --comment <vm_name> --startvm <uuid>
-        so we match on the command line instead of the window title (a hung or
-        headless VM often has no matching title, which is why taskkill silently
-        killed nothing)."""
         pids = []
         if platform.system() != "Windows":
-            # linux / macos: match the VM process by its command line
+
             try:
                 r = subprocess.run(["pgrep", "-f", f"VirtualBoxVM.*{vm_name}"],
                                    capture_output=True, text=True, timeout=10)
@@ -5258,12 +5047,6 @@ class ChatPlaysApp:
         return [p for p in pids if p]
 
     def _kill_vbox_global(self):
-        """Kill the VirtualBox global interface (VBoxSVC.exe / VBoxSDS.exe).
-        This is the out-of-process COM server every API call goes through. When it
-        wedges, E_FAIL never clears no matter how many times the VM is restarted,
-        because the VM process was never the thing that was stuck. Killing it makes
-        Windows spawn a fresh one on the next API call. NOTE: this is global - it
-        drops the COM state for ALL VirtualBox VMs, so it only runs during recovery."""
         killed = 0
         try:
             with self.input_lock:
@@ -5289,14 +5072,14 @@ class ChatPlaysApp:
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         killed += 1
                     except Exception: pass
-            # drop every stale COM handle so the next call spawns a fresh server
+
             self.vbox = None
             self.mgr = None
             self.force_session_refresh = True
             self.efail_count = 0
             self.last_com_rebuild_time = time.time()
             time.sleep(2.5)
-            # reconnect
+
             try:
                 if vbox_pkg == "virtualbox":
                     self.vbox = virtualbox.VirtualBox()
@@ -5314,27 +5097,27 @@ class ChatPlaysApp:
     def _kill_vbox_tasks(self):
         killed = 0
         try:
-            # 1) ask VirtualBox to stop it cleanly first
+
             try: run_vbox(["controlvm", vm_name, "poweroff"], timeout=12)
             except Exception: pass
             if platform.system() == "Windows":
-                # 0) clear any crash dialog first so the process can actually die
+
                 self._dismiss_crash_dialogs()
-                # 2) kill the exact PIDs for THIS vm (matched by command line)
+
                 for pid in self._vbox_pids():
                     try:
                         subprocess.run(["taskkill", "/F", "/T", "/PID", str(int(pid))],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
                         killed += 1
                     except Exception: pass
-                # 3) legacy window-title attempt (harmless if it matches nothing)
+
                 if killed == 0:
                     try:
                         subprocess.run(["taskkill", "/F", "/T", "/FI",
                                         f"WINDOWTITLE eq *{vm_name}*", "/IM", "VirtualBoxVM.exe"],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
                     except Exception: pass
-                # 4) still stuck -> VirtualBox's own emergency stop, then last-resort
+
                 if killed == 0 and self._vm_is_running():
                     try: run_vbox(["startvm", vm_name, "--type", "emergencystop"], timeout=15)
                     except Exception: pass
@@ -5345,7 +5128,7 @@ class ChatPlaysApp:
                             killed += 1
                         except Exception: pass
             else:
-                # linux / macos: target the VM process for THIS vm only
+
                 for sig in ("-TERM", "-KILL"):
                     try:
                         subprocess.run(["pkill", sig, "-f", f"VirtualBoxVM.*{vm_name}"], timeout=10,
@@ -5368,7 +5151,7 @@ class ChatPlaysApp:
                 except Exception: pass
             self.shared_session = None
         self.efail_count = 0
-        # clear a stale "locked/aborted" state left behind by the killed process
+
         try:
             if self._vm_state() == "aborted":
                 run_vbox(["discardstate", vm_name], timeout=20)
@@ -5429,8 +5212,6 @@ class ChatPlaysApp:
         return success
 
     def _vmware_wait_running(self, want_running, timeout=90):
-        """Poll vmrun until the VM's running state matches (or timeout).
-        Returns True if the target state was reached."""
         vm = self._vmware()
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -5445,12 +5226,9 @@ class ChatPlaysApp:
         return False
 
     def _vmware_wait_ready(self, timeout=60):
-        """After the VM process is up, wait until the guest actually accepts
-        input - i.e. the VNC server is answering. That is the real 'done booting'
-        signal, since vmrun reports 'running' the instant the process starts."""
         vm = self._vmware()
         t0 = time.time()
-        # give the guest a head start to bring up its VNC server
+
         time.sleep(3)
         while time.time() - t0 < timeout:
             try:
@@ -5465,36 +5243,31 @@ class ChatPlaysApp:
         return False
 
     def _do_vm_maintenance(self, action, arg, user):
-        """Run a viewer/console VM action. If VirtualBox reports the session is
-        LOCKED (a hung or crashed process still holding the VM), close ALL
-        VirtualBox processes and retry the exact same action once - so a locked
-        VM self-heals instead of every start/revert/restart being refused."""
-        global _VBOX_LOCKED
+        global _vlk
         if getattr(self, "backend", "virtualbox") == "vmware":
             return self._do_vm_maintenance_inner(action, arg, user)
-        _VBOX_LOCKED = False
+        _vlk = False
         ok = self._do_vm_maintenance_inner(action, arg, user)
-        # a lock can surface either as a False result or via the run_vbox flag,
-        # and also shows up as the machine state being stuck 'aborted'
+
         state = ""
         try: state = self._vm_state()
         except Exception: pass
-        if _VBOX_LOCKED or (not ok and state in ("aborted", "unknown")) or state == "aborted":
+        if _vlk or (not ok and state in ("aborted", "unknown")) or state == "aborted":
             self.log("[system]", "[warn] VM session is LOCKED - killing all VirtualBox processes and retrying...", "sysmsg")
-            dbg("recovery", f"lock detected on '{action}' (locked={_VBOX_LOCKED}, state={state}) - full kill + retry")
+            dbg("recovery", f"lock detected on '{action}' (locked={_vlk}, state={state}) - full kill + retry")
             try:
-                self._kill_vbox_tasks()        # kill this VM's process
-                self._kill_vbox_global()       # kill VBoxSVC / VBoxSDS (the lock holder)
-                self._dismiss_crash_dialogs()  # clear any crash popup
+                self._kill_vbox_tasks()
+                self._kill_vbox_global()
+                self._dismiss_crash_dialogs()
             except Exception as e:
                 dbg("recovery", "kill during lock recovery failed", e)
             time.sleep(2.0)
-            # clear a stale saved/aborted state that would block a fresh start
+
             try:
                 if self._vm_state() in ("aborted", "saved"):
                     run_vbox(["discardstate", vm_name], timeout=20)
             except Exception: pass
-            _VBOX_LOCKED = False
+            _vlk = False
             self.log("[system]", f"retrying '{action}' after unlock...", "sysmsg")
             ok = self._do_vm_maintenance_inner(action, arg, user)
         return ok
@@ -5676,8 +5449,6 @@ class ChatPlaysApp:
             self.shared_session = None
 
     def _vboxapi_get_vbox(self, mgr):
-        """Get the IVirtualBox object. Older vboxapi exposes getVirtualBox(),
-        newer builds only expose the .vbox attribute."""
         for getter in (lambda: mgr.vbox,
                        lambda: mgr.getVirtualBox(),
                        lambda: mgr.platform.getVirtualBox()):
@@ -5690,21 +5461,10 @@ class ChatPlaysApp:
         raise RuntimeError("could not obtain IVirtualBox from vboxapi")
 
     def _vboxapi_session(self, machine):
-        """Return (session, already_locked).
-
-        vboxapi's session API is genuinely inconsistent between VirtualBox
-        releases: getSessionObject may live on the VirtualBoxManager, on the
-        inner .mgr, or on .platform, and it may take the vbox object, None, or
-        no argument at all. Newer builds dropped some of these entirely, which
-        is what causes:
-            'VirtualBoxManager' object has no attribute 'getSessionObject'
-        So try every documented form, plus openMachineSession() which creates
-        AND locks the session in one call."""
         mgr = self.mgr
         inner = getattr(mgr, "mgr", None)
         plat = getattr(mgr, "platform", None)
 
-        # 1) openMachineSession: returns an already-locked session
         for opener in (lambda: mgr.openMachineSession(machine, True),
                        lambda: mgr.openMachineSession(machine)):
             try:
@@ -5716,7 +5476,6 @@ class ChatPlaysApp:
             except Exception:
                 continue
 
-        # 2) every known getSessionObject location / signature
         holders = [h for h in (mgr, inner, plat) if h is not None]
         for holder in holders:
             fn = getattr(holder, "getSessionObject", None)
@@ -5732,7 +5491,6 @@ class ChatPlaysApp:
                 except Exception:
                     continue
 
-        # 3) last resort: build an ISession straight from the COM/XPCOM platform
         for maker in (lambda: mgr.createSessionObject(),
                       lambda: plat.createSessionObject() if plat else None,
                       lambda: mgr.getSessionObjectNoWait() if hasattr(mgr, "getSessionObjectNoWait") else None):
@@ -5745,14 +5503,6 @@ class ChatPlaysApp:
         return None, False
 
     def _wincom_connect(self):
-        """Talk to VirtualBox's NATIVE COM server via pywin32.
-
-        This is the robust path on Windows: VirtualBox registers the COM objects
-        'VirtualBox.VirtualBox' and 'VirtualBox.Session' as part of its own
-        install, so the interface ALWAYS matches the installed VirtualBox. There
-        are no pre-generated Python bindings to go stale, which is what breaks
-        pyvbox after a VirtualBox update.
-        Returns True when keyboard+mouse are live."""
         if platform.system() != "Windows":
             return False
         try:
@@ -5779,7 +5529,7 @@ class ChatPlaysApp:
             vbox = win32com.client.Dispatch("VirtualBox.VirtualBox")
             session = win32com.client.Dispatch("VirtualBox.Session")
             machine = vbox.FindMachine(vm_name)
-            machine.LockMachine(session, 1)          # 1 = LockType_Shared
+            machine.LockMachine(session, 1)
             console = session.Console
             if console is None:
                 raise RuntimeError("console not ready")
@@ -5826,8 +5576,7 @@ class ChatPlaysApp:
             dbg("com", "building input session")
             self.force_session_refresh = False
             session = None
-            # Native COM first on Windows: it is version-matched to the installed
-            # VirtualBox, so it survives VirtualBox updates that break pyvbox.
+
             if platform.system() == "Windows" and not getattr(self, "_wincom_disabled", False):
                 if self._wincom_connect():
                     return True
@@ -5890,11 +5639,9 @@ class ChatPlaysApp:
                             or "no attribute" in _m or "session object" in _m
                             or ("attribute" in _m and "object at" in _m))
                 if _binding:
-                    # pyvbox bindings no longer match the installed VirtualBox
-                    # (happens after a VirtualBox update). Killing VBoxSVC won't fix
-                    # a Python-side binding mismatch, so DON'T count this as an
-                    # E_FAIL storm. Try the version-matched vboxapi; if that isn't
-                    # available, fall back to VBoxManage CLI so typing still works.
+
+
+
                     if not getattr(self, "_tried_vboxapi", False):
                         self._tried_vboxapi = True
                         if self._try_vboxapi_fallback():
@@ -5929,7 +5676,7 @@ class ChatPlaysApp:
                               or "-2147418113" in _m or "not currently" in _m or "being locked" in _m
                               or "already locked" in _m)
                 if _transient:
-                    time.sleep(0.5)   # vm still booting / session settling — retry silently
+                    time.sleep(0.5)
                 else:
                     if time.time() - getattr(self, "_last_com_err_t", 0) > 10:
                         self._last_com_err_t = time.time()
@@ -5939,8 +5686,6 @@ class ChatPlaysApp:
     def _cli_put_string(self, text):
         if text and len(text) > 4000:
             text = text[:4000]
-        """VBoxManage can type a whole string directly - far more reliable than
-        pushing hex scancodes one at a time when the API path is unavailable."""
         if not text: return True
         try:
             r = subprocess.run([vbox_manage_cmd, "controlvm", vm_name, "keyboardputstring", text],
@@ -5950,8 +5695,7 @@ class ChatPlaysApp:
             return False
 
     def _cli_put_scancodes(self, seq):
-        # keyboard input via VBoxManage CLI - works even when the COM/pyvbox
-        # bindings are broken after a VirtualBox update (no mouse support though)
+
         if not seq: return
         try:
             hexcodes = [format(int(b) & 0xFF, "02x") for b in seq]
@@ -5961,8 +5705,7 @@ class ChatPlaysApp:
             pass
 
     def _try_vboxapi_fallback(self):
-        # vboxapi ships with VirtualBox itself, so it always matches the installed
-        # version - switch to it when the pip 'virtualbox' package is out of sync
+
         global vbox_pkg
         try:
             from vboxapi import VirtualBoxManager as _VBM
@@ -6002,10 +5745,9 @@ class ChatPlaysApp:
                     self._cli_put_scancodes(seq)
                 return
             try:
-                # VirtualBox's PDM keyboard queue is small (it drops everything
-                # past it with VERR_PDM_NO_QUEUE_ITEMS). Feed it in small chunks
-                # and back off when it reports full, instead of losing the rest
-                # of a long !type.
+
+
+
                 seq = [int(b) for b in seq]
                 CHUNK = 12
                 i = 0
@@ -6019,7 +5761,7 @@ class ChatPlaysApp:
                             cl = str(ce).lower()
                             if ("verr_pdm_no_queue_items" in cl or "no_queue" in cl
                                     or "could not send all scan codes" in cl or "-2135228411" in cl):
-                                # queue full: let the guest drain, then retry
+
                                 time.sleep(0.04 + attempt * 0.03)
                                 if attempt >= 6 and CHUNK > 4:
                                     CHUNK = 4
@@ -6042,21 +5784,18 @@ class ChatPlaysApp:
             except Exception as e:
                 emsg = str(e)
                 _l = emsg.lower()
-                # A half-built pyvbox proxy raises from INSIDE put_scancodes
-                # ("'NoneType' object is not subscriptable" / attribute errors).
-                # That's a broken binding, not a wedged VM - killing VBoxSVC won't
-                # help, so switch this session to the VBoxManage CLI and resend the
-                # keystroke instead of losing it.
+
+
+
                 if ("verr_pdm_no_queue_items" in _l or "could not send all scan codes" in _l
                         or "-2135228411" in _l):
-                    return   # transient guest-side buffer pressure, not a COM fault
+                    return
                 _binding = ("subscriptable" in _l or "nonetype" in _l
                             or "no attribute" in _l or "attribute" in _l
                             or isinstance(e, (TypeError, AttributeError)))
                 if _binding:
                     self._com_input_fails = getattr(self, "_com_input_fails", 0) + 1
-                    # a broken pyvbox proxy -> rebuild on native COM instead of
-                    # dropping to the CLI (native COM keeps mouse support too)
+
                     if platform.system() == "Windows" and getattr(self, "com_mode", "") != "wincom":
                         if self._wincom_connect():
                             try:
@@ -6069,7 +5808,7 @@ class ChatPlaysApp:
                         self.shared_kb = None
                         console_log("SYSTEM", "pyvbox keyboard proxy is broken - switching to VBoxManage CLI keyboard. fix fully with: pip install --upgrade virtualbox")
                         self.log("[system]", "[warn] switched to CLI keyboard (pyvbox mismatch). mouse needs 'pip install --upgrade virtualbox'.", "err")
-                    self._cli_put_scancodes(seq)   # don't drop the keypress
+                    self._cli_put_scancodes(seq)
                     return
                 self._flag_com_error(emsg)
                 raise
@@ -6089,22 +5828,20 @@ class ChatPlaysApp:
         return [(b if b in (0xE0, 0xE1, 224, 225) else (b | 0x80)) for b in seq]
 
     def _release_all_mods(self):
-        # send break codes for every modifier so a dropped release can never
-        # leave shift/ctrl/alt stuck down and garble everything typed after it
+
         try:
             self._send_scancodes([0xAA, 0xB6, 0x9D, 0xE0, 0x9D, 0xB8, 0xE0, 0xB8])
         except Exception:
             pass
 
     def _type_char(self, ch):
-        # build the full make+break (incl. modifiers) for one character and send
-        # it as ONE atomic put_scancodes call, so the guest can't drop part of it
+
         mods, codes = get_typed_codes(ch, keyboard_layout)
         seq = []
-        for mseq in mods: seq += list(mseq)                     # modifier(s) down
-        seq += list(codes)                                      # key down
-        seq += self._break(codes)                               # key up
-        for mseq in reversed(mods): seq += self._break(mseq)    # modifier(s) up
+        for mseq in mods: seq += list(mseq)
+        seq += list(codes)
+        seq += self._break(codes)
+        for mseq in reversed(mods): seq += self._break(mseq)
         self._send_scancodes(seq)
 
     def _mouse_event(self, dx, dy, dz, buttons):
@@ -6150,12 +5887,9 @@ class ChatPlaysApp:
                 raise
 
     def _vmware_exec(self, cmd, arg):
-        """Drive a VMware guest over VNC (vncdotool) instead of VBox scancodes.
-        Input problems are reported to the visible log, because a keystroke that
-        quietly goes nowhere is the hardest kind of failure to diagnose."""
         vm = self._vmware()
         dbg("vmware", f"exec {cmd} {str(arg)[:50]!r}  (client={'up' if vm.client else 'down'})")
-        # make sure we actually have an input channel before pretending to type
+
         if not vm._need():
             if time.time() - getattr(self, "_last_vnc_warn", 0) > 20:
                 self._last_vnc_warn = time.time()
@@ -6193,24 +5927,23 @@ class ChatPlaysApp:
         else:
             dbg("vmware", f"command '{base}' is not mapped for the vmware backend")
             return
-        # VNC has no acknowledgement, so the guest needs a beat to catch up. Without
-        # this, a chain like "!combo win+r !send cmd" fires the text before the Run
-        # dialog exists and it is simply lost. Delays are sized per action: opening
-        # a window needs far longer than nudging the mouse.
+
+
+
         try:
             mult = float(self.config.get("vmware_settle", 1.0))
         except Exception:
-            mult = 1.0   # 0 is a valid value, so don't use 'or' here
+            mult = 1.0
         settle = {
-            "combo": 0.85,   # win+r, ctrl+shift+esc etc. open a window
+            "combo": 0.85,
             "run": 1.20, "cmd": 1.50,
-            "send": 0.70,    # ends with Enter, so something is about to happen
+            "send": 0.70,
             "key": 0.30, "type": 0.25,
             "click": 0.20, "lclick": 0.20, "rclick": 0.20, "mclick": 0.20,
             "drag": 0.20, "scroll": 0.08, "move": 0.05, "abs": 0.05,
         }.get(base, 0.15)
         if base == "key" and str(arg).strip().lower() in ("enter", "return", "f5", "esc", "escape"):
-            settle = 0.60   # these usually trigger something
+            settle = 0.60
         settle *= max(0.0, min(mult, 5.0))
         if settle > 0:
             dbg("vmware", f"settle {settle:.2f}s after '{base}'")
@@ -6222,10 +5955,6 @@ class ChatPlaysApp:
                 self.log("[system]", f"[warn] vmware input: {st}", "err")
 
     def _run_watched(self, cmd, arg, user, timeout=45):
-        """Run one command with a hard timeout. On a slow PC a long VNC type can
-        take a while, but it must never hang the executor forever - if it blows
-        the timeout we drop the stale VNC client so the next command reconnects
-        cleanly instead of the whole bot freezing."""
         done = threading.Event()
 
         def _work():
@@ -6474,10 +6203,9 @@ class ChatPlaysApp:
         try:
             console_log("ERROR", f"self-relaunch triggered: {reason}")
             script_path = os.path.abspath(sys.argv[0])
-            keep = [a for a in sys.argv[1:] if a.startswith("--multistream") or a == "--no-install" or a == "--quiet"]
+            keep = [a for a in sys.argv[1:] if a.startswith("--multistream") or a in ("--no-install", "--quiet", "--console")]
             args = [sys.executable, script_path] + keep
-            # tell the fresh instance it is a crash relaunch, so it starts
-            # minimized and does not pop over the stream
+
             if "--relaunched" not in args: args.append("--relaunched")
             if platform.system() == "Windows": subprocess.Popen(args, creationflags=0x00000010, close_fds=True)
             else: subprocess.Popen(args, start_new_session=True, close_fds=True)
@@ -6774,7 +6502,7 @@ class ChatPlaysApp:
                 self._load_log(self._eventlog_src)
         except Exception: pass
         if self.running:
-            self.root.after(2500, self._eventlog_tick)
+            self.root.after(5000 if self.config.get('low_power', False) else 2500, self._eventlog_tick)
 
     def _load_log(self, path):
         self._eventlog_src = path
@@ -6986,7 +6714,7 @@ class ChatPlaysApp:
         self.log("[system]", f"flashed: {text}", "sysmsg")
 
     def _bind_secret_replay(self):
-        # secret: 5 quick clicks on the status label triggers a full replay
+
         self._secret_clicks = []
         def _hit(_e=None):
             now = time.time()
@@ -7000,7 +6728,6 @@ class ChatPlaysApp:
             if hasattr(self, "lbl_status"): self.lbl_status.bind("<Button-1>", _hit)
         except Exception: pass
 
-    # ── UI helpers ───────────────────────────────────────────────────────────
     def make_scrollable(self, parent):
         canvas = tk.Canvas(parent, bg="#09090B", bd=0, highlightthickness=0)
         vs = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
@@ -7045,7 +6772,6 @@ class ChatPlaysApp:
                 self.tabview.side.bind(seq, _scroll)
         except Exception: pass
 
-    # ── THEME ENGINE ─────────────────────────────────────────────────────────
     THEMES = {
         "original": {"bg": "#09090B", "card": "#18181B", "border": "#27272A", "text": "#D4D4D8",
                      "side": "#0C0C11", "panel": "#0F0F15", "muted": "#8A8A96", "dark": True},
@@ -7064,8 +6790,6 @@ class ChatPlaysApp:
     }
 
     def apply_theme(self, name):
-        """Repaint the whole app - background, cards, borders, text, sidebar,
-        chat panel and status bar - for the chosen palette (dark or light)."""
         pal = self.THEMES.get(name, self.THEMES["original"])
         old = getattr(self, "_theme_palette", self.THEMES["original"])
         remap = {}
@@ -7075,7 +6799,7 @@ class ChatPlaysApp:
         for role, val in self.THEMES["original"].items():
             if isinstance(val, str) and role in pal:
                 remap.setdefault(val, pal[role])
-        # chrome colours used by the sidebar shell
+
         for extra_old, role in (("#0C0C11", "side"), ("#0F0F15", "panel"), ("#08080C", "panel"),
                                 ("#15151C", "card"), ("#1A1A24", "card"), ("#1C1C24", "card"),
                                 ("#0A0A0F", "bg"), ("#9A9AA6", "muted"), ("#8A8A96", "muted"),
@@ -7118,7 +6842,7 @@ class ChatPlaysApp:
             self.root.option_add('*TCombobox*Listbox.background', pal["card"])
             self.root.option_add('*TCombobox*Listbox.foreground', pal["text"])
         except Exception: pass
-        # re-tint the sidebar selection so the active page still reads correctly
+
         try:
             nav = getattr(self, "tabview", None)
             if nav is not None and hasattr(nav, "select") and nav._current is not None:
@@ -7159,17 +6883,33 @@ class ChatPlaysApp:
         is_dark = self.THEMES.get(cur, {}).get("dark", True)
         self.apply_theme("light" if is_dark else "original")
 
-    # ── KEYS ─────────────────────────────────────────────────────────────────
     def _minimize_window(self):
         try:
             self.root.iconify()
         except Exception:
             pass
 
+    def _toggle_low_power(self):
+        v = not self.config.get("low_power", False)
+        self.config["low_power"] = v
+        self.save_settings()
+        self.log("[system]", f"low power mode {'ON - lighter on old PCs' if v else 'OFF'}.", "sysmsg")
+
+    def _toggle_console(self, show=None):
+        if platform.system() != "Windows":
+            return
+        try:
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if not hwnd:
+                return
+            if show is None:
+                show = not getattr(self, "_console_shown", False)
+            ctypes.windll.user32.ShowWindow(hwnd, 5 if show else 0)
+            self._console_shown = show
+        except Exception:
+            pass
+
     def _vm_action(self, action, arg=""):
-        """Dashboard/console VM control. Runs the maintenance action directly in
-        a thread so it works for BOTH backends and reports what actually happened,
-        instead of pushing into the chat queue where a silent failure hides it."""
         be = getattr(self, "backend", "virtualbox")
         dbg("vm", f"console requested '{action}' (backend={be})")
         self.log("[system]", f"{action} requested ({be})...", "sysmsg")
@@ -7212,7 +6952,6 @@ class ChatPlaysApp:
                   ("Ctrl+Z", "ctrl+z"), ("Ctrl+Shift+Esc", "ctrl+shift+esc"), ("Ctrl+Alt+Del", "ctrl+alt+delete"), ("Win", "win")]
         self._grid_buttons(wrap, [(lbl, "#8B5CF6", lambda cc=c: self._send_cmd("!combo", cc)) for lbl, c in combos], cols=4).pack(fill="x", padx=26, pady=(4, 24))
 
-    # ── MOUSE ────────────────────────────────────────────────────────────────
     def build_mouse_tab(self):
         wrap = self.make_scrollable(self.tab_mouse)
         tk.Label(wrap, text="MOUSE", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7238,7 +6977,6 @@ class ChatPlaysApp:
         tk.Button(arow, text="Go", font=("Segoe UI", 10, "bold"), bg=self.accent_main, fg="black", bd=0, cursor="hand2",
                   command=lambda: self._send_cmd("!abs", f"{self.abs_x.get()} {self.abs_y.get()}")).pack(side="left", padx=8, ipady=4, ipadx=14)
 
-    # ── MACROS ───────────────────────────────────────────────────────────────
     def build_macros_tab(self):
         wrap = self.make_scrollable(self.tab_macros)
         tk.Label(wrap, text="QUICK MACROS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 4))
@@ -7255,7 +6993,6 @@ class ChatPlaysApp:
             ("Screenshot", "#10B981", lambda: self._send_cmd("!key", "printscreen")),
         ], cols=4).pack(fill="x", padx=26, pady=(0, 20))
 
-    # ── MODERATION ───────────────────────────────────────────────────────────
     def build_moderation_tab(self):
         wrap = self.make_scrollable(self.tab_mod)
         tk.Label(wrap, text="MODERATION", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7291,7 +7028,6 @@ class ChatPlaysApp:
         self.mod_list.delete(0, "end")
         for u in sorted(self.blacklisted_users): self.mod_list.insert("end", u)
 
-    # ── SNAPSHOTS ────────────────────────────────────────────────────────────
     def build_snapshots_tab(self):
         wrap = self.make_scrollable(self.tab_snaps)
         tk.Label(wrap, text="SNAPSHOTS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7340,7 +7076,6 @@ class ChatPlaysApp:
         self.log("[system]", f"deleting snapshot {s}...", "sysmsg")
         self.root.after(3000, self._refresh_snaps_tab)
 
-    # ── OVERLAYS ─────────────────────────────────────────────────────────────
     def build_overlays_tab(self):
         wrap = self.make_scrollable(self.tab_overlays)
         tk.Label(wrap, text="OBS OVERLAYS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 4))
@@ -7369,7 +7104,6 @@ class ChatPlaysApp:
             self.log("[system]", f"copied: {text}", "sysmsg")
         except Exception: pass
 
-    # ── CHAT TOOLS ───────────────────────────────────────────────────────────
     def build_chattools_tab(self):
         wrap = self.make_scrollable(self.tab_chattools)
         tk.Label(wrap, text="CHAT TOOLS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7408,7 +7142,6 @@ class ChatPlaysApp:
         with history_lock: web_chat_history.clear()
         self.log("[system]", "chat history cleared.", "sysmsg")
 
-    # ── SYSTEM ───────────────────────────────────────────────────────────────
     def build_system_tab(self):
         wrap = self.make_scrollable(self.tab_system)
         tk.Label(wrap, text="SYSTEM & DIAGNOSTICS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7449,13 +7182,6 @@ class ChatPlaysApp:
             os._exit(0)
         except Exception as e:
             self.log("[system]", f"[error] restart: {e}", "err")
-
-    # ── PRESETS ──────────────────────────────────────────────────────────────
-
-
-
-
-
 
     def build_replay_tab(self):
         wrap = self.make_scrollable(self.tab_replay)
@@ -7545,7 +7271,7 @@ class ChatPlaysApp:
 
     def _escalate_recovery(self, reason):
         now = time.time()
-        if now - getattr(self, "last_escalation_t", 0) < 20:   # cooldown so it can't thrash
+        if now - getattr(self, "last_escalation_t", 0) < 20:
             return
         self.last_escalation_t = now
         self.watchdog_action_level = min(getattr(self, "watchdog_action_level", 0) + 1, 5)
@@ -7560,9 +7286,8 @@ class ChatPlaysApp:
                 self._teardown_com_session()
                 self.force_session_refresh = True
             elif lvl == 3:
-                # the session is wedged: kill the actual VirtualBoxVM process for
-                # this vm, then bring it back up (a plain restartvm can't fix a
-                # process that has stopped answering COM calls)
+
+
                 def _kill_restart():
                     self._kill_vbox_tasks()
                     self._kill_vbox_global()
@@ -7583,26 +7308,29 @@ class ChatPlaysApp:
         except Exception as e:
             console_log("ERROR", f"escalation failed: {e}")
 
+    def _idle(self):
+        return not (getattr(self, "listening_to_chat", False) and getattr(self, "active_url", ""))
+
     def vm_health_watchdog(self):
-        """Self-healing loop so the stream keeps running unattended. Detects a
-        stuck/frozen VM, E_FAIL storms, dead COM sessions, and wrong power states,
-        then recovers automatically with a cooldown-gated escalation ladder."""
         while self.running:
             try:
-                time.sleep(4)
+                _s = 4
+                if self.config.get("low_power", False): _s = 8
+                if self._idle(): _s = 15
+                time.sleep(_s)
                 if not self.config.get("auto_recover", True):
                     continue
                 if getattr(self, "backend", "virtualbox") == "vmware":
                     continue
                 now = time.time()
-                # stuck-maintenance guard: never let vm_maintenance hang forever
+
                 if getattr(self, "vm_maintenance", False):
                     if now - getattr(self, "_maint_start_t", now) > 200:
                         console_log("SYSTEM", "[anti-stuck] maintenance stuck >200s, clearing flag.")
                         self.vm_maintenance = False
                     continue
                 state = self._vm_state()
-                # crashed VM -> auto fix
+
                 if state == "aborted":
                     self.log("[system]", "[warn] vm aborted/crashed, killing + restarting...", "sysmsg")
                     self._dismiss_crash_dialogs()
@@ -7612,44 +7340,42 @@ class ChatPlaysApp:
                     threading.Thread(target=_fix_aborted, daemon=True).start()
                     self.vm_start_time = now
                     continue
-                # unexpectedly paused -> resume
+
                 if state == "paused":
                     run_vbox(["controlvm", vm_name, "resume"], timeout=10)
                     continue
-                # off/saved but should be live -> start (24/7)
+
                 if state in ("poweroff", "saved") and self.twenty_four_seven_mode and self.active_url:
                     if now - getattr(self, "vm_start_time", 0) > 20:
                         self.log("[system]", "[warn] vm down in 24/7 mode, auto-starting...", "sysmsg")
                         self.trigger_command(("startvm", "", "[watchdog]"))
                         self.vm_start_time = now
                     continue
-                # only watch COM health while the vm is actually running
+
                 if state != "running" and not self._vm_is_running():
                     self.watchdog_action_level = 0
                     continue
-                # a crashed VM often pops the WerFault "Application Error" box and
-                # then just sits there erroring - clear it as soon as we see trouble
+
                 if getattr(self, "efail_count", 0) >= 4 or state == "aborted":
                     self._dismiss_crash_dialogs()
-                # E_FAIL storm -> escalate
+
                 if getattr(self, "efail_count", 0) >= 8:
-                    # heavy storm, or COM has been unbuildable for a while while the
-                    # vm claims to be running: the process is wedged, skip the gentle
-                    # levels and go straight to killing it
+
+
                     if self.efail_count >= 20 or (self.shared_kb is None and now - getattr(self, "last_cmd_ok_t", now) > 45):
                         self.watchdog_action_level = max(getattr(self, "watchdog_action_level", 0), 2)
                         self.last_escalation_t = 0
                     self._escalate_recovery(f"E_FAIL storm ({self.efail_count})")
                     self.efail_count = 0
                     continue
-                # commands piling up but nothing executing -> escalate
+
                 if self.cmd_queue.qsize() > 3 and now - getattr(self, "last_cmd_ok_t", now) > 25:
                     self._escalate_recovery("commands queued but not executing")
                     continue
-                # COM session should exist while running; if it keeps failing to build -> nudge
+
                 if self.shared_kb is None and self.cmd_queue.qsize() > 0:
                     self.force_session_refresh = True
-                # recovered cleanly -> stand down the ladder
+
                 if getattr(self, "efail_count", 0) == 0 and now - getattr(self, "last_cmd_ok_t", now) < 15:
                     if getattr(self, "watchdog_action_level", 0) != 0 and now - getattr(self, "last_escalation_t", 0) > 30:
                         self.watchdog_action_level = 0
@@ -7754,15 +7480,6 @@ class ChatPlaysApp:
     def _launch_app(self, cmd):
         self._send_chain([("!combo", "win+r"), ("!wait", "0.6"), ("!send", cmd)])
 
-
-
-
-
-
-
-
-
-
     def build_backup_tab(self):
         wrap = self.make_scrollable(self.tab_backup)
         tk.Label(wrap, text="BACKUP & EXPORT", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -7813,12 +7530,10 @@ class ChatPlaysApp:
         self.config = self.load_settings()
         self.backup_status.config(text="settings reloaded (restart for full effect)")
 
-    GUIDE_FLAG_FILE = "guide_seen.flag"
+    _gff = "guide_seen.flag"
 
     def show_welcome_guide(self, force=False):
-        """Chaptered user guide. Opens on first launch, and any time from the
-        Help page or the sidebar."""
-        if not force and os.path.exists(self.GUIDE_FLAG_FILE):
+        if not force and os.path.exists(self._gff):
             return
         pal = getattr(self, "_theme_palette", self.THEMES["original"])
         BG, BG2, BG3 = pal["bg"], pal["card"], pal["panel"]
@@ -8016,7 +7731,7 @@ class ChatPlaysApp:
         def close_guide():
             if dont.get():
                 try:
-                    with open(self.GUIDE_FLAG_FILE, "w") as f: f.write("seen")
+                    with open(self._gff, "w") as f: f.write("seen")
                 except Exception: pass
             try: dlg.destroy()
             except Exception: pass
@@ -8131,7 +7846,6 @@ class ChatPlaysApp:
         except Exception as e:
             console_log("ERROR", f"start_app_threads error: {e}\n{traceback.format_exc()}")
 
-
 def _should_respawn():
     try:
         now = time.time()
@@ -8146,13 +7860,11 @@ def _should_respawn():
     except Exception:
         return True
 
-
 if __name__ == "__main__":
     try:
         main_ui_root = tk.Tk()
         main_gui_application = ChatPlaysApp(main_ui_root)
-        # when this instance was started by a crash relaunch, minimize it so it
-        # never pops over the stream. also minimize if the user asked for it.
+
         if ("--relaunched" in sys.argv or "--minimized" in sys.argv
                 or os.environ.get("YT2VM_MINIMIZED") == "1"):
             def _minimize_after_start():
@@ -8162,7 +7874,7 @@ if __name__ == "__main__":
                         console_log("SYSTEM", "recovered from a crash - running minimized so the stream is not interrupted.")
                 except Exception:
                     pass
-            # do it after the window has actually mapped, or iconify is ignored
+
             main_ui_root.after(400, _minimize_after_start)
         main_ui_root.mainloop()
     except Exception as fatal_error:

@@ -6,7 +6,7 @@ A lightweight Python project that connects YouTube-related workflows to a virtua
 
 YT2VM is a project that brings together several tools to make a VM-centered YouTube workflow easier to manage. It can be used to:
 
-- Start and control virtual machines using VirtualBox
+- Start and control virtual machines using VirtualBox or VMWare
 - Connect with OBS for stream or scene automation
 - Interface with chat-driven tools using `pytchat`
 - Run a lightweight web-based control layer with Flask
@@ -28,7 +28,7 @@ Attention: `pywin32` works on Windows only and should be installed if you use th
 
 - Cross-Platform: Supports Windows, macOS, and Linux.
 - Open-Source: Full source code is open to everyone.
-- VM Integration: Designed to work with VirtualBox-powered environments.
+- VM Integration: Designed to work with VirtualBox-powered environments, but does work with VMWare too.
 - OBS Support: Can integrate with OBS WebSocket for automation.
 - Flask-Based Control: Includes a lightweight Python web interface.
 

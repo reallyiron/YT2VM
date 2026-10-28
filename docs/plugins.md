@@ -2,7 +2,7 @@
 
 Plugins add things to YT2VM without editing `yt2vm.py`: new chat commands, reactions to chat messages, timers, and small settings panels in the GUI.
 
-Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and package a plugin from the GUI.
+Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and publish a plugin from the GUI, with no GitHub account.
 
 - [Installing and managing plugins](#installing-and-managing-plugins)
 - [Your first plugin](#your-first-plugin)
@@ -13,7 +13,7 @@ Everything here works with nothing but `yt2vm.py`. The app creates the `plugins`
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 
-To get plugins from the market, see the [Plugin market guide](plugin-market.md).
+How the plugin market works is covered in the [Plugin market guide](plugin-market.md).
 
 ---
 
@@ -47,7 +47,7 @@ The **Plugins** page (Tools → Plugins) lists every installed plugin with its s
 | Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
 | Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
 | Open folder | Opens the plugin's folder. |
-| Package | Builds a release of the plugin for a market. See [Releasing a plugin](#releasing-a-plugin). |
+| Submit | Uploads the plugin to the plugin market for review. See [Releasing a plugin](#releasing-a-plugin). |
 | Uninstall | Deletes the plugin's folder, after you confirm. |
 
 Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.
@@ -61,7 +61,7 @@ Plugin panels (settings, leaderboards and so on) appear inside each plugin's car
 | `!plugin reload <id>` | Reloads one plugin. |
 | `!plugin enable <id>` / `!plugin disable <id>` | Turns one plugin on or off. |
 
-The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs** and **Reload all plugins**.
+The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs**, **Create a new plugin** and **Reload all plugins**.
 
 ---
 
@@ -140,7 +140,7 @@ def teardown(api):
     pass
 ```
 
-The official market's sample plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** to read them, or browse them on GitHub: <https://github.com/reallyiron/YT2VM/tree/main/market/plugins>
+The market's starter plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** on the Plugins page to read them:
 
 | Plugin | Shows how to |
 |---|---|
@@ -156,13 +156,13 @@ The official market's sample plugins are short, working examples. Install them f
 | Key | Required | Meaning |
 |---|---|---|
 | `id` | yes | Unique id: lowercase letters, digits, `-` and `_`, 2–40 characters. Never change it after release, because the market uses it to match updates. |
-| `name` | no | Display name. Defaults to `id`. |
-| `version` | no | Version such as `1.2.0`. The market compares versions to offer updates. |
-| `author` | no | Shown in the GUI. |
-| `description` | no | One or two sentences, shown in the GUI. |
+| `name` | yes for the market | Display name. Defaults to `id`. |
+| `version` | yes for the market | Version such as `1.2.0`. The market compares versions to offer updates. |
+| `author` | yes for the market | Shown in the GUI. |
+| `description` | yes for the market | One or two sentences, shown in the GUI. |
 | `api` | no | Plugin API version the plugin needs. Defaults to `1`. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
 | `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
-| `tags`, `commands`, `homepage` | no | Only used by the market listing. |
+| `tags`, `commands`, `homepage` | no | Shown on the market card. |
 
 ---
 
@@ -235,14 +235,14 @@ Viewer commands go through the same protections as built-in ones before they rea
 
 ## Releasing a plugin
 
-A release is a copy of your plugin folder plus a market index (`index.json`) that lists every file with its sha256 checksum. Users get your plugin by adding the index URL to **Sources** on the Plugin Market page. When you publish a higher version, they see an **Update** button.
+You release a plugin by clicking **Submit** on its card. The app uploads it to the plugin market, the market's admin reviews the code, and once approved it appears on everyone's Plugin Market page. You need no GitHub account and no website.
 
 ### 1. Get it ready
 
-- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. Adding `tags`, `commands` and `homepage` makes the market card more useful.
-- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only offers an update when the new version is higher.
+- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. The market requires all four. Adding `tags`, `commands` and `homepage` makes the market card more useful.
+- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only accepts a version higher than the published one.
 - Set `api` to the plugin API version you tested with (currently `1`).
-- Don't put passwords, tokens or anything personal in the plugin folder. Everything in it except `data/` gets published.
+- Don't put passwords, tokens or anything personal in the plugin folder. Every file in it except `data/` and dotfiles gets uploaded. Only text files can be published, up to 25 files and 600 KB in total.
 
 ### 2. Test it
 
@@ -251,48 +251,34 @@ A release is a copy of your plugin folder plus a market index (`index.json`) tha
 - Disable and enable it, then restart the app, to check that `teardown` and saved settings work.
 - Read `crash_log.txt` for anything with your plugin's id in it.
 
-### 3. Package it
+### 3. Submit it
 
-On **Tools → Plugins**, click **Package** on your plugin's card and choose a folder for your market (an empty folder the first time). The app then:
+1. On **Tools → Plugins**, click **Submit** on your plugin's card. You can add a note for the reviewer.
+2. The market checks the files right away. If something is wrong, such as a syntax error, a missing field or a version that isn't higher, you get a list of problems. Fix them and submit again.
+3. The first time you submit a plugin id, the market reserves it for you and returns an **owner key**. The app saves it in `settings.json`, under `plugin_owner_keys`, and shows it once. Back it up, because without it you can't publish updates to that id, for example from another PC.
+4. Your plugin is now waiting for review. While it waits you can fix it and submit the same version again.
+5. Once the admin approves it, it appears on the Plugin Market page for everyone.
 
-- copies the plugin into `<folder>/plugins/<id>/`, leaving out `data/`, `__pycache__` and dotfiles;
-- writes or updates `<folder>/index.json` with the plugin's details and a sha256 for every file;
-- keeps any other plugins already in that folder's index.
-
-Package into the same folder again for each new version. In a clone of the YT2VM repo, `python market/build_index.py` does the same for `market/`.
-
-### 4. Publish it
-
-**In your own market.** Upload the folder to anywhere that serves raw files, for example a GitHub repo:
-
-1. Create a public GitHub repo, such as `yourname/yt2vm-plugins`.
-2. Upload `index.json` and the `plugins` folder to its root, keeping the folder structure.
-3. Share this URL: `https://raw.githubusercontent.com/yourname/yt2vm-plugins/main/index.json`
-4. Users paste it into **Sources** on the Plugin Market page, then click **Save sources**.
-
-Upload the files exactly as they are. If anything changes the bytes, such as an editor or Git converting line endings, the checksums no longer match and installs are refused. In a Git repo, add a `.gitattributes` file containing `* -text`.
-
-**In the official market.** Open a pull request to <https://github.com/reallyiron/YT2VM> that adds `market/plugins/<id>/` and the updated `market/index.json`. The [Plugin market guide](plugin-market.md) has the details.
-
-### 5. Ship updates
+### 4. Ship updates
 
 1. Raise `version` in `plugin.json`.
-2. Package into the same folder again.
-3. Upload the changed files and `index.json`.
+2. Click **Submit** again. Your saved owner key is sent along automatically.
 
-Users who click **Refresh** on the Plugin Market page then see **Update x → y**. Updating keeps their `data/` folder and their settings.
+Once the update is approved, users see **Update x → y** on the Plugin Market page. Updating keeps their `data/` folder and their settings.
 
 ---
 
 ## Security
 
-**A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Only install plugins whose code you have read or whose author you trust.
+**A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Every plugin in the market is reviewed before it's published, but only install plugins you're comfortable running, and plugins you got elsewhere only if you've read their code or trust the author.
 
 When you write a plugin:
 
 - Use `ctx.run(...)` for anything a viewer triggers. It keeps the viewer's own permissions and goes through the payload filter.
 - Use `api.run(...)` only with text you wrote yourself, never with text that came from chat. It runs with owner rights, so passing viewer text to it would give viewers owner powers.
 - Use `mod_only=True` or `owner_only=True` for anything destructive.
+
+Plugins that ignore these rules, hide what they do, or contact unexpected servers won't be approved.
 
 ---
 
@@ -306,4 +292,5 @@ When you write a plugin:
 | "already registered by plugin …" | Two plugins use the same command name. Disable one of them. |
 | The command does nothing for viewers | Check whether it is `mod_only`, whether chat is paused, and whether the viewer is on cooldown. |
 | Changes don't show up | Click **Reload** on the plugin's card. |
-| Users get "checksum mismatch" | The uploaded files differ from what you packaged, usually because of line-ending conversion. Package again and upload the files unchanged. |
+| Submit says the id belongs to someone else | Another author already reserved that id, or your owner key is missing or wrong. Pick another id, or copy your key back into `plugin_owner_keys` in `settings.json`. |
+| Submit says the version was already submitted | Raise `version` in `plugin.json`. |

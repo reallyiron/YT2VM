@@ -46,8 +46,12 @@ def setup(api):
         ctx.reply(f"Hi {ctx.user}!")
 ```
 
-- [docs/plugins.md](docs/plugins.md): installing, writing plugins, and the full API
+You only need `yt2vm.py`. The app creates the `plugins` folder itself, and the full docs are built in under **Tools → Plugin Docs**. **New plugin** creates a starter plugin, and **Package** builds a market release, all from the GUI.
+
+- [docs/plugins.md](docs/plugins.md): installing, writing and releasing plugins, and the full API
 - [docs/plugin-market.md](docs/plugin-market.md): using the market, publishing a plugin, and hosting your own market
+
+These `.md` files are generated from the docs inside `yt2vm.py`. To change them, edit `PLUGIN_DOCS` in `yt2vm.py`, then run `python docs/sync_docs.py`.
 
 Plugins run with the same access to your PC as YT2VM, so only install ones you trust.
 

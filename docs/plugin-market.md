@@ -2,7 +2,7 @@
 
 The **Plugin Market** page (Tools → Plugin Market) lets you browse, install, update and remove plugins from one or more *market indexes*. An index is a JSON file hosted anywhere: GitHub, your own site, or a folder on your PC.
 
-How to write a plugin is covered in [plugins.md](plugins.md).
+How to write a plugin is covered in the [Plugins guide](plugins.md).
 
 ---
 
@@ -40,17 +40,18 @@ The checksums make sure you get exactly the files the index lists. **They don't 
 
 ## Publishing to the official market
 
+Before publishing, follow steps 1 and 2 of "Releasing a plugin" in the [Plugins guide](plugins.md) to prepare and test the plugin.
+
+**As a contributor:**
+
 1. Fork <https://github.com/reallyiron/YT2VM>.
-2. Add your plugin as `market/plugins/<id>/`. The folder name must equal the `id` in `plugin.json`. Fill in `name`, `version`, `author`, `description`, and preferably `tags`, `commands` and `homepage`.
-3. Regenerate the index:
-
-   ```bash
-   python market/build_index.py
-   ```
-
+2. Add your plugin as `market/plugins/<id>/`. The folder name must equal the `id` in `plugin.json`.
+3. Regenerate the index with `python market/build_index.py`. You can also package from the app: click **Package** and choose the `market` folder of your clone.
 4. Commit both your plugin folder and the updated `market/index.json`, then open a pull request.
 
-To release an update, bump `version` in `plugin.json`, run `build_index.py` again and open another PR. Users then see an **Update** button.
+**As a maintainer with push access:** review the plugin's code first, because the official source installs without the "do you trust this source" prompt. Then run `python market/build_index.py`, commit `market/` and push to `main`. The change is live as soon as `raw.githubusercontent.com` serves the new `index.json`, usually within a few minutes.
+
+To release an update, bump `version` in `plugin.json`, regenerate the index and push (or open another PR). Users then see an **Update** button.
 
 > The repo's `.gitattributes` marks `market/**` as `-text` so Git never changes line endings there. Changed line endings would change the bytes, and the checksums would no longer match.
 
@@ -58,7 +59,7 @@ To release an update, bump `version` in `plugin.json`, run `build_index.py` agai
 
 ## Hosting your own market
 
-Any folder laid out like this works:
+The **Package** button on the Plugins page builds a market folder for you:
 
 ```
 my-market/
@@ -69,7 +70,7 @@ my-market/
       plugin.py
 ```
 
-Copy `market/build_index.py` into `my-market/`, run it, and host the folder anywhere that serves raw files (a GitHub repo through `raw.githubusercontent.com`, GitHub Pages, any static host). Then add the URL of `index.json` to **Sources**.
+Host that folder anywhere that serves raw files (a GitHub repo through `raw.githubusercontent.com`, GitHub Pages, any static host), then add the URL of `index.json` to **Sources**. Step 4 of "Releasing a plugin" in the [Plugins guide](plugins.md) walks through doing this with GitHub.
 
 To test locally without hosting, use a `file://` URL, for example `file:///C:/Users/me/my-market/index.json`.
 
@@ -102,7 +103,7 @@ To test locally without hosting, use a `file://` URL, for example `file:///C:/Us
 
 | Key | Meaning |
 |---|---|
-| `name` | Source name shown on each card ("from …"). |
+| `name` | Source name shown on each card ("from …"). When you package into a new folder, the app names it after the plugin's `author` (or "My plugin market"); you can edit it in `index.json`. |
 | `plugins[].id` | Plugin id, which must match the id in its `plugin.json`. |
 | `plugins[].base_url` | Where the files are, relative to the index URL (or absolute). Defaults to `plugins/<id>/`. |
 | `plugins[].files[]` | Every file to download: `path` is relative to the plugin folder, `sha256` is required, and an optional `url` overrides `base_url` for that one file. |

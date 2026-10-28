@@ -3166,7 +3166,7 @@ _ng = [
     ("CONTROL", ["Keys", "Mouse", "Macros", "Quick Type", "Win Apps"]),
     ("MACHINE", ["VMS", "Snapshots", "OS Voting", "Real PC", "System"]),
     ("STREAM",  ["OBS", "Discord", "Overlays", "Media", "Music Queue", "Chat Tools", "Moderation"]),
-    ("TOOLS",   ["Plugins", "Plugin Market", "Automation", "Event Log", "Replay", "Backup", "Appearance", "Extra Things", "Help", "Diagnostics"]),
+    ("TOOLS",   ["Plugins", "Plugin Market", "Plugin Docs", "Automation", "Event Log", "Replay", "Backup", "Appearance", "Extra Things", "Help", "Diagnostics"]),
 ]
 
 _NG_ICON = {"MAIN": "main", "CONTROL": "control", "MACHINE": "machine", "STREAM": "stream", "TOOLS": "tools"}
@@ -3223,6 +3223,7 @@ _PAGE_BLURB = {
     "Diagnostics": "Dependency, backend and recovery checks in one report.",
     "Plugins": "Enable, reload and configure installed plugins.",
     "Plugin Market": "Browse and install plugins from the market.",
+    "Plugin Docs": "How to use, write and release plugins - built into the app.",
 }
 
 
@@ -6689,6 +6690,541 @@ def market_uninstall(pid):
         shutil.rmtree(dest)
 
 
+_MARKET_COPY_KEYS = ("id", "name", "version", "author", "description", "tags", "commands", "homepage")
+
+
+def _market_plugin_files(folder):
+    out = []
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in ("data", "__pycache__"))
+        for fn in sorted(filenames):
+            if fn.startswith(".") or fn.endswith(".pyc"):
+                continue
+            full = os.path.join(dirpath, fn)
+            with open(full, "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            out.append({"path": os.path.relpath(full, folder).replace(os.sep, "/"), "sha256": digest})
+    return out
+
+
+def market_package(src, out_dir):
+    """Copy a plugin into <out_dir>/plugins/<id>/ and add or update its entry in <out_dir>/index.json.
+    Same result as market/build_index.py, so a release needs nothing but yt2vm.py."""
+    src, out_dir = os.path.abspath(src), os.path.abspath(out_dir)
+    man = read_plugin_manifest(src)
+    pid = man["id"]
+    if out_dir == src or out_dir.startswith(src + os.sep):
+        raise ValueError("pick a folder outside the plugin itself")
+    dest = os.path.join(out_dir, "plugins", pid)
+    if dest != src:
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest, ignore=lambda d, names: [n for n in names if n.startswith(".") or n in ("data", "__pycache__")
+                                                             or n.endswith(".pyc")])
+    idx_path = os.path.join(out_dir, "index.json")
+    idx = None
+    if os.path.isfile(idx_path):
+        with open(idx_path, "r", encoding="utf-8") as fh:
+            idx = json.load(fh)
+        if not isinstance(idx, dict) or not isinstance(idx.get("plugins"), list):
+            raise ValueError(f"{idx_path} is not a market index - pick another folder")
+    if idx is None:
+        who = str(man.get("author") or "").strip()
+        idx = {"name": f"{who}'s market" if who.lower() not in ("", "you", "unknown") else "My plugin market",
+               "format": 1, "plugins": []}
+    entry = {k: man[k] for k in _MARKET_COPY_KEYS if k in man}
+    entry["base_url"] = f"plugins/{pid}/"
+    entry["files"] = _market_plugin_files(dest)
+    idx["plugins"] = sorted([e for e in idx["plugins"] if e.get("id") != pid] + [entry], key=lambda e: str(e.get("id")))
+    idx["updated"] = time.strftime("%Y-%m-%d")
+    idx.setdefault("format", 1)
+    with open(idx_path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(idx, fh, indent=2)
+        fh.write("\n")
+    return idx_path, entry
+
+
+_PLUGIN_TEMPLATE_PY = '''import tkinter as tk
+
+
+def setup(api):
+    # !{cmd} - try it from the Dashboard console, then change it into something useful
+    @api.command("{cmd}", help="Starter command from the {name} plugin")
+    def {cmd}(ctx):
+        count = api.get("count", 0) + 1
+        api.set("count", count)
+        ctx.reply(f"Hi {{ctx.user}}! !{cmd} has run {{count}} time(s).")
+
+    # runs for every chat message (YouTube and Discord)
+    @api.on("chat")
+    def on_chat(user, message, is_mod, is_owner, source):
+        pass
+
+    # a small panel on the Plugins page
+    def panel(parent):
+        tk.Label(parent, text="Edit plugin.py in this folder, then click Reload.",
+                 bg=parent["bg"], fg="#8C95A3").pack(anchor="w")
+    api.add_panel(panel)
+
+
+def teardown(api):
+    pass
+'''
+
+
+def plugin_scaffold(pid, name="", author=""):
+    pid = str(pid).strip().lower()
+    if not _PLUGIN_ID_RE.match(pid):
+        raise ValueError("ids use lowercase letters, digits, - and _ (2-40 characters)")
+    folder = os.path.join(plugins_dir(), pid)
+    if os.path.exists(folder):
+        raise ValueError(f"plugins/{pid} already exists")
+    cmd = re.sub(r"[^a-z0-9_]", "_", pid)
+    if not cmd[0].isalpha():
+        cmd = "p" + cmd
+    cmd = cmd[:32]
+    if cmd in _KNOWN_CMDS or cmd in ("plugins", "plugin"):
+        cmd = (cmd + "_cmd")[:32]
+    name = name or pid.replace("-", " ").replace("_", " ").title()
+    os.makedirs(folder)
+    man = {"id": pid, "name": name, "version": "0.1.0", "author": author or "you",
+           "description": "Describe what your plugin does.", "api": PLUGIN_API_VERSION, "entry": "plugin.py",
+           "commands": [cmd]}
+    with open(os.path.join(folder, "plugin.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(man, fh, indent=4)
+        fh.write("\n")
+    with open(os.path.join(folder, "plugin.py"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(_PLUGIN_TEMPLATE_PY.replace("{cmd}", cmd).replace("{name}", name)
+                 .replace("{{", "{").replace("}}", "}"))
+    return folder, cmd
+
+
+# The plugin docs, shown on the Plugin Docs page. docs/*.md are generated from
+# these with  python docs/sync_docs.py  so the app and GitHub always match.
+PLUGIN_DOCS = (
+    ("plugins", "Plugins guide", r"""# Plugins
+
+Plugins add things to YT2VM without editing `yt2vm.py`: new chat commands, reactions to chat messages, timers, and small settings panels in the GUI.
+
+Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and package a plugin from the GUI.
+
+- [Installing and managing plugins](#installing-and-managing-plugins)
+- [Your first plugin](#your-first-plugin)
+- [plugin.json](#pluginjson)
+- [API reference](#api-reference)
+- [Threads and the UI](#threads-and-the-ui)
+- [Releasing a plugin](#releasing-a-plugin)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+
+To get plugins from the market, see the [Plugin market guide](plugin-market.md).
+
+---
+
+## Installing and managing plugins
+
+Plugins live in a `plugins` folder next to `yt2vm.py`. The app creates it on first start. Each plugin is its own folder:
+
+```
+yt2vm.py
+plugins/
+  hello/
+    plugin.json
+    plugin.py
+  chat-stats/
+    plugin.json
+    plugin.py
+    data/          <- the plugin's own files (kept when you update it)
+```
+
+There are four ways to get a plugin:
+
+1. **Plugin Market page** (Tools → Plugin Market): click **Install**.
+2. **New plugin button** (Tools → Plugins): creates a working starter plugin for you to edit.
+3. **By hand:** copy a plugin folder into `plugins`, then click **Reload all** on the Plugins page (or restart the app).
+4. **From chat or the console** (owner only): drop the folder in, then run `!plugin reload`.
+
+The **Plugins** page (Tools → Plugins) lists every installed plugin with its status (`Running`, `Disabled` or `Error`), the commands it adds, and these buttons:
+
+| Button | What it does |
+|---|---|
+| Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
+| Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
+| Open folder | Opens the plugin's folder. |
+| Package | Builds a release of the plugin for a market. See [Releasing a plugin](#releasing-a-plugin). |
+| Uninstall | Deletes the plugin's folder, after you confirm. |
+
+Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.
+
+### Owner chat commands
+
+| Command | Effect |
+|---|---|
+| `!plugins` | Lists installed plugins. |
+| `!plugin reload` | Reloads all plugins. |
+| `!plugin reload <id>` | Reloads one plugin. |
+| `!plugin enable <id>` / `!plugin disable <id>` | Turns one plugin on or off. |
+
+The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs** and **Reload all plugins**.
+
+---
+
+## Your first plugin
+
+The quickest start: on **Tools → Plugins**, click **New plugin**, type an id such as `greeter`, and the app writes a working plugin into `plugins/greeter/`, loads it, and opens its folder. Type `!greeter` in the Dashboard console to try it.
+
+To make one by hand, create a folder `plugins/greeter/` with two files.
+
+**plugins/greeter/plugin.json**
+
+```json
+{
+    "id": "greeter",
+    "name": "Greeter",
+    "version": "1.0.0",
+    "author": "you",
+    "description": "Says hi.",
+    "api": 1
+}
+```
+
+**plugins/greeter/plugin.py**
+
+```python
+def setup(api):
+    @api.command("hi", help="Say hi")
+    def hi(ctx):
+        ctx.reply(f"Hi {ctx.user}!")
+```
+
+Click **Reload all** on the Plugins page and type `!hi` in the Dashboard console. You should see `[Greeter]: Hi [console]!`.
+
+Here is a bigger example that uses every part of the API:
+
+```python
+import tkinter as tk
+
+
+def setup(api):
+    # a chat command anyone can use
+    @api.command("dance", help="Make the VM dance")
+    def dance(ctx):
+        ctx.run("!key left | !key right | !key left | !key right")
+        ctx.reply(f"{ctx.user} started a dance")
+
+    # a command only mods and owners can use
+    @api.command("panic", help="Revert the VM", mod_only=True)
+    def panic(ctx):
+        api.run("!revert")            # runs with console rights, see "Security" below
+
+    # react to every chat message (YouTube and Discord)
+    @api.on("chat")
+    def on_chat(user, message, is_mod, is_owner, source):
+        if "gg" in message.lower():
+            api.say(f"gg {user}")
+
+    # run something every 5 minutes
+    @api.every(300)
+    def reminder():
+        api.flash("Remember to follow!", "info", 6)
+
+    # settings that persist in settings.json
+    if api.get("first_run", True):
+        api.log("first run!")
+        api.set("first_run", False)
+
+    # a small panel on the Plugins page
+    def panel(parent):
+        tk.Label(parent, text="Hello from my plugin", bg=parent["bg"], fg="#D3D8DF").pack(anchor="w")
+    api.add_panel(panel, "Status")
+
+
+def teardown(api):
+    # optional: called on disable, reload, uninstall and app exit
+    pass
+```
+
+The official market's sample plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** to read them, or browse them on GitHub: <https://github.com/reallyiron/YT2VM/tree/main/market/plugins>
+
+| Plugin | Shows how to |
+|---|---|
+| `hello` | register a command, store a setting, build a settings panel |
+| `chat-stats` | use the `chat` event, run a timer, keep files in `data/`, use `teardown` |
+| `shortcuts` | register many commands in a loop and queue VM input with `ctx.run` |
+| `announcer` | build a timer-driven feature with an editable panel |
+
+---
+
+## plugin.json
+
+| Key | Required | Meaning |
+|---|---|---|
+| `id` | yes | Unique id: lowercase letters, digits, `-` and `_`, 2–40 characters. Never change it after release, because the market uses it to match updates. |
+| `name` | no | Display name. Defaults to `id`. |
+| `version` | no | Version such as `1.2.0`. The market compares versions to offer updates. |
+| `author` | no | Shown in the GUI. |
+| `description` | no | One or two sentences, shown in the GUI. |
+| `api` | no | Plugin API version the plugin needs. Defaults to `1`. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
+| `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
+| `tags`, `commands`, `homepage` | no | Only used by the market listing. |
+
+---
+
+## API reference
+
+### setup(api) and teardown(api)
+
+`setup(api)` is required. It runs once when the plugin loads and should register everything the plugin needs. If it raises an exception, the plugin shows **Error** and nothing it registered stays active.
+
+`teardown(api)` is optional. It runs when the plugin is disabled, reloaded or uninstalled, and when the app closes. YT2VM removes the plugin's commands, events, timers and panels automatically, so use `teardown` only for the plugin's own cleanup, such as saving files or stopping threads it started.
+
+### Registering things
+
+| Call | Description |
+|---|---|
+| `@api.command(name, help="", mod_only=False, owner_only=False)` | Adds `!name`. The handler receives a `ctx` (see below). Names are lowercase letters, digits and `_`, at most 32 characters, and can't replace a built-in command or one from another plugin. The command uses the user's configured prefix, so `!name` becomes `?name` if the prefix is `?`. |
+| `@api.on(event)` | Subscribes to an event (see below). Also works as `api.on(event, fn)`. |
+| `@api.every(seconds)` | Calls `fn()` every `seconds` (minimum 1). Also works as `api.every(seconds, fn)`. |
+| `api.add_panel(build_fn, title=None)` | `build_fn(parent)` is called on the UI thread whenever the Plugins page redraws. Put your Tk widgets inside `parent`. Use `parent["bg"]` as the background so the panel matches the theme. |
+
+Viewer commands go through the same protections as built-in ones before they reach your handler: blacklist, timed bans, cooldown, rate limit, chat pause and disabled commands. Built-in commands always take priority over plugin commands.
+
+### Events
+
+| Event | Handler signature | When |
+|---|---|---|
+| `ready` | `fn()` | After the app finishes starting, or right after loading if the app is already running. |
+| `chat` | `fn(user, message, is_mod, is_owner, source)` | For every chat message. `source` is `"youtube"` or `"discord"`. |
+| `command` | `fn(user, cmd, arg)` | For every command that gets past the security checks, including built-in ones. `cmd` includes the `!`. |
+| `shutdown` | `fn()` | When the window closes. |
+
+### The ctx object
+
+| Attribute / method | Description |
+|---|---|
+| `ctx.user` | Display name of the person who ran the command. |
+| `ctx.clean_user` | Lowercase name without `@`, which is the form used for bans and stats. |
+| `ctx.command` | Command name without the prefix. |
+| `ctx.arg` / `ctx.args` | Everything after the command, as one string and split on spaces. |
+| `ctx.is_mod`, `ctx.is_owner`, `ctx.is_admin` | Permission flags. |
+| `ctx.source` | `"youtube"` or `"discord"`. Commands from the console and from automations report `"youtube"`. |
+| `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
+| `ctx.run(chain)` | Queues VM input **on behalf of the user**. Only viewer action commands are accepted: `!type !send !key !combo !keydown !keyup !move !abs !click !rclick !mclick !scroll !drag !wait !cmd !run !startvm !roll !coinflip` and their short aliases. For non-admins the normal payload filter applies. Returns the number of steps queued. |
+
+### Everything else on api
+
+| Member | Description |
+|---|---|
+| `api.say(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
+| `api.log(text)` | Writes to `output_log.txt` only. |
+| `api.toast(text, kind="info")` | Shows a toast in the GUI. `kind` is `info`, `ok` or `bad`. |
+| `api.flash(text, kind="info", dur=6)` | Shows a flash message on the OBS overlay. |
+| `api.run(chain)` | Runs any command chain **as the console, with owner rights**. |
+| `api.get(key, default=None)` / `api.set(key, value)` | Per-plugin settings saved in `settings.json` under `plugin_settings.<id>`. Values must be JSON-serialisable. |
+| `api.settings` | A copy of all of this plugin's settings. |
+| `api.ui(fn, *args)` | Runs `fn` on the Tk UI thread. |
+| `api.id`, `api.manifest`, `api.path` | The plugin's id, its parsed `plugin.json`, and its folder. Keep your own files in `os.path.join(api.path, "data")`, which survives market updates. |
+| `api.api_version`, `api.app_version` | Plugin API version (currently `1`) and the YT2VM version string. |
+| `api.app` | The `ChatPlaysApp` object itself. It is powerful but internal and can change between releases, so prefer the API above. |
+
+---
+
+## Threads and the UI
+
+- Command handlers, event handlers and timers all run on one background thread named `plugins`, in order. A slow handler delays every other plugin, so do long work (network calls, big files) in your own `threading.Thread`. If a callback takes more than 2 seconds, a warning is written to the log.
+- **Never touch Tk widgets from a handler or timer.** Wrap UI updates in `api.ui(fn)`. Panel `build_fn`s already run on the UI thread, and so do callbacks from widgets such as button commands and `widget.after(...)`.
+- An exception in a callback is written to `crash_log.txt` and the console. It doesn't stop the plugin or the app.
+
+---
+
+## Releasing a plugin
+
+A release is a copy of your plugin folder plus a market index (`index.json`) that lists every file with its sha256 checksum. Users get your plugin by adding the index URL to **Sources** on the Plugin Market page. When you publish a higher version, they see an **Update** button.
+
+### 1. Get it ready
+
+- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. Adding `tags`, `commands` and `homepage` makes the market card more useful.
+- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only offers an update when the new version is higher.
+- Set `api` to the plugin API version you tested with (currently `1`).
+- Don't put passwords, tokens or anything personal in the plugin folder. Everything in it except `data/` gets published.
+
+### 2. Test it
+
+- Click **Reload** on the plugin's card and check that it shows **Running**, not **Error**.
+- Try every command from the Dashboard console. Also try them as a viewer, through chat or with the Chat Tools test message, to check `mod_only` and the payload filter.
+- Disable and enable it, then restart the app, to check that `teardown` and saved settings work.
+- Read `crash_log.txt` for anything with your plugin's id in it.
+
+### 3. Package it
+
+On **Tools → Plugins**, click **Package** on your plugin's card and choose a folder for your market (an empty folder the first time). The app then:
+
+- copies the plugin into `<folder>/plugins/<id>/`, leaving out `data/`, `__pycache__` and dotfiles;
+- writes or updates `<folder>/index.json` with the plugin's details and a sha256 for every file;
+- keeps any other plugins already in that folder's index.
+
+Package into the same folder again for each new version. In a clone of the YT2VM repo, `python market/build_index.py` does the same for `market/`.
+
+### 4. Publish it
+
+**In your own market.** Upload the folder to anywhere that serves raw files, for example a GitHub repo:
+
+1. Create a public GitHub repo, such as `yourname/yt2vm-plugins`.
+2. Upload `index.json` and the `plugins` folder to its root, keeping the folder structure.
+3. Share this URL: `https://raw.githubusercontent.com/yourname/yt2vm-plugins/main/index.json`
+4. Users paste it into **Sources** on the Plugin Market page, then click **Save sources**.
+
+Upload the files exactly as they are. If anything changes the bytes, such as an editor or Git converting line endings, the checksums no longer match and installs are refused. In a Git repo, add a `.gitattributes` file containing `* -text`.
+
+**In the official market.** Open a pull request to <https://github.com/reallyiron/YT2VM> that adds `market/plugins/<id>/` and the updated `market/index.json`. The [Plugin market guide](plugin-market.md) has the details.
+
+### 5. Ship updates
+
+1. Raise `version` in `plugin.json`.
+2. Package into the same folder again.
+3. Upload the changed files and `index.json`.
+
+Users who click **Refresh** on the Plugin Market page then see **Update x → y**. Updating keeps their `data/` folder and their settings.
+
+---
+
+## Security
+
+**A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Only install plugins whose code you have read or whose author you trust.
+
+When you write a plugin:
+
+- Use `ctx.run(...)` for anything a viewer triggers. It keeps the viewer's own permissions and goes through the payload filter.
+- Use `api.run(...)` only with text you wrote yourself, never with text that came from chat. It runs with owner rights, so passing viewer text to it would give viewers owner powers.
+- Use `mod_only=True` or `owner_only=True` for anything destructive.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| The plugin doesn't appear at all | `plugin.json` is missing, is invalid JSON, or has a bad `id`. The reason is in `output_log.txt` (search for `PLUGIN`). Folders starting with `.` or `_` are ignored. |
+| Status is **Error** | The message is shown on the card. The full traceback is in `crash_log.txt`. |
+| "`!x is a built-in command`" | Choose another command name. |
+| "already registered by plugin …" | Two plugins use the same command name. Disable one of them. |
+| The command does nothing for viewers | Check whether it is `mod_only`, whether chat is paused, and whether the viewer is on cooldown. |
+| Changes don't show up | Click **Reload** on the plugin's card. |
+| Users get "checksum mismatch" | The uploaded files differ from what you packaged, usually because of line-ending conversion. Package again and upload the files unchanged. |"""),
+    ("plugin-market", "Plugin market guide", r"""# Plugin market
+
+The **Plugin Market** page (Tools → Plugin Market) lets you browse, install, update and remove plugins from one or more *market indexes*. An index is a JSON file hosted anywhere: GitHub, your own site, or a folder on your PC.
+
+How to write a plugin is covered in the [Plugins guide](plugins.md).
+
+---
+
+## Using the market
+
+1. Open **Tools → Plugin Market**. The market loads on its own a moment after startup, or when you press **Refresh**.
+2. Search by name, author, description or tag.
+3. Click **Install**. The plugin is downloaded, checked, enabled and loaded at once, with no restart needed.
+4. When an index has a newer version than you have, the button changes to **Update x → y**. Updating keeps the plugin's `data/` folder.
+5. **Uninstall** deletes the plugin's folder.
+
+Installed plugins are then managed on the **Plugins** page.
+
+### Sources
+
+The **Sources** box takes one index URL per line. `https://`, `http://` and `file://` URLs all work. The official source is:
+
+```
+https://raw.githubusercontent.com/reallyiron/YT2VM/main/market/index.json
+```
+
+**Reset to official** restores that URL. Sources are saved in `settings.json` as `plugin_market_sources`. If the same plugin id appears in more than one source, the first source wins. To stop the market from loading at startup, set `"plugin_market_autoload": false` in `settings.json`.
+
+### What the app checks before installing
+
+- Every file in an index entry has a **sha256**. The app downloads all files into a temporary folder and refuses the whole install if any checksum doesn't match.
+- File paths can't be absolute or contain `..`. Each file can be at most 4 MB.
+- The downloaded `plugin.json` must have the same `id` as the index entry.
+- Only when all of these checks pass is the old plugin folder swapped for the new one.
+- For any source other than the official one, the app asks you to confirm and shows the source URL first.
+
+The checksums make sure you get exactly the files the index lists. **They don't make a plugin safe.** A plugin runs with the same access to your PC as YT2VM itself, so only add sources you trust.
+
+---
+
+## Publishing to the official market
+
+Before publishing, follow steps 1 and 2 of "Releasing a plugin" in the [Plugins guide](plugins.md) to prepare and test the plugin.
+
+**As a contributor:**
+
+1. Fork <https://github.com/reallyiron/YT2VM>.
+2. Add your plugin as `market/plugins/<id>/`. The folder name must equal the `id` in `plugin.json`.
+3. Regenerate the index with `python market/build_index.py`. You can also package from the app: click **Package** and choose the `market` folder of your clone.
+4. Commit both your plugin folder and the updated `market/index.json`, then open a pull request.
+
+**As a maintainer with push access:** review the plugin's code first, because the official source installs without the "do you trust this source" prompt. Then run `python market/build_index.py`, commit `market/` and push to `main`. The change is live as soon as `raw.githubusercontent.com` serves the new `index.json`, usually within a few minutes.
+
+To release an update, bump `version` in `plugin.json`, regenerate the index and push (or open another PR). Users then see an **Update** button.
+
+> The repo's `.gitattributes` marks `market/**` as `-text` so Git never changes line endings there. Changed line endings would change the bytes, and the checksums would no longer match.
+
+---
+
+## Hosting your own market
+
+The **Package** button on the Plugins page builds a market folder for you:
+
+```
+my-market/
+  index.json
+  plugins/
+    my-plugin/
+      plugin.json
+      plugin.py
+```
+
+Host that folder anywhere that serves raw files (a GitHub repo through `raw.githubusercontent.com`, GitHub Pages, any static host), then add the URL of `index.json` to **Sources**. Step 4 of "Releasing a plugin" in the [Plugins guide](plugins.md) walks through doing this with GitHub.
+
+To test locally without hosting, use a `file://` URL, for example `file:///C:/Users/me/my-market/index.json`.
+
+### Index format
+
+```json
+{
+  "name": "My market",
+  "format": 1,
+  "updated": "2026-10-28",
+  "plugins": [
+    {
+      "id": "hello",
+      "name": "Hello",
+      "version": "1.0.0",
+      "author": "reallyiron",
+      "description": "!hello greets whoever runs it.",
+      "tags": ["example", "fun"],
+      "commands": ["hello"],
+      "homepage": "https://github.com/reallyiron/YT2VM",
+      "base_url": "plugins/hello/",
+      "files": [
+        { "path": "plugin.json", "sha256": "…" },
+        { "path": "plugin.py",   "sha256": "…" }
+      ]
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | Source name shown on each card ("from …"). When you package into a new folder, the app names it after the plugin's `author` (or "My plugin market"); you can edit it in `index.json`. |
+| `plugins[].id` | Plugin id, which must match the id in its `plugin.json`. |
+| `plugins[].base_url` | Where the files are, relative to the index URL (or absolute). Defaults to `plugins/<id>/`. |
+| `plugins[].files[]` | Every file to download: `path` is relative to the plugin folder, `sha256` is required, and an optional `url` overrides `base_url` for that one file. |
+| `version`, `author`, `description`, `tags`, `commands`, `homepage` | Shown in the GUI. `version` drives update detection. |
+
+Entries that fail validation are skipped, and the reason is written to `output_log.txt` under `MARKET`. The rest of the index still loads."""),
+)
+
 
 class ChatPlaysApp:
     def __init__(self, root):
@@ -7661,6 +8197,8 @@ class ChatPlaysApp:
             self.tabview.add(self.tab_plugins, text="  Plugins  ")
             self.tab_market = ttk.Frame(self.tabview, style="TFrame")
             self.tabview.add(self.tab_market, text="  Plugin Market  ")
+            self.tab_plugindocs = ttk.Frame(self.tabview, style="TFrame")
+            self.tabview.add(self.tab_plugindocs, text="  Plugin Docs  ")
 
             t = self._tok
             def _f(parent, role="bg", **kw):
@@ -8073,7 +8611,7 @@ class ChatPlaysApp:
             btn_save_frame = tk.Frame(sett_content, bg="#18181B")
             btn_save_frame.pack(fill="x", pady=(20, 0))
             tk.Button(btn_save_frame, text="SAVE ALL SETTINGS", font=("Segoe UI", 11, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.save_general_settings).pack(ipady=8, ipadx=40)
-            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_diagnostics_tab", "build_discord_tab", "build_plugins_tab", "build_market_tab"):
+            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_diagnostics_tab", "build_discord_tab", "build_plugins_tab", "build_market_tab", "build_plugindocs_tab"):
                 self._build_tab(_tab)
             self._bind_secret_replay()
             self._promote_page_titles()
@@ -9596,6 +10134,8 @@ class ChatPlaysApp:
             ("Minimize window", "Window", self._minimize_window),
             ("Open plugins", "Plugins", lambda: self.tabview.select(self.tab_plugins)),
             ("Open the plugin market", "Plugins", lambda: self.tabview.select(self.tab_market)),
+            ("Open the plugin docs", "Plugins", self.plugin_docs_open),
+            ("Create a new plugin", "Plugins", self._plugin_new),
             ("Reload all plugins", "Plugins", lambda: self._run_bg("plugins-reload", self.plugins.reload_all)),
         ]
         for key, base in _STUDIO_BASE.items():
@@ -10790,6 +11330,8 @@ class ChatPlaysApp:
         head.pack(fill="x", padx=26, pady=(22, 10))
         self._st_label(head, "Installed plugins", bg="bg", fg="hi", font=("display", 15)).pack(side="left")
         for txt, fn, var in (("Plugin market", lambda: self.tabview.select(self.tab_market), "primary"),
+                             ("New plugin", self._plugin_new, "neutral"),
+                             ("Docs", self.plugin_docs_open, "neutral"),
                              ("Open folder", lambda: self._open_file(plugins_dir()), "neutral"),
                              ("Reload all", lambda: self._run_bg("plugins-reload", self.plugins.reload_all), "neutral")):
             self._st_button(head, txt, fn, var, 9).pack(side="right", padx=(8, 0), ipady=3, ipadx=8)
@@ -10833,6 +11375,7 @@ class ChatPlaysApp:
         self._st_label(top, f"  v{m.get('version')}  by {m.get('author')}", fg="faint", font=("ui", 9)).pack(side="left", pady=(3, 0))
         if p.error: state, col = "Error", "bad"
         elif p.loaded: state, col = "Running", "ok"
+        elif on: state, col = "Not loaded - click Reload", "warn"
         else: state, col = "Disabled", "faint"
         self._st_label(top, "● " + state, fg=col, font=("ui", 9, "semi")).pack(side="right")
         if m.get("description"):
@@ -10854,6 +11397,7 @@ class ChatPlaysApp:
         self._st_button(row, "Reload", lambda: self._run_bg(f"plugin-{p.id}", self.plugins.reload, p.id),
                         "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Open folder", lambda: self._open_file(p.folder), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(row, "Package", lambda: self._plugin_package(p.id), "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Uninstall", lambda: self._plugin_uninstall(p.id), "danger", 9).pack(side="right", padx=4, ipadx=8)
         for title, build in list(p.panels):
             box = tk.Frame(c, bg=self._tok["card"]); box._st = {"bg": "card"}
@@ -10899,6 +11443,7 @@ class ChatPlaysApp:
         head.pack(fill="x", padx=26, pady=(22, 10))
         self._st_label(head, "Plugin market", bg="bg", fg="hi", font=("display", 15)).pack(side="left")
         self._st_button(head, "Refresh", self._market_refresh, "primary", 9).pack(side="right", ipady=3, ipadx=10)
+        self._st_button(head, "Docs", lambda: self.plugin_docs_open("plugin-market"), "neutral", 9).pack(side="right", padx=(0, 8), ipady=3, ipadx=8)
 
         so, sc = self._st_card(wrap, "Sources")
         so.pack(fill="x", padx=26, pady=(0, 12))
@@ -11078,6 +11623,267 @@ class ChatPlaysApp:
                     self.plugins.load(e["id"])
             self._market_changed()
         threading.Thread(target=work, daemon=True, name=f"market-install-{e['id']}").start()
+
+    def _plugin_new(self):
+        from tkinter import simpledialog
+        pid = simpledialog.askstring("New plugin", "Plugin id (lowercase letters, digits, - and _):", parent=self.root)
+        if not pid:
+            return
+        try:
+            folder, cmd = plugin_scaffold(pid)
+        except Exception as e:
+            messagebox.showerror("New plugin", str(e))
+            return
+        def work():
+            self.plugins.discover()
+            ok = self.plugins.load(pid.strip().lower())
+            pre = self.command_prefix or "!"
+            self.toast(f"Created plugins/{os.path.basename(folder)} - try {pre}{cmd}" if ok else "Plugin created but failed to load",
+                       "ok" if ok else "bad")
+            self.ui(self._open_file, folder)
+        self._run_bg("plugin-new", work)
+
+    def _plugin_package(self, pid):
+        p = self.plugins.plugins.get(pid)
+        if p is None:
+            return
+        out = filedialog.askdirectory(title=f"Choose your market folder for {p.name}", mustexist=False)
+        if not out:
+            return
+        def work():
+            try:
+                idx_path, entry = market_package(p.folder, out)
+            except Exception as e:
+                log_crash(f"package {pid}", e)
+                self.toast(f"Package failed: {e}", "bad")
+                return
+            plog("MARKET", f"packaged {pid} {entry.get('version')} into {idx_path} ({len(entry['files'])} file(s))")
+            self.toast(f"Packaged {p.name} {entry.get('version')} - upload this folder", "ok")
+            self.ui(self._open_file, out)
+        self._run_bg(f"plugin-package-{pid}", work)
+
+    # -- Plugin Docs page --------------------------------------------------
+    def plugin_docs_open(self, doc_key=None, anchor=None):
+        self.tabview.select(self.tab_plugindocs)
+        if doc_key:
+            self.root.after(60, lambda: self._docs_jump(f"{doc_key}#{anchor}" if anchor else f"{doc_key}#"))
+
+    def build_plugindocs_tab(self):
+        t = self._tok
+        wrap = tk.Frame(self.tab_plugindocs, bg=t["bg"]); wrap._st = {"bg": "bg"}
+        wrap.pack(fill="both", expand=True, padx=26, pady=(22, 18))
+        head = tk.Frame(wrap, bg=t["bg"]); head._st = {"bg": "bg"}
+        head.pack(fill="x", pady=(0, 10))
+        self._st_label(head, "Plugin docs", bg="bg", fg="hi", font=("display", 15)).pack(side="left")
+        for txt, fn, var in (("New plugin", self._plugin_new, "primary"),
+                             ("Plugins", lambda: self.tabview.select(self.tab_plugins), "neutral"),
+                             ("Plugin market", lambda: self.tabview.select(self.tab_market), "neutral")):
+            self._st_button(head, txt, fn, var, 9).pack(side="right", padx=(8, 0), ipady=3, ipadx=8)
+        self.docs_find = tk.Entry(head, width=26, font=_sf("ui", 10), bg=t["input"], fg=t["hi"], insertbackground=t["hi"], bd=0,
+                                  highlightthickness=1, highlightbackground=t["line"], highlightcolor=t["accent"])
+        self.docs_find._st = {"bg": "input", "fg": "hi"}
+        self.docs_find.pack(side="right", padx=(8, 4), ipady=5)
+        self.docs_find.bind("<Return>", lambda e: self._docs_search())
+        self._st_label(head, "Find (Enter)", bg="bg", fg="faint", font=("ui", 9)).pack(side="right")
+
+        body = tk.Frame(wrap, bg=t["bg"]); body._st = {"bg": "bg"}
+        body.pack(fill="both", expand=True)
+        self.docs_nav = tk.Listbox(body, width=30, activestyle="none", bd=0, highlightthickness=1, exportselection=False,
+                                   font=_sf("ui", 10))
+        self.docs_nav._studio_skip = True
+        self.docs_nav.pack(side="left", fill="y", padx=(0, 12))
+        self.docs_nav.bind("<<ListboxSelect>>", lambda e: self._docs_nav_pick())
+        tw = tk.Frame(body, bg=t["line"]); tw._st = {"bg": "line"}
+        tw.pack(side="left", fill="both", expand=True)
+        self.docs_text = tk.Text(tw, wrap="word", bd=0, highlightthickness=0, padx=22, pady=16, cursor="arrow",
+                                 font=_sf("ui", 10), spacing1=2, spacing3=4)
+        self.docs_text._studio_skip = True
+        sb = ttk.Scrollbar(tw, orient="vertical", command=self.docs_text.yview)
+        self.docs_text.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.docs_text.pack(side="left", fill="both", expand=True, padx=1, pady=1)
+        self.docs_text.bind("<Key>", lambda e: None if (e.state & 0x4 and e.keysym.lower() in ("c", "a")) else "break")
+        self._docs_nav_marks = []
+        self._docs_render()
+        self._docs_paint()
+        self._repaint_hooks = getattr(self, "_repaint_hooks", [])
+        self._repaint_hooks.append(self._docs_paint)
+
+    def _docs_paint(self):
+        tx = getattr(self, "docs_text", None)
+        if tx is None:
+            return
+        t = self._tok
+        mono = _sf("mono", 9)
+        tx.configure(bg=t["card"], fg=t["text"], insertbackground=t["hi"], selectbackground=t["raised"], selectforeground=t["hi"])
+        self.docs_nav.configure(bg=t["panel"], fg=t["text"], selectbackground=t["raised"], selectforeground=t["hi"],
+                                highlightbackground=t["line"], highlightcolor=t["line"])
+        tx.tag_configure("h1", font=_sf("display", 20), foreground=t["hi"], spacing1=6, spacing3=10)
+        tx.tag_configure("h2", font=_sf("display", 15), foreground=t["hi"], spacing1=18, spacing3=6)
+        tx.tag_configure("h3", font=_sf("ui", 11, "bold"), foreground=t["hi"], spacing1=12, spacing3=4)
+        tx.tag_configure("bold", font=_sf("ui", 10, "bold"), foreground=t["hi"])
+        tx.tag_configure("code", font=mono, foreground=t["accent"], background=t["input"])
+        tx.tag_configure("pre", font=mono, foreground=t["text"], background=t["input"], lmargin1=14, lmargin2=14,
+                         spacing1=0, spacing3=0)
+        tx.tag_configure("bullet", lmargin1=10, lmargin2=26)
+        tx.tag_configure("bullet2", lmargin1=30, lmargin2=46)
+        tx.tag_configure("quote", foreground=t["muted"], lmargin1=14, lmargin2=14)
+        tx.tag_configure("tkey", lmargin1=10, lmargin2=10, spacing1=6)
+        tx.tag_configure("tcell", foreground=t["muted"], lmargin1=28, lmargin2=28, spacing3=2)
+        tx.tag_configure("tlabel", foreground=t["faint"])
+        tx.tag_configure("rule", font=_sf("ui", 4))
+        tx.tag_configure("link", foreground=t["info"], underline=True)
+        tx.tag_configure("hit", background=t["warn"], foreground=t["bg"])
+        tx.tag_raise("hit")
+
+    def _docs_inline(self, text, tags):
+        tx = self.docs_text
+        pat = re.compile(r"(`[^`]+`)|(\*\*[^*]+\*\*)|(\[[^\]]+\]\([^)\s]+\))|(<https?://[^>\s]+>)")
+        pos = 0
+        for m in pat.finditer(text):
+            if m.start() > pos:
+                tx.insert("end", text[pos:m.start()], tags)
+            tok = m.group(0)
+            if m.group(1):
+                tx.insert("end", tok[1:-1], tags + ("code",))
+            elif m.group(2):
+                tx.insert("end", tok[2:-2], tags + ("bold",))
+            else:
+                if m.group(3):
+                    label, target = re.match(r"\[([^\]]+)\]\(([^)\s]+)\)", tok).groups()
+                else:
+                    label = target = tok[1:-1]
+                self._docs_link_n += 1
+                lt = f"lnk{self._docs_link_n}"
+                tx.insert("end", label, tags + ("link", lt))
+                tx.tag_bind(lt, "<Button-1>", lambda e, tg=target: self._docs_follow(tg))
+                tx.tag_bind(lt, "<Enter>", lambda e: tx.configure(cursor="hand2"))
+                tx.tag_bind(lt, "<Leave>", lambda e: tx.configure(cursor="arrow"))
+            pos = m.end()
+        if pos < len(text):
+            tx.insert("end", text[pos:], tags)
+
+    @staticmethod
+    def _docs_slug(text):
+        return re.sub(r"[^\w\- ]", "", re.sub(r"[`*]", "", text).lower()).strip().replace(" ", "-")
+
+    def _docs_render(self):
+        tx = self.docs_text
+        tx.configure(state="normal")
+        tx.delete("1.0", "end")
+        self.docs_nav.delete(0, "end")
+        self._docs_nav_marks = []
+        self._docs_link_n = 0
+        for key, title, md in PLUGIN_DOCS:
+            self._docs_key = key
+            tx.mark_set(f"{key}#", "end-1c"); tx.mark_gravity(f"{key}#", "left")
+            self.docs_nav.insert("end", title)
+            self._docs_nav_marks.append(f"{key}#")
+            lines = md.strip("\n").splitlines()
+            i, in_code = 0, False
+            while i < len(lines):
+                line = lines[i]
+                if line.startswith("```"):
+                    in_code = not in_code
+                    if not in_code:
+                        tx.insert("end", "\n")
+                    i += 1; continue
+                if in_code:
+                    tx.insert("end", line + "\n", ("pre",)); i += 1; continue
+                h = re.match(r"(#{1,3}) (.*)", line)
+                if h:
+                    lvl, text = len(h.group(1)), h.group(2).strip()
+                    mk = f"{key}#{self._docs_slug(text)}"
+                    tx.mark_set(mk, "end-1c"); tx.mark_gravity(mk, "left")
+                    self._docs_inline(text, (f"h{lvl}",)); tx.insert("end", "\n", (f"h{lvl}",))
+                    if lvl == 2:
+                        self.docs_nav.insert("end", "    " + re.sub(r"[`*]", "", text))
+                        self._docs_nav_marks.append(mk)
+                    i += 1; continue
+                if line.startswith("|"):
+                    rows = []
+                    while i < len(lines) and lines[i].startswith("|"):
+                        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                        if not all(re.fullmatch(r":?-{2,}:?", c) for c in cells):
+                            rows.append(cells)
+                        i += 1
+                    head, rest = rows[0], rows[1:]
+                    for r in rest:
+                        self._docs_inline(r[0], ("tkey", "bold")); tx.insert("end", "\n", ("tkey",))
+                        for j, c in enumerate(r[1:], 1):
+                            if len(head) > 2 and j < len(head):
+                                tx.insert("end", f"{head[j]}: ", ("tcell", "tlabel"))
+                            self._docs_inline(c, ("tcell",)); tx.insert("end", "\n", ("tcell",))
+                    tx.insert("end", "\n")
+                    continue
+                b = re.match(r"(\s*)([-*]|\d+\.) (.*)", line)
+                if b:
+                    tag = "bullet2" if len(b.group(1)) >= 2 else "bullet"
+                    mark = "•  " if b.group(2) in ("-", "*") else b.group(2) + "  "
+                    tx.insert("end", mark, (tag,)); self._docs_inline(b.group(3), (tag,)); tx.insert("end", "\n", (tag,))
+                    i += 1; continue
+                if line.startswith(">"):
+                    self._docs_inline(line.lstrip("> "), ("quote",)); tx.insert("end", "\n", ("quote",))
+                    i += 1; continue
+                if line.strip() == "---":
+                    tx.insert("end", "\n", ("rule",)); i += 1; continue
+                if line.strip():
+                    self._docs_inline(line.strip(), ())
+                tx.insert("end", "\n")
+                i += 1
+            tx.insert("end", "\n\n")
+        tx.configure(state="disabled")
+
+    def _docs_jump(self, mark):
+        tx = getattr(self, "docs_text", None)
+        if tx is None:
+            return False
+        if mark not in tx.mark_names():
+            return False
+        tx.yview(mark)
+        return True
+
+    def _docs_follow(self, target):
+        target = str(target)
+        if target.lower().startswith(("http://", "https://")):
+            self._market_open_home(target)
+            return
+        if target.startswith("#"):
+            key = "plugins"
+            try:
+                top = self.docs_text.index("@0,0")
+                for k, _t, _m in PLUGIN_DOCS:
+                    if self.docs_text.compare(f"{k}#", "<=", top):
+                        key = k
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+            self._docs_jump(f"{key}{target}")
+            return
+        page, _, anchor = target.partition("#")
+        page = os.path.basename(page)
+        if page.endswith(".md"):
+            self._docs_jump(f"{page[:-3]}#{anchor}")
+
+    def _docs_nav_pick(self):
+        sel = self.docs_nav.curselection()
+        if sel and sel[0] < len(self._docs_nav_marks):
+            self._docs_jump(self._docs_nav_marks[sel[0]])
+
+    def _docs_search(self):
+        tx = self.docs_text
+        q = self.docs_find.get().strip()
+        tx.tag_remove("hit", "1.0", "end")
+        if not q:
+            return
+        start = getattr(self, "_docs_hit_end", "1.0")
+        pos = tx.search(q, start, stopindex="end", nocase=True) or tx.search(q, "1.0", stopindex="end", nocase=True)
+        if not pos:
+            self.toast(f"No match for \"{q}\"", "bad")
+            return
+        end = f"{pos}+{len(q)}c"
+        tx.tag_add("hit", pos, end)
+        self._docs_hit_end = end
+        tx.see(pos)
 
     def build_diagnostics_tab(self):
         wrap = tk.Frame(self.tab_diag, bg="#09090B"); wrap.pack(fill="both", expand=True, padx=26, pady=18)

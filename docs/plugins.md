@@ -2,21 +2,24 @@
 
 Plugins add things to YT2VM without editing `yt2vm.py`: new chat commands, reactions to chat messages, timers, and small settings panels in the GUI.
 
+Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and package a plugin from the GUI.
+
 - [Installing and managing plugins](#installing-and-managing-plugins)
 - [Your first plugin](#your-first-plugin)
 - [plugin.json](#pluginjson)
 - [API reference](#api-reference)
 - [Threads and the UI](#threads-and-the-ui)
+- [Releasing a plugin](#releasing-a-plugin)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 
-To get plugins from the market, or publish your own there, see [plugin-market.md](plugin-market.md).
+To get plugins from the market, see the [Plugin market guide](plugin-market.md).
 
 ---
 
 ## Installing and managing plugins
 
-Plugins live in a `plugins/` folder next to `yt2vm.py`. Each plugin is its own folder:
+Plugins live in a `plugins` folder next to `yt2vm.py`. The app creates it on first start. Each plugin is its own folder:
 
 ```
 yt2vm.py
@@ -30,11 +33,12 @@ plugins/
     data/          <- the plugin's own files (kept when you update it)
 ```
 
-There are three ways to install one:
+There are four ways to get a plugin:
 
 1. **Plugin Market page** (Tools → Plugin Market): click **Install**.
-2. **By hand:** copy the plugin folder into `plugins/`, then click **Reload all** on the Plugins page (or restart the app).
-3. **From chat or the console** (owner only): drop the folder in, then run `!plugin reload`.
+2. **New plugin button** (Tools → Plugins): creates a working starter plugin for you to edit.
+3. **By hand:** copy a plugin folder into `plugins`, then click **Reload all** on the Plugins page (or restart the app).
+4. **From chat or the console** (owner only): drop the folder in, then run `!plugin reload`.
 
 The **Plugins** page (Tools → Plugins) lists every installed plugin with its status (`Running`, `Disabled` or `Error`), the commands it adds, and these buttons:
 
@@ -43,6 +47,7 @@ The **Plugins** page (Tools → Plugins) lists every installed plugin with its s
 | Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
 | Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
 | Open folder | Opens the plugin's folder. |
+| Package | Builds a release of the plugin for a market. See [Releasing a plugin](#releasing-a-plugin). |
 | Uninstall | Deletes the plugin's folder, after you confirm. |
 
 Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.
@@ -56,13 +61,15 @@ Plugin panels (settings, leaderboards and so on) appear inside each plugin's car
 | `!plugin reload <id>` | Reloads one plugin. |
 | `!plugin enable <id>` / `!plugin disable <id>` | Turns one plugin on or off. |
 
-The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market** and **Reload all plugins**.
+The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs** and **Reload all plugins**.
 
 ---
 
 ## Your first plugin
 
-Make a folder `plugins/greeter/` with two files.
+The quickest start: on **Tools → Plugins**, click **New plugin**, type an id such as `greeter`, and the app writes a working plugin into `plugins/greeter/`, loads it, and opens its folder. Type `!greeter` in the Dashboard console to try it.
+
+To make one by hand, create a folder `plugins/greeter/` with two files.
 
 **plugins/greeter/plugin.json**
 
@@ -133,7 +140,7 @@ def teardown(api):
     pass
 ```
 
-The market's sample plugins in [`market/plugins/`](../market/plugins) are short, working examples:
+The official market's sample plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** to read them, or browse them on GitHub: <https://github.com/reallyiron/YT2VM/tree/main/market/plugins>
 
 | Plugin | Shows how to |
 |---|---|
@@ -148,7 +155,7 @@ The market's sample plugins in [`market/plugins/`](../market/plugins) are short,
 
 | Key | Required | Meaning |
 |---|---|---|
-| `id` | yes | Unique id: lowercase letters, digits, `-` and `_`, 2–40 characters. In the market it must also match the folder name. |
+| `id` | yes | Unique id: lowercase letters, digits, `-` and `_`, 2–40 characters. Never change it after release, because the market uses it to match updates. |
 | `name` | no | Display name. Defaults to `id`. |
 | `version` | no | Version such as `1.2.0`. The market compares versions to offer updates. |
 | `author` | no | Shown in the GUI. |
@@ -161,7 +168,7 @@ The market's sample plugins in [`market/plugins/`](../market/plugins) are short,
 
 ## API reference
 
-### `setup(api)` and `teardown(api)`
+### setup(api) and teardown(api)
 
 `setup(api)` is required. It runs once when the plugin loads and should register everything the plugin needs. If it raises an exception, the plugin shows **Error** and nothing it registered stays active.
 
@@ -171,7 +178,7 @@ The market's sample plugins in [`market/plugins/`](../market/plugins) are short,
 
 | Call | Description |
 |---|---|
-| `@api.command(name, help="", mod_only=False, owner_only=False)` | Adds `!name`. The handler receives a [`ctx`](#the-ctx-object). Names are lowercase letters, digits and `_`, at most 32 characters, and can't replace a built-in command or one from another plugin. The command uses the user's configured prefix, so `!name` becomes `?name` if the prefix is `?`. |
+| `@api.command(name, help="", mod_only=False, owner_only=False)` | Adds `!name`. The handler receives a `ctx` (see below). Names are lowercase letters, digits and `_`, at most 32 characters, and can't replace a built-in command or one from another plugin. The command uses the user's configured prefix, so `!name` becomes `?name` if the prefix is `?`. |
 | `@api.on(event)` | Subscribes to an event (see below). Also works as `api.on(event, fn)`. |
 | `@api.every(seconds)` | Calls `fn()` every `seconds` (minimum 1). Also works as `api.every(seconds, fn)`. |
 | `api.add_panel(build_fn, title=None)` | `build_fn(parent)` is called on the UI thread whenever the Plugins page redraws. Put your Tk widgets inside `parent`. Use `parent["bg"]` as the background so the panel matches the theme. |
@@ -187,7 +194,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `command` | `fn(user, cmd, arg)` | For every command that gets past the security checks, including built-in ones. `cmd` includes the `!`. |
 | `shutdown` | `fn()` | When the window closes. |
 
-### The `ctx` object
+### The ctx object
 
 | Attribute / method | Description |
 |---|---|
@@ -200,7 +207,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
 | `ctx.run(chain)` | Queues VM input **on behalf of the user**. Only viewer action commands are accepted: `!type !send !key !combo !keydown !keyup !move !abs !click !rclick !mclick !scroll !drag !wait !cmd !run !startvm !roll !coinflip` and their short aliases. For non-admins the normal payload filter applies. Returns the number of steps queued. |
 
-### Everything else on `api`
+### Everything else on api
 
 | Member | Description |
 |---|---|
@@ -226,6 +233,57 @@ Viewer commands go through the same protections as built-in ones before they rea
 
 ---
 
+## Releasing a plugin
+
+A release is a copy of your plugin folder plus a market index (`index.json`) that lists every file with its sha256 checksum. Users get your plugin by adding the index URL to **Sources** on the Plugin Market page. When you publish a higher version, they see an **Update** button.
+
+### 1. Get it ready
+
+- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. Adding `tags`, `commands` and `homepage` makes the market card more useful.
+- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only offers an update when the new version is higher.
+- Set `api` to the plugin API version you tested with (currently `1`).
+- Don't put passwords, tokens or anything personal in the plugin folder. Everything in it except `data/` gets published.
+
+### 2. Test it
+
+- Click **Reload** on the plugin's card and check that it shows **Running**, not **Error**.
+- Try every command from the Dashboard console. Also try them as a viewer, through chat or with the Chat Tools test message, to check `mod_only` and the payload filter.
+- Disable and enable it, then restart the app, to check that `teardown` and saved settings work.
+- Read `crash_log.txt` for anything with your plugin's id in it.
+
+### 3. Package it
+
+On **Tools → Plugins**, click **Package** on your plugin's card and choose a folder for your market (an empty folder the first time). The app then:
+
+- copies the plugin into `<folder>/plugins/<id>/`, leaving out `data/`, `__pycache__` and dotfiles;
+- writes or updates `<folder>/index.json` with the plugin's details and a sha256 for every file;
+- keeps any other plugins already in that folder's index.
+
+Package into the same folder again for each new version. In a clone of the YT2VM repo, `python market/build_index.py` does the same for `market/`.
+
+### 4. Publish it
+
+**In your own market.** Upload the folder to anywhere that serves raw files, for example a GitHub repo:
+
+1. Create a public GitHub repo, such as `yourname/yt2vm-plugins`.
+2. Upload `index.json` and the `plugins` folder to its root, keeping the folder structure.
+3. Share this URL: `https://raw.githubusercontent.com/yourname/yt2vm-plugins/main/index.json`
+4. Users paste it into **Sources** on the Plugin Market page, then click **Save sources**.
+
+Upload the files exactly as they are. If anything changes the bytes, such as an editor or Git converting line endings, the checksums no longer match and installs are refused. In a Git repo, add a `.gitattributes` file containing `* -text`.
+
+**In the official market.** Open a pull request to <https://github.com/reallyiron/YT2VM> that adds `market/plugins/<id>/` and the updated `market/index.json`. The [Plugin market guide](plugin-market.md) has the details.
+
+### 5. Ship updates
+
+1. Raise `version` in `plugin.json`.
+2. Package into the same folder again.
+3. Upload the changed files and `index.json`.
+
+Users who click **Refresh** on the Plugin Market page then see **Update x → y**. Updating keeps their `data/` folder and their settings.
+
+---
+
 ## Security
 
 **A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Only install plugins whose code you have read or whose author you trust.
@@ -248,3 +306,4 @@ When you write a plugin:
 | "already registered by plugin …" | Two plugins use the same command name. Disable one of them. |
 | The command does nothing for viewers | Check whether it is `mod_only`, whether chat is paused, and whether the viewer is on cooldown. |
 | Changes don't show up | Click **Reload** on the plugin's card. |
+| Users get "checksum mismatch" | The uploaded files differ from what you packaged, usually because of line-ending conversion. Package again and upload the files unchanged. |

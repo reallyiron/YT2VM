@@ -32,7 +32,7 @@ Attention: `pywin32` works on Windows only and should be installed if you use th
 - OBS Support: Can integrate with OBS WebSocket for automation.
 - Flask-Based Control: Includes a lightweight Python web interface.
 - Plugins: Add your own chat commands, chat reactions, timers and GUI panels without touching `yt2vm.py`.
-- Plugin Market: Browse and install plugins straight from the app (Tools → Plugin Market).
+- Plugin Market: Browse, install and publish reviewed plugins straight from the app (Tools → Plugin Market).
 
 # Plugins
 
@@ -46,10 +46,10 @@ def setup(api):
         ctx.reply(f"Hi {ctx.user}!")
 ```
 
-You only need `yt2vm.py`. The app creates the `plugins` folder itself, and the full docs are built in under **Tools → Plugin Docs**. **New plugin** creates a starter plugin, and **Package** builds a market release, all from the GUI.
+You only need `yt2vm.py`. The app creates the `plugins` folder itself, and the full docs are built in under **Tools → Plugin Docs**. **New plugin** creates a starter plugin, and **Submit** sends it to the plugin market for review, all from the GUI. No GitHub account is needed.
 
 - [docs/plugins.md](docs/plugins.md): installing, writing and releasing plugins, and the full API
-- [docs/plugin-market.md](docs/plugin-market.md): using the market, publishing a plugin, and hosting your own market
+- [docs/plugin-market.md](docs/plugin-market.md): using the market, publishing a plugin, and the review guidelines
 
 These `.md` files are generated from the docs inside `yt2vm.py`. To change them, edit `PLUGIN_DOCS` in `yt2vm.py`, then run `python docs/sync_docs.py`.
 

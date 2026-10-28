@@ -6141,7 +6141,14 @@ if platform.system() != "Darwin":
 
 PLUGIN_API_VERSION = 1
 PLUGIN_DIR_NAME = "plugins"
-PLUGIN_MARKET_DEFAULT = "https://raw.githubusercontent.com/reallyiron/YT2VM/main/market/index.json"
+# The one plugin market: the YT2VM market server. The Plugin Market page installs from <server>/index.json and
+# the Submit button uploads to <server>/api/submit. Empty = no market in this build.
+# YT2VM_MARKET_SERVER overrides it, for testing a server before it goes live.
+PLUGIN_MARKET_SERVER = "https://plugins.reallyiron.net"
+
+
+def market_server_url():
+    return str(os.environ.get("YT2VM_MARKET_SERVER") or PLUGIN_MARKET_SERVER or "").strip().rstrip("/")
 _PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{1,39}$")
 _PLUGIN_CMD_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _PLUGIN_EVENTS = ("ready", "chat", "command", "shutdown")
@@ -6682,15 +6689,47 @@ def market_install(entry, progress=None):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def market_submit(server, folder, owner_key="", note=""):
+    """Upload a plugin folder to the market server (POST /api/submit). Returns the server's JSON reply.
+    Raises ValueError with the server's error list when the upload is refused."""
+    server = str(server or "").strip().rstrip("/")
+    if not server.lower().startswith(("https://", "http://")):
+        raise ValueError(["this build of YT2VM has no plugin market configured"])
+    read_plugin_manifest(folder)
+    files, total = {}, 0
+    for item in _market_plugin_files(folder):
+        full = os.path.join(folder, *item["path"].split("/"))
+        with open(full, "rb") as fh:
+            raw = fh.read()
+        try:
+            files[item["path"]] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError([f"{item['path']} is not a text file - only text files can be published"])
+        total += len(raw)
+    if total > 600 * 1024:
+        raise ValueError(["the plugin is larger than 600 KB - host it in your own market folder instead"])
+    body = json.dumps({"files": files, "owner_key": owner_key or "", "note": str(note or "")[:2000]}).encode("utf-8")
+    req = urllib.request.Request(server + "/api/submit", data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "User-Agent": _MARKET_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read(1024 * 1024).decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            errs = json.loads(e.read(1024 * 1024).decode("utf-8")).get("errors") or [f"HTTP {e.code}"]
+        except Exception:
+            errs = [f"the server answered HTTP {e.code}"]
+        raise ValueError(errs)
+    except urllib.error.URLError as e:
+        raise ValueError([f"could not reach {server}: {e.reason}"])
+
+
 def market_uninstall(pid):
     if not _PLUGIN_ID_RE.match(str(pid)):
         raise ValueError(f"bad plugin id {pid!r}")
     dest = os.path.join(plugins_dir(), pid)
     if os.path.isdir(dest):
         shutil.rmtree(dest)
-
-
-_MARKET_COPY_KEYS = ("id", "name", "version", "author", "description", "tags", "commands", "homepage")
 
 
 def _market_plugin_files(folder):
@@ -6705,43 +6744,6 @@ def _market_plugin_files(folder):
                 digest = hashlib.sha256(fh.read()).hexdigest()
             out.append({"path": os.path.relpath(full, folder).replace(os.sep, "/"), "sha256": digest})
     return out
-
-
-def market_package(src, out_dir):
-    """Copy a plugin into <out_dir>/plugins/<id>/ and add or update its entry in <out_dir>/index.json.
-    Same result as market/build_index.py, so a release needs nothing but yt2vm.py."""
-    src, out_dir = os.path.abspath(src), os.path.abspath(out_dir)
-    man = read_plugin_manifest(src)
-    pid = man["id"]
-    if out_dir == src or out_dir.startswith(src + os.sep):
-        raise ValueError("pick a folder outside the plugin itself")
-    dest = os.path.join(out_dir, "plugins", pid)
-    if dest != src:
-        if os.path.isdir(dest):
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest, ignore=lambda d, names: [n for n in names if n.startswith(".") or n in ("data", "__pycache__")
-                                                             or n.endswith(".pyc")])
-    idx_path = os.path.join(out_dir, "index.json")
-    idx = None
-    if os.path.isfile(idx_path):
-        with open(idx_path, "r", encoding="utf-8") as fh:
-            idx = json.load(fh)
-        if not isinstance(idx, dict) or not isinstance(idx.get("plugins"), list):
-            raise ValueError(f"{idx_path} is not a market index - pick another folder")
-    if idx is None:
-        who = str(man.get("author") or "").strip()
-        idx = {"name": f"{who}'s market" if who.lower() not in ("", "you", "unknown") else "My plugin market",
-               "format": 1, "plugins": []}
-    entry = {k: man[k] for k in _MARKET_COPY_KEYS if k in man}
-    entry["base_url"] = f"plugins/{pid}/"
-    entry["files"] = _market_plugin_files(dest)
-    idx["plugins"] = sorted([e for e in idx["plugins"] if e.get("id") != pid] + [entry], key=lambda e: str(e.get("id")))
-    idx["updated"] = time.strftime("%Y-%m-%d")
-    idx.setdefault("format", 1)
-    with open(idx_path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(idx, fh, indent=2)
-        fh.write("\n")
-    return idx_path, entry
 
 
 _PLUGIN_TEMPLATE_PY = '''import tkinter as tk
@@ -6806,7 +6808,7 @@ PLUGIN_DOCS = (
 
 Plugins add things to YT2VM without editing `yt2vm.py`: new chat commands, reactions to chat messages, timers, and small settings panels in the GUI.
 
-Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and package a plugin from the GUI.
+Everything here works with nothing but `yt2vm.py`. The app creates the `plugins` folder itself, these docs are built into the app (**Tools → Plugin Docs**), and you can create, test and publish a plugin from the GUI, with no GitHub account.
 
 - [Installing and managing plugins](#installing-and-managing-plugins)
 - [Your first plugin](#your-first-plugin)
@@ -6817,7 +6819,7 @@ Everything here works with nothing but `yt2vm.py`. The app creates the `plugins`
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
 
-To get plugins from the market, see the [Plugin market guide](plugin-market.md).
+How the plugin market works is covered in the [Plugin market guide](plugin-market.md).
 
 ---
 
@@ -6851,7 +6853,7 @@ The **Plugins** page (Tools → Plugins) lists every installed plugin with its s
 | Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
 | Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
 | Open folder | Opens the plugin's folder. |
-| Package | Builds a release of the plugin for a market. See [Releasing a plugin](#releasing-a-plugin). |
+| Submit | Uploads the plugin to the plugin market for review. See [Releasing a plugin](#releasing-a-plugin). |
 | Uninstall | Deletes the plugin's folder, after you confirm. |
 
 Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.
@@ -6865,7 +6867,7 @@ Plugin panels (settings, leaderboards and so on) appear inside each plugin's car
 | `!plugin reload <id>` | Reloads one plugin. |
 | `!plugin enable <id>` / `!plugin disable <id>` | Turns one plugin on or off. |
 
-The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs** and **Reload all plugins**.
+The command palette (Ctrl K) also has **Open plugins**, **Open the plugin market**, **Open the plugin docs**, **Create a new plugin** and **Reload all plugins**.
 
 ---
 
@@ -6944,7 +6946,7 @@ def teardown(api):
     pass
 ```
 
-The official market's sample plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** to read them, or browse them on GitHub: <https://github.com/reallyiron/YT2VM/tree/main/market/plugins>
+The market's starter plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** on the Plugins page to read them:
 
 | Plugin | Shows how to |
 |---|---|
@@ -6960,13 +6962,13 @@ The official market's sample plugins are short, working examples. Install them f
 | Key | Required | Meaning |
 |---|---|---|
 | `id` | yes | Unique id: lowercase letters, digits, `-` and `_`, 2–40 characters. Never change it after release, because the market uses it to match updates. |
-| `name` | no | Display name. Defaults to `id`. |
-| `version` | no | Version such as `1.2.0`. The market compares versions to offer updates. |
-| `author` | no | Shown in the GUI. |
-| `description` | no | One or two sentences, shown in the GUI. |
+| `name` | yes for the market | Display name. Defaults to `id`. |
+| `version` | yes for the market | Version such as `1.2.0`. The market compares versions to offer updates. |
+| `author` | yes for the market | Shown in the GUI. |
+| `description` | yes for the market | One or two sentences, shown in the GUI. |
 | `api` | no | Plugin API version the plugin needs. Defaults to `1`. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
 | `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
-| `tags`, `commands`, `homepage` | no | Only used by the market listing. |
+| `tags`, `commands`, `homepage` | no | Shown on the market card. |
 
 ---
 
@@ -7039,14 +7041,14 @@ Viewer commands go through the same protections as built-in ones before they rea
 
 ## Releasing a plugin
 
-A release is a copy of your plugin folder plus a market index (`index.json`) that lists every file with its sha256 checksum. Users get your plugin by adding the index URL to **Sources** on the Plugin Market page. When you publish a higher version, they see an **Update** button.
+You release a plugin by clicking **Submit** on its card. The app uploads it to the plugin market, the market's admin reviews the code, and once approved it appears on everyone's Plugin Market page. You need no GitHub account and no website.
 
 ### 1. Get it ready
 
-- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. Adding `tags`, `commands` and `homepage` makes the market card more useful.
-- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only offers an update when the new version is higher.
+- Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. The market requires all four. Adding `tags`, `commands` and `homepage` makes the market card more useful.
+- Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only accepts a version higher than the published one.
 - Set `api` to the plugin API version you tested with (currently `1`).
-- Don't put passwords, tokens or anything personal in the plugin folder. Everything in it except `data/` gets published.
+- Don't put passwords, tokens or anything personal in the plugin folder. Every file in it except `data/` and dotfiles gets uploaded. Only text files can be published, up to 25 files and 600 KB in total.
 
 ### 2. Test it
 
@@ -7055,48 +7057,34 @@ A release is a copy of your plugin folder plus a market index (`index.json`) tha
 - Disable and enable it, then restart the app, to check that `teardown` and saved settings work.
 - Read `crash_log.txt` for anything with your plugin's id in it.
 
-### 3. Package it
+### 3. Submit it
 
-On **Tools → Plugins**, click **Package** on your plugin's card and choose a folder for your market (an empty folder the first time). The app then:
+1. On **Tools → Plugins**, click **Submit** on your plugin's card. You can add a note for the reviewer.
+2. The market checks the files right away. If something is wrong, such as a syntax error, a missing field or a version that isn't higher, you get a list of problems. Fix them and submit again.
+3. The first time you submit a plugin id, the market reserves it for you and returns an **owner key**. The app saves it in `settings.json`, under `plugin_owner_keys`, and shows it once. Back it up, because without it you can't publish updates to that id, for example from another PC.
+4. Your plugin is now waiting for review. While it waits you can fix it and submit the same version again.
+5. Once the admin approves it, it appears on the Plugin Market page for everyone.
 
-- copies the plugin into `<folder>/plugins/<id>/`, leaving out `data/`, `__pycache__` and dotfiles;
-- writes or updates `<folder>/index.json` with the plugin's details and a sha256 for every file;
-- keeps any other plugins already in that folder's index.
-
-Package into the same folder again for each new version. In a clone of the YT2VM repo, `python market/build_index.py` does the same for `market/`.
-
-### 4. Publish it
-
-**In your own market.** Upload the folder to anywhere that serves raw files, for example a GitHub repo:
-
-1. Create a public GitHub repo, such as `yourname/yt2vm-plugins`.
-2. Upload `index.json` and the `plugins` folder to its root, keeping the folder structure.
-3. Share this URL: `https://raw.githubusercontent.com/yourname/yt2vm-plugins/main/index.json`
-4. Users paste it into **Sources** on the Plugin Market page, then click **Save sources**.
-
-Upload the files exactly as they are. If anything changes the bytes, such as an editor or Git converting line endings, the checksums no longer match and installs are refused. In a Git repo, add a `.gitattributes` file containing `* -text`.
-
-**In the official market.** Open a pull request to <https://github.com/reallyiron/YT2VM> that adds `market/plugins/<id>/` and the updated `market/index.json`. The [Plugin market guide](plugin-market.md) has the details.
-
-### 5. Ship updates
+### 4. Ship updates
 
 1. Raise `version` in `plugin.json`.
-2. Package into the same folder again.
-3. Upload the changed files and `index.json`.
+2. Click **Submit** again. Your saved owner key is sent along automatically.
 
-Users who click **Refresh** on the Plugin Market page then see **Update x → y**. Updating keeps their `data/` folder and their settings.
+Once the update is approved, users see **Update x → y** on the Plugin Market page. Updating keeps their `data/` folder and their settings.
 
 ---
 
 ## Security
 
-**A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Only install plugins whose code you have read or whose author you trust.
+**A plugin is ordinary Python code running inside YT2VM with full access to your PC.** It can read files, start programs and use the network. Every plugin in the market is reviewed before it's published, but only install plugins you're comfortable running, and plugins you got elsewhere only if you've read their code or trust the author.
 
 When you write a plugin:
 
 - Use `ctx.run(...)` for anything a viewer triggers. It keeps the viewer's own permissions and goes through the payload filter.
 - Use `api.run(...)` only with text you wrote yourself, never with text that came from chat. It runs with owner rights, so passing viewer text to it would give viewers owner powers.
 - Use `mod_only=True` or `owner_only=True` for anything destructive.
+
+Plugins that ignore these rules, hide what they do, or contact unexpected servers won't be approved.
 
 ---
 
@@ -7110,10 +7098,11 @@ When you write a plugin:
 | "already registered by plugin …" | Two plugins use the same command name. Disable one of them. |
 | The command does nothing for viewers | Check whether it is `mod_only`, whether chat is paused, and whether the viewer is on cooldown. |
 | Changes don't show up | Click **Reload** on the plugin's card. |
-| Users get "checksum mismatch" | The uploaded files differ from what you packaged, usually because of line-ending conversion. Package again and upload the files unchanged. |"""),
+| Submit says the id belongs to someone else | Another author already reserved that id, or your owner key is missing or wrong. Pick another id, or copy your key back into `plugin_owner_keys` in `settings.json`. |
+| Submit says the version was already submitted | Raise `version` in `plugin.json`. |"""),
     ("plugin-market", "Plugin market guide", r"""# Plugin market
 
-The **Plugin Market** page (Tools → Plugin Market) lets you browse, install, update and remove plugins from one or more *market indexes*. An index is a JSON file hosted anywhere: GitHub, your own site, or a folder on your PC.
+YT2VM has one plugin market, built into the app at **Tools → Plugin Market**. Every plugin in it is reviewed before it's published.
 
 How to write a plugin is covered in the [Plugins guide](plugins.md).
 
@@ -7124,105 +7113,49 @@ How to write a plugin is covered in the [Plugins guide](plugins.md).
 1. Open **Tools → Plugin Market**. The market loads on its own a moment after startup, or when you press **Refresh**.
 2. Search by name, author, description or tag.
 3. Click **Install**. The plugin is downloaded, checked, enabled and loaded at once, with no restart needed.
-4. When an index has a newer version than you have, the button changes to **Update x → y**. Updating keeps the plugin's `data/` folder.
+4. When a newer version is published, the button changes to **Update x → y**. Updating keeps the plugin's `data/` folder and its settings.
 5. **Uninstall** deletes the plugin's folder.
 
-Installed plugins are then managed on the **Plugins** page.
-
-### Sources
-
-The **Sources** box takes one index URL per line. `https://`, `http://` and `file://` URLs all work. The official source is:
-
-```
-https://raw.githubusercontent.com/reallyiron/YT2VM/main/market/index.json
-```
-
-**Reset to official** restores that URL. Sources are saved in `settings.json` as `plugin_market_sources`. If the same plugin id appears in more than one source, the first source wins. To stop the market from loading at startup, set `"plugin_market_autoload": false` in `settings.json`.
+Installed plugins are then managed on the **Plugins** page. To stop the market from loading at startup, set `"plugin_market_autoload": false` in `settings.json`.
 
 ### What the app checks before installing
 
-- Every file in an index entry has a **sha256**. The app downloads all files into a temporary folder and refuses the whole install if any checksum doesn't match.
+- The market lists every file of a plugin with a **sha256** checksum. The app downloads all files into a temporary folder and refuses the whole install if any checksum doesn't match.
 - File paths can't be absolute or contain `..`. Each file can be at most 4 MB.
-- The downloaded `plugin.json` must have the same `id` as the index entry.
+- The downloaded `plugin.json` must have the same `id` as the market listing.
 - Only when all of these checks pass is the old plugin folder swapped for the new one.
-- For any source other than the official one, the app asks you to confirm and shows the source URL first.
 
-The checksums make sure you get exactly the files the index lists. **They don't make a plugin safe.** A plugin runs with the same access to your PC as YT2VM itself, so only add sources you trust.
-
----
-
-## Publishing to the official market
-
-Before publishing, follow steps 1 and 2 of "Releasing a plugin" in the [Plugins guide](plugins.md) to prepare and test the plugin.
-
-**As a contributor:**
-
-1. Fork <https://github.com/reallyiron/YT2VM>.
-2. Add your plugin as `market/plugins/<id>/`. The folder name must equal the `id` in `plugin.json`.
-3. Regenerate the index with `python market/build_index.py`. You can also package from the app: click **Package** and choose the `market` folder of your clone.
-4. Commit both your plugin folder and the updated `market/index.json`, then open a pull request.
-
-**As a maintainer with push access:** review the plugin's code first, because the official source installs without the "do you trust this source" prompt. Then run `python market/build_index.py`, commit `market/` and push to `main`. The change is live as soon as `raw.githubusercontent.com` serves the new `index.json`, usually within a few minutes.
-
-To release an update, bump `version` in `plugin.json`, regenerate the index and push (or open another PR). Users then see an **Update** button.
-
-> The repo's `.gitattributes` marks `market/**` as `-text` so Git never changes line endings there. Changed line endings would change the bytes, and the checksums would no longer match.
+The checksums make sure you get exactly the files that were reviewed. A plugin still runs with the same access to your PC as YT2VM itself.
 
 ---
 
-## Hosting your own market
+## Publishing your plugin
 
-The **Package** button on the Plugins page builds a market folder for you:
+Click **Submit** on the plugin's card (Tools → Plugins). The steps, the owner key and updates are explained under "Releasing a plugin" in the [Plugins guide](plugins.md).
 
-```
-my-market/
-  index.json
-  plugins/
-    my-plugin/
-      plugin.json
-      plugin.py
-```
+In short:
 
-Host that folder anywhere that serves raw files (a GitHub repo through `raw.githubusercontent.com`, GitHub Pages, any static host), then add the URL of `index.json` to **Sources**. Step 4 of "Releasing a plugin" in the [Plugins guide](plugins.md) walks through doing this with GitHub.
+1. **Submit** uploads the plugin's files.
+2. The market checks them straight away:
+   - at most 25 text files and 600 KB in total;
+   - a valid `plugin.json` with `id`, `name`, `version`, `author` and `description`;
+   - every `.py` file must compile (it is never run);
+   - every other `.json` file must parse;
+   - for updates, a version higher than the published one.
+3. Your first submission reserves the plugin id for you with an **owner key**, which the app saves. Only that key can publish updates to the id.
+4. The market's admin reads the code and approves or rejects it.
+5. Approved plugins appear on everyone's Plugin Market page within a minute or so.
 
-To test locally without hosting, use a `file://` URL, for example `file:///C:/Users/me/my-market/index.json`.
+### Review guidelines
 
-### Index format
+A plugin is approved when it:
 
-```json
-{
-  "name": "My market",
-  "format": 1,
-  "updated": "2026-10-28",
-  "plugins": [
-    {
-      "id": "hello",
-      "name": "Hello",
-      "version": "1.0.0",
-      "author": "reallyiron",
-      "description": "!hello greets whoever runs it.",
-      "tags": ["example", "fun"],
-      "commands": ["hello"],
-      "homepage": "https://github.com/reallyiron/YT2VM",
-      "base_url": "plugins/hello/",
-      "files": [
-        { "path": "plugin.json", "sha256": "…" },
-        { "path": "plugin.py",   "sha256": "…" }
-      ]
-    }
-  ]
-}
-```
+- does what its description says, and nothing else;
+- doesn't download or run code from elsewhere, read files outside its own folder without a clear reason, or send data anywhere the description doesn't mention;
+- uses `ctx.run` for viewer-triggered input and never passes chat text to `api.run`;
+- marks destructive commands `mod_only` or `owner_only`.
 
-| Key | Meaning |
-|---|---|
-| `name` | Source name shown on each card ("from …"). When you package into a new folder, the app names it after the plugin's `author` (or "My plugin market"); you can edit it in `index.json`. |
-| `plugins[].id` | Plugin id, which must match the id in its `plugin.json`. |
-| `plugins[].base_url` | Where the files are, relative to the index URL (or absolute). Defaults to `plugins/<id>/`. |
-| `plugins[].files[]` | Every file to download: `path` is relative to the plugin folder, `sha256` is required, and an optional `url` overrides `base_url` for that one file. |
-| `version`, `author`, `description`, `tags`, `commands`, `homepage` | Shown in the GUI. `version` drives update detection. |
-
-Entries that fail validation are skipped, and the reason is written to `output_log.txt` under `MARKET`. The rest of the index still loads."""),
+If your plugin is rejected, fix the problem, raise the version and submit again."""),
 )
 
 
@@ -7918,8 +7851,7 @@ class ChatPlaysApp:
             "b64_filter": True, "discord_enabled": False, "discord_mode": "crossplay",
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
-            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_sources": [PLUGIN_MARKET_DEFAULT],
-            "plugin_market_autoload": True
+            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}
         }
         if os.path.exists(settings_file):
             try:
@@ -11397,7 +11329,7 @@ class ChatPlaysApp:
         self._st_button(row, "Reload", lambda: self._run_bg(f"plugin-{p.id}", self.plugins.reload, p.id),
                         "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Open folder", lambda: self._open_file(p.folder), "neutral", 9).pack(side="left", padx=4, ipadx=8)
-        self._st_button(row, "Package", lambda: self._plugin_package(p.id), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(row, "Submit", lambda: self._plugin_submit(p.id), "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Uninstall", lambda: self._plugin_uninstall(p.id), "danger", 9).pack(side="right", padx=4, ipadx=8)
         for title, build in list(p.panels):
             box = tk.Frame(c, bg=self._tok["card"]); box._st = {"bg": "card"}
@@ -11428,12 +11360,6 @@ class ChatPlaysApp:
         self._run_bg(f"plugin-{pid}", work)
 
     # -- Plugin Market page ------------------------------------------------
-    def _market_sources(self):
-        src = self.config.get("plugin_market_sources")
-        if not isinstance(src, list) or not src:
-            src = [PLUGIN_MARKET_DEFAULT]
-        return [s for s in (str(x).strip() for x in src) if s]
-
     def build_market_tab(self):
         wrap = self.make_scrollable(self.tab_market)
         t = self._tok
@@ -11445,19 +11371,18 @@ class ChatPlaysApp:
         self._st_button(head, "Refresh", self._market_refresh, "primary", 9).pack(side="right", ipady=3, ipadx=10)
         self._st_button(head, "Docs", lambda: self.plugin_docs_open("plugin-market"), "neutral", 9).pack(side="right", padx=(0, 8), ipady=3, ipadx=8)
 
-        so, sc = self._st_card(wrap, "Sources")
-        so.pack(fill="x", padx=26, pady=(0, 12))
-        self._st_label(sc, "One index URL per line. https:// and file:// both work.", fg="muted", font=("ui", 9),
-                       anchor="w").pack(fill="x", padx=16)
-        self.market_src_text = tk.Text(sc, height=3, font=_sf("mono", 9), bg=t["input"], fg=t["hi"], insertbackground=t["hi"],
-                                       bd=0, highlightthickness=1, highlightbackground=t["line"], highlightcolor=t["accent"], wrap="none")
-        self.market_src_text._st = {"bg": "input", "fg": "hi"}
-        self.market_src_text.pack(fill="x", padx=16, pady=(6, 8))
-        self.market_src_text.insert("1.0", "\n".join(self._market_sources()))
-        srow = tk.Frame(sc, bg=t["card"]); srow._st = {"bg": "card"}
-        srow.pack(fill="x", padx=12, pady=(0, 14))
-        self._st_button(srow, "Save sources", self._market_save_sources, "neutral", 9).pack(side="left", padx=4, ipadx=8)
-        self._st_button(srow, "Reset to official", self._market_reset_sources, "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        server = market_server_url()
+        if server:
+            self._st_label(wrap, f"Every plugin here was reviewed before it was published.  Market: {server}", bg="bg",
+                           fg="muted", font=("ui", 9), anchor="w").pack(fill="x", padx=26, pady=(0, 12))
+        else:
+            so, sc = self._st_card(wrap)
+            so.pack(fill="x", padx=26, pady=(0, 12))
+            self._st_label(sc, "The plugin market isn't available in this build yet.", fg="hi", font=("ui", 11, "semi"),
+                           anchor="w").pack(fill="x", padx=16, pady=(14, 2))
+            self._st_label(sc, "You can still install plugins by copying their folder into the plugins folder and pressing "
+                               "Reload all on the Plugins page.", fg="muted", font=("ui", 9), anchor="w", justify="left",
+                           wraplength=760).pack(fill="x", padx=16, pady=(0, 14))
 
         frow = tk.Frame(wrap, bg=t["bg"]); frow._st = {"bg": "bg"}
         frow.pack(fill="x", padx=26, pady=(0, 8))
@@ -11476,22 +11401,6 @@ class ChatPlaysApp:
         if self.config.get("plugin_market_autoload", True):
             self.root.after(1500, self._market_refresh)
 
-    def _market_save_sources(self):
-        lines = [l.strip() for l in self.market_src_text.get("1.0", "end").splitlines() if l.strip()]
-        bad = [l for l in lines if not l.lower().startswith(("https://", "http://", "file://"))]
-        if bad:
-            messagebox.showerror("Plugin market", "Not a URL:\n" + "\n".join(bad))
-            return
-        self.config["plugin_market_sources"] = lines or [PLUGIN_MARKET_DEFAULT]
-        self.save_settings()
-        self.toast("Market sources saved", "ok")
-        self._market_refresh()
-
-    def _market_reset_sources(self):
-        self.market_src_text.delete("1.0", "end")
-        self.market_src_text.insert("1.0", PLUGIN_MARKET_DEFAULT)
-        self._market_save_sources()
-
     def _market_set_status(self, text, fg="faint"):
         lbl = getattr(self, "market_status", None)
         if lbl is not None:
@@ -11500,29 +11409,23 @@ class ChatPlaysApp:
     def _market_refresh(self):
         if getattr(self, "_market_busy", False):
             return
+        server = market_server_url()
+        if not server:
+            self._market_set_status("No market in this build.")
+            return
         self._market_busy = True
         self._market_set_status("Loading...")
         def work():
-            items, errs = [], []
-            for url in self._market_sources():
-                try:
-                    idx = market_fetch_index(url)
-                    for e in idx["plugins"]:
-                        e["_source_name"] = idx["name"]
-                        items.append(e)
-                except Exception as ex:
-                    errs.append(f"{url}: {ex}")
-                    plog("MARKET", f"index {url} failed: {ex}")
-            seen, uniq = set(), []
-            for e in items:
-                if e["id"] not in seen:
-                    seen.add(e["id"]); uniq.append(e)
-            self._market_items = uniq
-            self._market_busy = False
-            msg = f"{len(uniq)} plugin(s)" + (f", {len(errs)} source(s) failed" if errs else "")
-            self._market_set_status(msg, "bad" if errs and not uniq else "faint")
-            if errs and not uniq:
-                self.toast("Plugin market: " + errs[0][:120], "bad")
+            url = server + "/index.json"
+            try:
+                self._market_items = market_fetch_index(url)["plugins"]
+                self._market_set_status(f"{len(self._market_items)} plugin(s)")
+            except Exception as ex:
+                plog("MARKET", f"index {url} failed: {ex}")
+                self._market_set_status("Couldn't reach the market - check your connection and press Refresh.", "bad")
+                self.toast(f"Plugin market: {str(ex)[:120]}", "bad")
+            finally:
+                self._market_busy = False
             self.ui(self._render_market)
         threading.Thread(target=work, daemon=True, name="market-refresh").start()
 
@@ -11562,16 +11465,13 @@ class ChatPlaysApp:
         top.pack(fill="x", padx=16, pady=(14, 0))
         self._st_label(top, e.get("name") or e["id"], fg="hi", font=("ui", 12, "semi")).pack(side="left")
         self._st_label(top, f"  v{e.get('version', '?')}  by {e.get('author', 'unknown')}", fg="faint", font=("ui", 9)).pack(side="left", pady=(3, 0))
-        if e.get("_source") == PLUGIN_MARKET_DEFAULT:
-            self._st_label(top, "  ✓ official", fg="ok", font=("ui", 9, "semi")).pack(side="left", pady=(3, 0))
         if e.get("description"):
             self._st_label(c, e["description"], fg="muted", font=("ui", 9), anchor="w", justify="left",
                            wraplength=760).pack(fill="x", padx=16, pady=(4, 0))
         meta = []
         if e.get("tags"): meta.append("  ".join("#" + str(x) for x in e["tags"]))
         if e.get("commands"): meta.append("adds " + " ".join("!" + str(x).lstrip("!") for x in e["commands"]))
-        meta.append("from " + str(e.get("_source_name", "")))
-        self._st_label(c, "   ·   ".join(meta), fg="faint", font=("ui", 8), anchor="w", justify="left",
+        if meta: self._st_label(c, "   ·   ".join(meta), fg="faint", font=("ui", 8), anchor="w", justify="left",
                        wraplength=760).pack(fill="x", padx=16, pady=(6, 0))
         row = tk.Frame(c, bg=t["card"]); row._st = {"bg": "card"}
         row.pack(fill="x", padx=12, pady=(10, 14))
@@ -11595,13 +11495,6 @@ class ChatPlaysApp:
 
     def _market_install(self, e):
         name = e.get("name") or e["id"]
-        if e.get("_source") != PLUGIN_MARKET_DEFAULT and not messagebox.askyesno(
-                "Install plugin",
-                f"Install {name} {e.get('version', '')} by {e.get('author', 'unknown')}?\n\n"
-                "Plugins run Python code with the same access to your PC as YT2VM. "
-                "This one is not from the official market, so only continue if you trust the source:\n\n"
-                f"{e.get('_source')}"):
-            return
         self._market_set_status(f"Installing {name}...")
         def work():
             try:
@@ -11643,24 +11536,46 @@ class ChatPlaysApp:
             self.ui(self._open_file, folder)
         self._run_bg("plugin-new", work)
 
-    def _plugin_package(self, pid):
+    def _plugin_submit(self, pid):
         p = self.plugins.plugins.get(pid)
         if p is None:
             return
-        out = filedialog.askdirectory(title=f"Choose your market folder for {p.name}", mustexist=False)
-        if not out:
+        server = market_server_url()
+        if not server:
+            messagebox.showinfo("Submit plugin", "This build of YT2VM has no plugin market yet, so there is nowhere to submit to.")
+            return
+        keys = self.config.setdefault("plugin_owner_keys", {}).setdefault(server, {})
+        from tkinter import simpledialog
+        note = simpledialog.askstring(
+            "Submit plugin",
+            f"Upload {p.name} {p.manifest.get('version')} to\n{server}\n\n"
+            + ("This is an update to your plugin." if keys.get(pid) else "This id is new on the market - it will be reserved for you.")
+            + "\n\nNote for the reviewer (optional):", parent=self.root)
+        if note is None:
             return
         def work():
             try:
-                idx_path, entry = market_package(p.folder, out)
-            except Exception as e:
-                log_crash(f"package {pid}", e)
-                self.toast(f"Package failed: {e}", "bad")
+                res = market_submit(server, p.folder, keys.get(pid, ""), note)
+            except ValueError as e:
+                errs = e.args[0] if e.args and isinstance(e.args[0], list) else [str(e)]
+                self.ui(messagebox.showerror, "Submit plugin", "The server refused the upload:\n\n- " + "\n- ".join(map(str, errs)))
                 return
-            plog("MARKET", f"packaged {pid} {entry.get('version')} into {idx_path} ({len(entry['files'])} file(s))")
-            self.toast(f"Packaged {p.name} {entry.get('version')} - upload this folder", "ok")
-            self.ui(self._open_file, out)
-        self._run_bg(f"plugin-package-{pid}", work)
+            except Exception as e:
+                log_crash(f"submit {pid}", e)
+                self.ui(messagebox.showerror, "Submit plugin", f"Upload failed: {e}")
+                return
+            msg = f"{p.name} {res.get('version')} was uploaded."
+            msg += ("\n\nIt is waiting for review - it shows up in the market once an admin approves it."
+                    if res.get("status") == "pending" else "\n\nIt is published now.")
+            if res.get("owner_key"):
+                keys[pid] = res["owner_key"]
+                self.save_settings()
+                msg += ("\n\nYour owner key for this plugin is saved in settings.json. You need it to publish updates, "
+                        "so back it up:\n\n" + res["owner_key"])
+            plog("MARKET", f"submitted {pid} {res.get('version')} to {server}: {res.get('status')}")
+            self.toast(f"Submitted {p.name} {res.get('version')}", "ok")
+            self.ui(messagebox.showinfo, "Submit plugin", msg)
+        self._run_bg(f"plugin-submit-{pid}", work)
 
     # -- Plugin Docs page --------------------------------------------------
     def plugin_docs_open(self, doc_key=None, anchor=None):

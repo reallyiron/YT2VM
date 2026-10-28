@@ -47,7 +47,7 @@ The **Plugins** page (Tools → Plugins) lists every installed plugin with its s
 | Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
 | Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
 | Open folder | Opens the plugin's folder. |
-| Submit | Uploads the plugin to the plugin market for review. See [Releasing a plugin](#releasing-a-plugin). |
+| Submit | Uploads the plugin to the plugin market for review. Only shown for plugins you made: plugins installed from the market belong to their author. See [Releasing a plugin](#releasing-a-plugin). |
 | Uninstall | Deletes the plugin's folder, after you confirm. |
 
 Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.

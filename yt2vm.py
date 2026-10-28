@@ -7323,7 +7323,7 @@ The **Plugins** page (Tools → Plugins) lists every installed plugin with its s
 | Enable / Disable | Turns the plugin on or off. The choice is saved in `settings.json` under `plugins_enabled`. |
 | Reload | Re-reads the plugin's files from disk. Use it while you're writing a plugin. |
 | Open folder | Opens the plugin's folder. |
-| Submit | Uploads the plugin to the plugin market for review. See [Releasing a plugin](#releasing-a-plugin). |
+| Submit | Uploads the plugin to the plugin market for review. Only shown for plugins you made: plugins installed from the market belong to their author. See [Releasing a plugin](#releasing-a-plugin). |
 | Uninstall | Deletes the plugin's folder, after you confirm. |
 
 Plugin panels (settings, leaderboards and so on) appear inside each plugin's card.
@@ -11934,7 +11934,8 @@ class ChatPlaysApp:
         self._st_button(row, "Reload", lambda: self._run_bg(f"plugin-{p.id}", self.plugins.reload, p.id),
                         "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Open folder", lambda: self._open_file(p.folder), "neutral", 9).pack(side="left", padx=4, ipadx=8)
-        self._st_button(row, "Submit", lambda: self._plugin_submit(p.id), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        if self._plugin_submittable(p)[0]:
+            self._st_button(row, "Submit", lambda: self._plugin_submit(p.id), "neutral", 9).pack(side="left", padx=4, ipadx=8)
         self._st_button(row, "Uninstall", lambda: self._plugin_uninstall(p.id), "danger", 9).pack(side="right", padx=4, ipadx=8)
         for title, build in list(p.panels):
             box = tk.Frame(c, bg=self._tok["card"]); box._st = {"bg": "card"}
@@ -12147,13 +12148,26 @@ class ChatPlaysApp:
             self.ui(self._open_file, folder)
         self._run_bg("plugin-new", work)
 
+    def _plugin_submittable(self, p):
+        """(True, "") when this plugin may be submitted from here; otherwise (False, reason).
+        Plugins installed from the market belong to their author - only the holder of the owner key can submit them."""
+        if p.single_file:
+            return False, ("Single-file plugins (.py / .y2vp) can't be submitted to the market. "
+                           "Put it in its own folder with a plugin.json first, then submit that.")
+        if os.path.isfile(os.path.join(p.folder, ".market.json")):
+            server = market_server_url()
+            if not self.config.get("plugin_owner_keys", {}).get(server, {}).get(p.id):
+                return False, (f"{p.name} was installed from the plugin market, so it belongs to its author. "
+                               "Only the author can submit new versions of it.")
+        return True, ""
+
     def _plugin_submit(self, pid):
         p = self.plugins.plugins.get(pid)
         if p is None:
             return
-        if p.single_file:
-            messagebox.showinfo("Submit plugin", "Single-file plugins (.py / .y2vp) can't be submitted to the market. "
-                                "Put it in its own folder with a plugin.json first, then submit that.")
+        ok, why = self._plugin_submittable(p)
+        if not ok:
+            messagebox.showinfo("Submit plugin", why)
             return
         server = market_server_url()
         if not server:

@@ -6997,14 +6997,14 @@ Viewer commands go through the same protections as built-in ones before they rea
 |---|---|---|
 | `ready` | `fn()` | After the app finishes starting, or right after loading if the app is already running. |
 | `chat` | `fn(user, message, is_mod, is_owner, source)` | For every chat message. `source` is `"youtube"` or `"discord"`. |
-| `command` | `fn(user, cmd, arg)` | For every command that gets past the security checks, including built-in ones. `cmd` includes the `!`. |
+| `command` | `fn(user, cmd, arg)` | For every command that gets past the security checks, including built-in ones and those of plugins. `cmd` includes the `!`. Commands typed in the Dashboard console, run by automations, or queued with `api.run` arrive with `user` set to `"[console]"`. Check `user.startswith("[")` to skip them, for example when you only care about viewers. |
 | `shutdown` | `fn()` | When the window closes. |
 
 ### The ctx object
 
 | Attribute / method | Description |
 |---|---|
-| `ctx.user` | Display name of the person who ran the command. |
+| `ctx.user` | Display name of the person who ran the command, or `"[console]"` for the Dashboard console and automations. |
 | `ctx.clean_user` | Lowercase name without `@`, which is the form used for bans and stats. |
 | `ctx.command` | Command name without the prefix. |
 | `ctx.arg` / `ctx.args` | Everything after the command, as one string and split on spaces. |
@@ -7020,8 +7020,8 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `api.say(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
 | `api.log(text)` | Writes to `output_log.txt` only. |
 | `api.toast(text, kind="info")` | Shows a toast in the GUI. `kind` is `info`, `ok` or `bad`. |
-| `api.flash(text, kind="info", dur=6)` | Shows a flash message on the OBS overlay. |
-| `api.run(chain)` | Runs any command chain **as the console, with owner rights**. |
+| `api.flash(text, kind="info", dur=6)` | Shows a flash message on the OBS overlay for `dur` seconds. `kind` is `info`, `good`, `warn` or `err` and sets the banner's colour. |
+| `api.run(chain)` | Runs any command chain **as the console, with owner rights**. It is queued: the call returns at once and the commands run shortly after, as user `"[console]"`, so they also fire the `command` event. |
 | `api.get(key, default=None)` / `api.set(key, value)` | Per-plugin settings saved in `settings.json` under `plugin_settings.<id>`. Values must be JSON-serialisable. |
 | `api.settings` | A copy of all of this plugin's settings. |
 | `api.ui(fn, *args)` | Runs `fn` on the Tk UI thread. |

@@ -1,0 +1,12 @@
+{
+    "id": "hello",
+    "name": "Hello",
+    "version": "1.0.0",
+    "author": "reallyiron",
+    "description": "The smallest useful plugin: !hello greets whoever runs it. Start here when writing your own.",
+    "api": 1,
+    "entry": "plugin.py",
+    "tags": ["example", "fun"],
+    "commands": ["hello"],
+    "homepage": "https://github.com/reallyiron/YT2VM"
+}

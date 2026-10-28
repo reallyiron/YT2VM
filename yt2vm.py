@@ -1262,7 +1262,7 @@ mclick modhelp move music mute nuke pardon pausechat pausesong pin ping protect 
 remake2 replay restartnow restartvm resumesong revert revertnow roll run s say scene scroll send settle shout shutdown
 skip skipsong slowmode snapshotnow startvm stats stopsong strikes swichsnapshot switchsnapshot t testanticopyright
 timeout title trace type unban unlock unlockall unmute uptime vmstatus vmswitch volumedown volumeup votedrop voterandom
-votereplay voteshuffle votestop w wait warn whois lclick tob64 eb64 unblock unb64""".split())
+votereplay voteshuffle votestop w wait warn whois lclick tob64 eb64 unblock unb64 plugins plugin""".split())
 
 
 _B64_ALPHA_RUN = re.compile(r"[A-Za-z0-9+/]{64,}={0,2}")
@@ -3166,7 +3166,7 @@ _ng = [
     ("CONTROL", ["Keys", "Mouse", "Macros", "Quick Type", "Win Apps"]),
     ("MACHINE", ["VMS", "Snapshots", "OS Voting", "Real PC", "System"]),
     ("STREAM",  ["OBS", "Discord", "Overlays", "Media", "Music Queue", "Chat Tools", "Moderation"]),
-    ("TOOLS",   ["Automation", "Event Log", "Replay", "Backup", "Appearance", "Extra Things", "Help", "Diagnostics"]),
+    ("TOOLS",   ["Plugins", "Plugin Market", "Automation", "Event Log", "Replay", "Backup", "Appearance", "Extra Things", "Help", "Diagnostics"]),
 ]
 
 _NG_ICON = {"MAIN": "main", "CONTROL": "control", "MACHINE": "machine", "STREAM": "stream", "TOOLS": "tools"}
@@ -3221,6 +3221,8 @@ _PAGE_BLURB = {
     "Extra Things": "Run extra instances for multi-streaming.",
     "Help": "Every chat command and who can use it.",
     "Diagnostics": "Dependency, backend and recovery checks in one report.",
+    "Plugins": "Enable, reload and configure installed plugins.",
+    "Plugin Market": "Browse and install plugins from the market.",
 }
 
 
@@ -6129,6 +6131,565 @@ def enable_ctk(theme_dark=True, accent="#00E5FF"):
 if platform.system() != "Darwin":
     tk.Button = RoundedButton
 
+# ---------------------------------------------------------------------------
+# plugins
+# ---------------------------------------------------------------------------
+# A plugin is a folder inside  plugins/  (next to yt2vm.py) holding a
+# plugin.json manifest and a python entry file (plugin.py by default) that
+# defines  setup(api)  and optionally  teardown(api).  See docs/plugins.md.
+
+PLUGIN_API_VERSION = 1
+PLUGIN_DIR_NAME = "plugins"
+PLUGIN_MARKET_DEFAULT = "https://raw.githubusercontent.com/reallyiron/YT2VM/main/market/index.json"
+_PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{1,39}$")
+_PLUGIN_CMD_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_PLUGIN_EVENTS = ("ready", "chat", "command", "shutdown")
+# the viewer action commands ctx.run() may queue (same list parse_command lets viewers chain)
+_PLUGIN_ACTION_CMDS = ("!run", "!startvm", "!type", "!send", "!key", "!combo", "!keydown", "!keyup", "!move", "!abs",
+                       "!click", "!rclick", "!mclick", "!scroll", "!drag", "!wait", "!cmd", "!roll", "!coinflip")
+_PLUGIN_ALIASES = {"!c": "!combo", "!k": "!key", "!t": "!type", "!s": "!send", "!m": "!move", "!d": "!drag", "!w": "!wait",
+                   "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick"}
+
+
+def plugins_dir():
+    d = os.path.join(_appdir(), PLUGIN_DIR_NAME)
+    try: os.makedirs(d, exist_ok=True)
+    except Exception as _ex:
+        _trace(_ex_where(), _ex)
+    return d
+
+
+def _version_tuple(v):
+    out = []
+    for part in re.split(r"[.\-+_]", str(v or "0")):
+        m = re.match(r"\d+", part)
+        out.append(int(m.group()) if m else 0)
+    while len(out) < 3: out.append(0)
+    return tuple(out)
+
+
+def read_plugin_manifest(folder):
+    path = os.path.join(folder, "plugin.json")
+    with open(path, "r", encoding="utf-8") as f:
+        man = json.load(f)
+    if not isinstance(man, dict):
+        raise ValueError("plugin.json must be an object")
+    pid = str(man.get("id", "")).strip().lower()
+    if not _PLUGIN_ID_RE.match(pid):
+        raise ValueError(f"bad plugin id {pid!r} (lowercase letters, digits, - and _, 2-40 chars)")
+    entry = str(man.get("entry", "plugin.py"))
+    if os.path.isabs(entry) or ".." in entry.replace("\\", "/").split("/"):
+        raise ValueError(f"bad entry path {entry!r}")
+    man["id"] = pid
+    man["entry"] = entry
+    man.setdefault("name", pid)
+    man.setdefault("version", "0.0.0")
+    man.setdefault("author", "unknown")
+    man.setdefault("description", "")
+    man["api"] = int(man.get("api", PLUGIN_API_VERSION) or PLUGIN_API_VERSION)
+    return man
+
+
+class PluginContext:
+    """What a command handler receives. Built per command call."""
+
+    def __init__(self, plugin, cmd, arg, user, is_mod, is_owner, source):
+        self._plugin = plugin
+        self.command = cmd
+        self.arg = arg
+        self.args = arg.split() if arg else []
+        self.user = user
+        self.clean_user = str(user).replace("@", "").lower().strip()
+        self.is_mod = bool(is_mod)
+        self.is_owner = bool(is_owner)
+        self.is_admin = bool(is_mod or is_owner)
+        self.source = source
+
+    def reply(self, text):
+        self._plugin.api.say(text)
+
+    def run(self, chain):
+        """Queue VM actions (!type, !key, !combo, ...) on behalf of the user who ran the command.
+        Only viewer action commands are accepted, and the normal payload filter applies to non-admins."""
+        return self._plugin.manager.run_as_user(self, chain)
+
+
+class PluginAPI:
+    """The object passed to setup(api). Everything a plugin registers through it is
+    removed automatically when the plugin is disabled, reloaded or uninstalled."""
+
+    def __init__(self, manager, plugin):
+        self._mgr = manager
+        self._plugin = plugin
+        self.app = manager.app
+        self.id = plugin.id
+        self.manifest = plugin.manifest
+        self.path = plugin.folder
+        self.api_version = PLUGIN_API_VERSION
+        self.app_version = version
+
+    # -- registration ------------------------------------------------------
+    def command(self, name, help="", mod_only=False, owner_only=False):
+        def deco(fn):
+            self._mgr._register_command(self._plugin, name, fn, help, mod_only, owner_only)
+            return fn
+        return deco
+
+    def on(self, event, fn=None):
+        if fn is None:
+            return lambda f: (self._mgr._register_event(self._plugin, event, f), f)[1]
+        self._mgr._register_event(self._plugin, event, fn)
+        return fn
+
+    def every(self, seconds, fn=None):
+        if fn is None:
+            return lambda f: (self._mgr._register_timer(self._plugin, seconds, f), f)[1]
+        self._mgr._register_timer(self._plugin, seconds, fn)
+        return fn
+
+    def add_panel(self, build_fn, title=None):
+        """build_fn(parent) is called on the UI thread to draw controls on the Plugins page."""
+        self._plugin.panels.append((title or self._plugin.name, build_fn))
+        self._mgr._changed()
+
+    # -- actions -----------------------------------------------------------
+    def say(self, text):
+        self.app.log(f"[{self._plugin.name}]", str(text), "sysmsg")
+
+    def log(self, text):
+        plog("PLUGIN", f"{self.id}: {text}")
+
+    def toast(self, text, kind="info"):
+        self.app.toast(str(text), kind)
+
+    def flash(self, text, kind="info", dur=6):
+        self.app.send_flash(str(text), kind, dur)
+
+    def run(self, chain):
+        """Run any command chain as the console (owner rights). Never pass raw viewer text here."""
+        self.app._manual_cmd(str(chain))
+
+    def ui(self, fn, *a, **k):
+        self.app.ui(fn, *a, **k)
+
+    # -- settings ----------------------------------------------------------
+    def _store(self):
+        allp = self.app.config.setdefault("plugin_settings", {})
+        return allp.setdefault(self.id, {})
+
+    def get(self, key, default=None):
+        return self._store().get(key, default)
+
+    def set(self, key, value):
+        self._store()[key] = value
+        self.app.save_settings()
+
+    @property
+    def settings(self):
+        return dict(self._store())
+
+
+class LoadedPlugin:
+    def __init__(self, manager, folder, manifest):
+        self.manager = manager
+        self.folder = folder
+        self.manifest = manifest
+        self.id = manifest["id"]
+        self.name = manifest.get("name", self.id)
+        self.module = None
+        self.api = None
+        self.loaded = False
+        self.error = ""
+        self.commands = {}
+        self.events = collections.defaultdict(list)
+        self.timers = []
+        self.panels = []
+
+
+class PluginManager:
+    def __init__(self, app):
+        self.app = app
+        self.plugins = {}
+        self._lock = threading.RLock()
+        self._q = queue.Queue(maxsize=2000)
+        self._listeners = []
+        self._worker = None
+        self._dropped = 0
+
+    # -- state -------------------------------------------------------------
+    def _enabled_map(self):
+        return self.app.config.setdefault("plugins_enabled", {})
+
+    def is_enabled(self, pid):
+        return bool(self._enabled_map().get(pid, True))
+
+    def set_enabled(self, pid, on):
+        self._enabled_map()[pid] = bool(on)
+        self.app.save_settings()
+        if on: self.load(pid)
+        else: self.unload(pid)
+
+    def add_listener(self, fn):
+        self._listeners.append(fn)
+
+    def _changed(self):
+        for fn in list(self._listeners):
+            try: self.app.ui(fn)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+
+    def command_names(self):
+        with self._lock:
+            return {c for p in self.plugins.values() if p.loaded for c in p.commands}
+
+    def all_commands(self):
+        with self._lock:
+            return [(p, n, c) for p in self.plugins.values() if p.loaded for n, c in sorted(p.commands.items())]
+
+    # -- discovery / loading ----------------------------------------------
+    def discover(self):
+        root = plugins_dir()
+        found = {}
+        for name in sorted(os.listdir(root)):
+            folder = os.path.join(root, name)
+            if name.startswith((".", "_")) or not os.path.isfile(os.path.join(folder, "plugin.json")):
+                continue
+            try:
+                man = read_plugin_manifest(folder)
+            except Exception as e:
+                plog("PLUGIN", f"skipping {name}: {e}")
+                continue
+            if man["id"] in found:
+                plog("PLUGIN", f"duplicate plugin id {man['id']} in {name} - skipped")
+                continue
+            found[man["id"]] = (folder, man)
+        with self._lock:
+            for pid in list(self.plugins):
+                if pid not in found:
+                    self.unload(pid)
+                    self.plugins.pop(pid, None)
+            for pid, (folder, man) in found.items():
+                cur = self.plugins.get(pid)
+                if cur is None or cur.folder != folder or not cur.loaded:
+                    if cur is not None: self.unload(pid)
+                    self.plugins[pid] = LoadedPlugin(self, folder, man)
+                else:
+                    cur.manifest = man
+        return found
+
+    def load_all(self):
+        self._start_worker()
+        self.discover()
+        for pid in list(self.plugins):
+            if self.is_enabled(pid):
+                self.load(pid)
+        n = sum(1 for p in self.plugins.values() if p.loaded)
+        plog("PLUGIN", f"{n}/{len(self.plugins)} plugin(s) loaded from {plugins_dir()}")
+        self._changed()
+
+    def load(self, pid):
+        import importlib.util
+        with self._lock:
+            p = self.plugins.get(pid)
+            if p is None:
+                self.discover()
+                p = self.plugins.get(pid)
+            if p is None:
+                return False
+            if p.loaded:
+                return True
+            try:
+                p.manifest = read_plugin_manifest(p.folder)
+                p.name = p.manifest.get("name", pid)
+            except Exception as e:
+                p.error = f"manifest: {e}"
+                self._changed()
+                return False
+            if p.manifest["api"] > PLUGIN_API_VERSION:
+                p.error = f"needs plugin API {p.manifest['api']} (this app has {PLUGIN_API_VERSION}) - update YT2VM"
+                self._changed()
+                return False
+            p.commands.clear(); p.events.clear(); p.timers.clear(); p.panels.clear()
+            p.error = ""
+            p.api = PluginAPI(self, p)
+            entry = os.path.join(p.folder, p.manifest["entry"])
+            try:
+                spec = importlib.util.spec_from_file_location(f"yt2vm_plugin_{pid.replace('-', '_')}", entry)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                p.module = mod
+                if not hasattr(mod, "setup"):
+                    raise AttributeError("plugin has no setup(api) function")
+                mod.setup(p.api)
+                p.loaded = True
+                plog("PLUGIN", f"loaded {pid} {p.manifest.get('version')} ({len(p.commands)} command(s))")
+            except Exception as e:
+                p.error = f"{type(e).__name__}: {e}"
+                p.loaded = False
+                p.commands.clear(); p.events.clear(); p.timers.clear(); p.panels.clear()
+                log_crash(f"plugin {pid} setup", e)
+                console_log("ERROR", f"plugin {pid} failed to load: {e}")
+        self._changed()
+        if p.loaded and getattr(self.app, "_plugins_ready", False):
+            self._dispatch_one(p, "ready", ())
+        return p.loaded
+
+    def unload(self, pid):
+        with self._lock:
+            p = self.plugins.get(pid)
+            if p is None or not p.loaded:
+                return
+            mod = p.module
+            p.loaded = False
+            try:
+                if mod is not None and hasattr(mod, "teardown"):
+                    mod.teardown(p.api)
+            except Exception as e:
+                log_crash(f"plugin {pid} teardown", e)
+            p.commands.clear(); p.events.clear(); p.timers.clear(); p.panels.clear()
+            p.module = None
+            plog("PLUGIN", f"unloaded {pid}")
+        self._changed()
+
+    def reload(self, pid):
+        self.unload(pid)
+        self.discover()
+        return self.load(pid) if self.is_enabled(pid) else False
+
+    def reload_all(self):
+        for pid in list(self.plugins):
+            self.unload(pid)
+        self.load_all()
+
+    def shutdown(self):
+        self.emit("shutdown")
+        for pid in list(self.plugins):
+            try: self.unload(pid)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+
+    # -- registration (called through PluginAPI) ---------------------------
+    def _register_command(self, p, name, fn, help, mod_only, owner_only):
+        name = str(name).lower().lstrip("!")
+        if not _PLUGIN_CMD_RE.match(name):
+            raise ValueError(f"bad command name {name!r}")
+        if name in _KNOWN_CMDS or name in ("plugins", "plugin"):
+            raise ValueError(f"!{name} is a built-in command")
+        for other in self.plugins.values():
+            if other is not p and other.loaded and name in other.commands:
+                raise ValueError(f"!{name} is already registered by plugin {other.id}")
+        p.commands[name] = {"fn": fn, "help": str(help or ""), "mod_only": bool(mod_only or owner_only),
+                            "owner_only": bool(owner_only)}
+
+    def _register_event(self, p, event, fn):
+        if event not in _PLUGIN_EVENTS:
+            raise ValueError(f"unknown event {event!r} (use one of {', '.join(_PLUGIN_EVENTS)})")
+        p.events[event].append(fn)
+
+    def _register_timer(self, p, seconds, fn):
+        seconds = max(1.0, float(seconds))
+        p.timers.append({"every": seconds, "fn": fn, "next": time.time() + seconds})
+
+    # -- worker ------------------------------------------------------------
+    def _start_worker(self):
+        if self._worker is not None and self._worker.is_alive():
+            return
+        self._worker = _spawn("plugins", self._worker_loop)
+
+    def _submit(self, p, fn, args, what):
+        try:
+            self._q.put_nowait((p, fn, args, what))
+        except queue.Full:
+            self._dropped += 1
+            plog_throttled("plugin-q", "PLUGIN", f"plugin queue full - dropped {self._dropped} call(s)")
+
+    def _call(self, p, fn, args, what):
+        if not p.loaded:
+            return
+        t0 = time.time()
+        try:
+            fn(*args)
+        except Exception as e:
+            log_crash(f"plugin {p.id} {what}", e)
+            console_log("ERROR", f"plugin {p.id} {what} failed: {type(e).__name__}: {e}")
+        el = time.time() - t0
+        if el > 2:
+            plog("PLUGIN", f"{p.id} {what} took {el:.1f}s - keep plugin callbacks short or use a thread")
+
+    def _worker_loop(self):
+        while self.app.running:
+            try:
+                item = self._q.get(timeout=0.25)
+            except queue.Empty:
+                item = None
+            if item is not None:
+                self._call(*item)
+            now = time.time()
+            with self._lock:
+                due = [(p, t) for p in self.plugins.values() if p.loaded for t in p.timers if now >= t["next"]]
+            for p, t in due:
+                t["next"] = now + t["every"]
+                self._call(p, t["fn"], (), "timer")
+
+    def _dispatch_one(self, p, event, args):
+        for fn in list(p.events.get(event, ())):
+            self._submit(p, fn, args, f"on({event})")
+
+    def emit(self, event, *args):
+        with self._lock:
+            targets = [p for p in self.plugins.values() if p.loaded and p.events.get(event)]
+        for p in targets:
+            self._dispatch_one(p, event, args)
+
+    # -- chat hooks ----------------------------------------------------------
+    def handle_command(self, cmd, arg, user, is_mod, is_owner, source):
+        name = cmd.lstrip("!").lower()
+        with self._lock:
+            hit = None
+            for p in self.plugins.values():
+                if p.loaded and name in p.commands:
+                    hit = (p, p.commands[name]); break
+        if hit is None:
+            return False
+        p, spec = hit
+        if spec["owner_only"] and not is_owner:
+            return True
+        if spec["mod_only"] and not (is_mod or is_owner):
+            return True
+        ctx = PluginContext(p, name, arg, user, is_mod, is_owner, source)
+        self._submit(p, spec["fn"], (ctx,), f"!{name}")
+        return True
+
+    def run_as_user(self, ctx, chain):
+        app = self.app
+        steps = app._split_chain(str(chain), trusted=True)
+        out = []
+        for seg, _t in steps:
+            parts = seg.strip().split(maxsplit=1)
+            if not parts:
+                continue
+            raw = parts[0].lower()
+            pre = app.command_prefix or "!"
+            if raw.startswith(pre):
+                raw = raw[len(pre):]
+            c = _PLUGIN_ALIASES.get("!" + raw, "!" + raw)
+            a = parts[1].strip() if len(parts) > 1 else ""
+            if c not in _PLUGIN_ACTION_CMDS:
+                plog("PLUGIN", f"{ctx._plugin.id}: ctx.run skipped {c} (not a viewer action command)")
+                continue
+            if not ctx.is_admin:
+                ok, why = app._security_gate(ctx.clean_user, c, a, chain_step=True)
+                if not ok:
+                    plog("PLUGIN", f"{ctx._plugin.id}: ctx.run blocked {c} ({why})")
+                    continue
+            out.append((c, a, ctx.user))
+        if out:
+            app.trigger_command_chain(out, priority=ctx.is_admin)
+        return len(out)
+
+
+# ---------------------------------------------------------------------------
+# plugin market
+# ---------------------------------------------------------------------------
+# A market is a JSON index (see docs/plugin-market.md). Every file listed for a
+# plugin carries a sha256; nothing is written to plugins/ unless all of them match.
+
+_MARKET_MAX_FILE = 4 * 1024 * 1024
+_MARKET_UA = f"YT2VM/{version} plugin-market"
+
+
+def _market_fetch(url, limit=_MARKET_MAX_FILE, timeout=15):
+    req = urllib.request.Request(url, headers={"User-Agent": _MARKET_UA, "Cache-Control": "no-cache"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"{url} is larger than {limit // 1024} KB")
+    return data
+
+
+def market_fetch_index(url):
+    raw = _market_fetch(url)
+    idx = json.loads(raw.decode("utf-8"))
+    if not isinstance(idx, dict) or not isinstance(idx.get("plugins"), list):
+        raise ValueError("index has no \"plugins\" list")
+    out = []
+    for e in idx["plugins"]:
+        try:
+            pid = str(e.get("id", "")).lower()
+            if not _PLUGIN_ID_RE.match(pid):
+                raise ValueError(f"bad id {pid!r}")
+            files = e.get("files") or []
+            if not files or not all(isinstance(f, dict) and f.get("path") and f.get("sha256") for f in files):
+                raise ValueError("every file needs a path and sha256")
+            ent = dict(e)
+            ent["id"] = pid
+            ent["_source"] = url
+            ent["_base"] = urllib.parse.urljoin(url, str(e.get("base_url") or f"plugins/{pid}/"))
+            out.append(ent)
+        except Exception as ex:
+            plog("MARKET", f"{url}: skipped entry {e.get('id', '?') if isinstance(e, dict) else '?'}: {ex}")
+    return {"name": str(idx.get("name") or url), "url": url, "plugins": out}
+
+
+def _market_safe_rel(path):
+    p = str(path).replace("\\", "/")
+    if not p or p.startswith("/") or os.path.isabs(path) or ":" in p or any(part in ("", ".", "..") for part in p.split("/")):
+        raise ValueError(f"unsafe file path {path!r}")
+    return p
+
+
+def market_install(entry, progress=None):
+    """Download every file of a market entry, verify sha256, then swap it into plugins/<id>.
+    A data/ folder from an existing install is carried over."""
+    pid = entry["id"]
+    root = plugins_dir()
+    dest = os.path.join(root, pid)
+    tmp = os.path.join(root, f".{pid}.installing")
+    if os.path.isdir(tmp):
+        shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    try:
+        files = entry["files"]
+        for i, f in enumerate(files):
+            rel = _market_safe_rel(f["path"])
+            url = f.get("url") or urllib.parse.urljoin(entry["_base"], urllib.parse.quote(rel))
+            if progress: progress(f"downloading {rel} ({i + 1}/{len(files)})")
+            data = _market_fetch(url)
+            got = hashlib.sha256(data).hexdigest()
+            if got.lower() != str(f["sha256"]).lower():
+                raise ValueError(f"checksum mismatch for {rel} - refusing to install")
+            out = os.path.join(tmp, *rel.split("/"))
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "wb") as fh:
+                fh.write(data)
+        man = read_plugin_manifest(tmp)
+        if man["id"] != pid:
+            raise ValueError(f"plugin.json id {man['id']!r} does not match market id {pid!r}")
+        if os.path.isdir(os.path.join(dest, "data")):
+            shutil.move(os.path.join(dest, "data"), os.path.join(tmp, "data"))
+        if os.path.isdir(dest):
+            old = os.path.join(root, f".{pid}.old")
+            shutil.rmtree(old, ignore_errors=True)
+            os.replace(dest, old)
+            shutil.rmtree(old, ignore_errors=True)
+        os.replace(tmp, dest)
+        with open(os.path.join(dest, ".market.json"), "w", encoding="utf-8") as fh:
+            json.dump({"source": entry.get("_source"), "version": entry.get("version"), "installed": time.time()}, fh)
+        return man
+    finally:
+        if os.path.isdir(tmp):
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def market_uninstall(pid):
+    if not _PLUGIN_ID_RE.match(str(pid)):
+        raise ValueError(f"bad plugin id {pid!r}")
+    dest = os.path.join(plugins_dir(), pid)
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+
+
+
 class ChatPlaysApp:
     def __init__(self, root):
         self.running = True
@@ -6181,6 +6742,7 @@ class ChatPlaysApp:
             self.main_heartbeat = time.time()
             self.recent_bot_messages = collections.deque(maxlen=50)
             self.config = self.load_settings()
+            self.plugins = PluginManager(self)
 
             self.pico = None
             self.pico_enabled = False
@@ -6317,6 +6879,9 @@ class ChatPlaysApp:
                 console_log("SYSTEM", "DEBUG MODE ON - writing to " + _dbf + "  (use --quiet to disable)")
                 dbg("startup", platform_report())
                 dbg("startup", f"vbox={vbox_manage_cmd} ({_vbox_how})  vms={available_vms}")
+            try: self.plugins.load_all()
+            except Exception as _ex:
+                log_crash("plugins load_all", _ex)
             self.build_unified_dashboard()
             self.start_terminal_thread()
             self.start_app_threads()
@@ -6331,6 +6896,8 @@ class ChatPlaysApp:
                         plog("DISCORD", "was enabled but no saved token - open the Discord page to paste it")
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
+            self._plugins_ready = True
+            self.plugins.emit("ready")
             try: self.root.after(600, self.show_welcome_guide)
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
@@ -6437,6 +7004,7 @@ class ChatPlaysApp:
             _trace(_ex_where(), _ex)
         console_log("CHAT", f"[{source}] [{shown}]{' (owner)' if is_owner else (' (mod)' if is_mod else '')}: {text}")
         append_to_all_msgs_log(f"[{source}] {shown}", text)
+        self._plugin_chat(shown, message, is_mod, is_owner, source)
         clean_user = str(user).replace("@", "").lower().strip()
         if str(message).startswith(self.command_prefix):
             if self._guard_payload(clean_user, message, is_owner, source=source, ref=ref):
@@ -6813,7 +7381,9 @@ class ChatPlaysApp:
             "custom_commands": {},
             "b64_filter": True, "discord_enabled": False, "discord_mode": "crossplay",
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
-            "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True
+            "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
+            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_sources": [PLUGIN_MARKET_DEFAULT],
+            "plugin_market_autoload": True
         }
         if os.path.exists(settings_file):
             try:
@@ -6822,11 +7392,14 @@ class ChatPlaysApp:
                 _trace(_ex_where(), _ex)
         return default_config
 
+    _settings_lock = threading.Lock()
+
     def save_settings(self):
         try:
-            tmp_file = settings_file + ".tmp"
-            with open(tmp_file, "w") as f: json.dump(self.config, f, indent=4)
-            os.replace(tmp_file, settings_file)
+            with self._settings_lock:
+                tmp_file = settings_file + ".tmp"
+                with open(tmp_file, "w") as f: json.dump(self.config, f, indent=4)
+                os.replace(tmp_file, settings_file)
         except Exception as _ex:
             _trace(_ex_where(), _ex)
 
@@ -6893,6 +7466,9 @@ class ChatPlaysApp:
         plog("SHUTDOWN", "window closed by user - saving and exiting")
         try: _jlog_flush()
         except Exception: pass
+        try: self.plugins.shutdown()
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
         self.running = False
         try:
             if getattr(self, "discord", None) is not None:
@@ -7081,6 +7657,10 @@ class ChatPlaysApp:
             self.tabview.add(self.tab_diag, text="  Diagnostics  ")
             self.tab_discord = ttk.Frame(self.tabview, style="TFrame")
             self.tabview.add(self.tab_discord, text="  Discord  ")
+            self.tab_plugins = ttk.Frame(self.tabview, style="TFrame")
+            self.tabview.add(self.tab_plugins, text="  Plugins  ")
+            self.tab_market = ttk.Frame(self.tabview, style="TFrame")
+            self.tabview.add(self.tab_market, text="  Plugin Market  ")
 
             t = self._tok
             def _f(parent, role="bg", **kw):
@@ -7493,7 +8073,7 @@ class ChatPlaysApp:
             btn_save_frame = tk.Frame(sett_content, bg="#18181B")
             btn_save_frame.pack(fill="x", pady=(20, 0))
             tk.Button(btn_save_frame, text="SAVE ALL SETTINGS", font=("Segoe UI", 11, "bold"), bg=self.accent_main, fg="black", activebackground=self.accent_hover, activeforeground="black", bd=0, cursor="hand2", command=self.save_general_settings).pack(ipady=8, ipadx=40)
-            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_diagnostics_tab", "build_discord_tab"):
+            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_diagnostics_tab", "build_discord_tab", "build_plugins_tab", "build_market_tab"):
                 self._build_tab(_tab)
             self._bind_secret_replay()
             self._promote_page_titles()
@@ -9014,6 +9594,9 @@ class ChatPlaysApp:
             ("Open the crash log", "Logs", lambda: self._open_file(CRASH_LOG)),
             ("Open the user guide", "Help", lambda: self.show_welcome_guide(force=True)),
             ("Minimize window", "Window", self._minimize_window),
+            ("Open plugins", "Plugins", lambda: self.tabview.select(self.tab_plugins)),
+            ("Open the plugin market", "Plugins", lambda: self.tabview.select(self.tab_market)),
+            ("Reload all plugins", "Plugins", lambda: self._run_bg("plugins-reload", self.plugins.reload_all)),
         ]
         for key, base in _STUDIO_BASE.items():
             acts.append((f"Theme: {base['name']}", "Appearance", lambda k=key: self.apply_theme(k)))
@@ -10176,6 +10759,326 @@ class ChatPlaysApp:
         except Exception as _ex:
             _trace(_ex_where(), _ex)
 
+    def _plugin_chat(self, user, message, is_mod, is_owner, source):
+        pm = getattr(self, "plugins", None)
+        if pm is not None:
+            pm.emit("chat", user, str(message), bool(is_mod), bool(is_owner), source)
+
+    def _plugin_owner_cmd(self, arg):
+        pm = self.plugins
+        parts = arg.split()
+        if not parts:
+            names = [f"{p.id}{'' if p.loaded else ' (off)'}" for p in pm.plugins.values()]
+            self.log("[plugins]", "installed: " + (", ".join(names) or "none"), "sysmsg")
+            return
+        act, pid = parts[0].lower(), (parts[1].lower() if len(parts) > 1 else "")
+        if act == "reload" and not pid:
+            pm.reload_all()
+        elif act in ("reload", "enable", "disable") and pid in pm.plugins:
+            if act == "reload": pm.reload(pid)
+            else: pm.set_enabled(pid, act == "enable")
+        else:
+            self.log("[plugins]", "usage: !plugin [reload|enable|disable] <id>   (reload with no id reloads all)", "sysmsg")
+            return
+        self.log("[plugins]", f"{act} {pid or 'all'}: done", "sysmsg")
+
+    # -- Plugins page ------------------------------------------------------
+    def build_plugins_tab(self):
+        wrap = self.make_scrollable(self.tab_plugins)
+        t = self._tok
+        head = tk.Frame(wrap, bg=t["bg"]); head._st = {"bg": "bg"}
+        head.pack(fill="x", padx=26, pady=(22, 10))
+        self._st_label(head, "Installed plugins", bg="bg", fg="hi", font=("display", 15)).pack(side="left")
+        for txt, fn, var in (("Plugin market", lambda: self.tabview.select(self.tab_market), "primary"),
+                             ("Open folder", lambda: self._open_file(plugins_dir()), "neutral"),
+                             ("Reload all", lambda: self._run_bg("plugins-reload", self.plugins.reload_all), "neutral")):
+            self._st_button(head, txt, fn, var, 9).pack(side="right", padx=(8, 0), ipady=3, ipadx=8)
+        self._st_label(wrap, "Plugins add chat commands, timers and panels. They live in the plugins folder next to "
+                             "yt2vm.py and run with the same access as the app, so only install ones you trust.",
+                       bg="bg", fg="muted", font=("ui", 9), anchor="w", justify="left", wraplength=820).pack(fill="x", padx=26, pady=(0, 12))
+        self._plugins_list = tk.Frame(wrap, bg=t["bg"]); self._plugins_list._st = {"bg": "bg"}
+        self._plugins_list.pack(fill="x", padx=26, pady=(0, 24))
+        self.plugins.add_listener(self._render_plugins)
+        self._render_plugins()
+
+    def _render_plugins(self):
+        host = getattr(self, "_plugins_list", None)
+        if host is None:
+            return
+        for w in host.winfo_children():
+            w.destroy()
+        pm = self.plugins
+        items = sorted(pm.plugins.values(), key=lambda p: p.name.lower())
+        if not items:
+            o, c = self._st_card(host)
+            o.pack(fill="x")
+            self._st_label(c, "No plugins installed yet.", fg="hi", font=("ui", 11, "semi"), anchor="w").pack(fill="x", padx=16, pady=(14, 2))
+            self._st_label(c, "Grab one from the Plugin market, or drop a folder with plugin.json + plugin.py into the plugins folder "
+                              "and press Reload all. docs/plugins.md shows how to write your own.",
+                           fg="muted", font=("ui", 9), anchor="w", justify="left", wraplength=760).pack(fill="x", padx=16, pady=(0, 14))
+        for p in items:
+            self._plugin_card(host, p)
+        try: self._studio_restyle(target=host)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+
+    def _plugin_card(self, host, p):
+        m = p.manifest
+        on = self.plugins.is_enabled(p.id)
+        o, c = self._st_card(host)
+        o.pack(fill="x", pady=(0, 12))
+        top = tk.Frame(c, bg=self._tok["card"]); top._st = {"bg": "card"}
+        top.pack(fill="x", padx=16, pady=(14, 0))
+        self._st_label(top, p.name, fg="hi", font=("ui", 12, "semi")).pack(side="left")
+        self._st_label(top, f"  v{m.get('version')}  by {m.get('author')}", fg="faint", font=("ui", 9)).pack(side="left", pady=(3, 0))
+        if p.error: state, col = "Error", "bad"
+        elif p.loaded: state, col = "Running", "ok"
+        else: state, col = "Disabled", "faint"
+        self._st_label(top, "● " + state, fg=col, font=("ui", 9, "semi")).pack(side="right")
+        if m.get("description"):
+            self._st_label(c, m["description"], fg="muted", font=("ui", 9), anchor="w", justify="left",
+                           wraplength=760).pack(fill="x", padx=16, pady=(4, 0))
+        if p.error:
+            self._st_label(c, p.error, fg="bad", font=("mono", 9), anchor="w", justify="left",
+                           wraplength=760).pack(fill="x", padx=16, pady=(6, 0))
+        if p.commands:
+            pre = self.command_prefix or "!"
+            cmds = "   ".join(f"{pre}{n}" + (" (mods)" if s["mod_only"] else "") for n, s in sorted(p.commands.items()))
+            self._st_label(c, "Commands:  " + cmds, fg="text", font=("mono", 9), anchor="w", justify="left",
+                           wraplength=760).pack(fill="x", padx=16, pady=(6, 0))
+        row = tk.Frame(c, bg=self._tok["card"]); row._st = {"bg": "card"}
+        row.pack(fill="x", padx=12, pady=(10, 14))
+        self._st_button(row, "Disable" if on else "Enable",
+                        lambda: self._run_bg(f"plugin-{p.id}", self.plugins.set_enabled, p.id, not on),
+                        "neutral" if on else "go", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(row, "Reload", lambda: self._run_bg(f"plugin-{p.id}", self.plugins.reload, p.id),
+                        "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(row, "Open folder", lambda: self._open_file(p.folder), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(row, "Uninstall", lambda: self._plugin_uninstall(p.id), "danger", 9).pack(side="right", padx=4, ipadx=8)
+        for title, build in list(p.panels):
+            box = tk.Frame(c, bg=self._tok["card"]); box._st = {"bg": "card"}
+            box.pack(fill="x", padx=16, pady=(0, 14))
+            if title and title != p.name:
+                self._st_label(box, title, fg="muted", font=("ui", 9, "semi"), anchor="w").pack(fill="x", pady=(0, 4))
+            try:
+                build(box)
+            except Exception as e:
+                log_crash(f"plugin {p.id} panel", e)
+                self._st_label(box, f"panel failed: {e}", fg="bad", font=("mono", 9), anchor="w").pack(fill="x")
+
+    def _plugin_uninstall(self, pid):
+        p = self.plugins.plugins.get(pid)
+        if p is None:
+            return
+        if not messagebox.askyesno("Uninstall plugin", f"Remove {p.name} and delete its folder?\n\n{p.folder}"):
+            return
+        def work():
+            self.plugins.unload(pid)
+            folder = os.path.abspath(p.folder)
+            if os.path.dirname(folder) == os.path.abspath(plugins_dir()):
+                shutil.rmtree(folder, ignore_errors=True)
+            self.plugins.discover()
+            self.plugins._changed()
+            self._market_changed()
+            self.toast(f"Uninstalled {p.name}", "info")
+        self._run_bg(f"plugin-{pid}", work)
+
+    # -- Plugin Market page ------------------------------------------------
+    def _market_sources(self):
+        src = self.config.get("plugin_market_sources")
+        if not isinstance(src, list) or not src:
+            src = [PLUGIN_MARKET_DEFAULT]
+        return [s for s in (str(x).strip() for x in src) if s]
+
+    def build_market_tab(self):
+        wrap = self.make_scrollable(self.tab_market)
+        t = self._tok
+        self._market_items = []
+        self._market_busy = False
+        head = tk.Frame(wrap, bg=t["bg"]); head._st = {"bg": "bg"}
+        head.pack(fill="x", padx=26, pady=(22, 10))
+        self._st_label(head, "Plugin market", bg="bg", fg="hi", font=("display", 15)).pack(side="left")
+        self._st_button(head, "Refresh", self._market_refresh, "primary", 9).pack(side="right", ipady=3, ipadx=10)
+
+        so, sc = self._st_card(wrap, "Sources")
+        so.pack(fill="x", padx=26, pady=(0, 12))
+        self._st_label(sc, "One index URL per line. https:// and file:// both work.", fg="muted", font=("ui", 9),
+                       anchor="w").pack(fill="x", padx=16)
+        self.market_src_text = tk.Text(sc, height=3, font=_sf("mono", 9), bg=t["input"], fg=t["hi"], insertbackground=t["hi"],
+                                       bd=0, highlightthickness=1, highlightbackground=t["line"], highlightcolor=t["accent"], wrap="none")
+        self.market_src_text._st = {"bg": "input", "fg": "hi"}
+        self.market_src_text.pack(fill="x", padx=16, pady=(6, 8))
+        self.market_src_text.insert("1.0", "\n".join(self._market_sources()))
+        srow = tk.Frame(sc, bg=t["card"]); srow._st = {"bg": "card"}
+        srow.pack(fill="x", padx=12, pady=(0, 14))
+        self._st_button(srow, "Save sources", self._market_save_sources, "neutral", 9).pack(side="left", padx=4, ipadx=8)
+        self._st_button(srow, "Reset to official", self._market_reset_sources, "neutral", 9).pack(side="left", padx=4, ipadx=8)
+
+        frow = tk.Frame(wrap, bg=t["bg"]); frow._st = {"bg": "bg"}
+        frow.pack(fill="x", padx=26, pady=(0, 8))
+        self._st_label(frow, "Search", bg="bg", fg="muted", font=("ui", 9)).pack(side="left")
+        self.market_filter = tk.Entry(frow, font=_sf("ui", 10), bg=t["input"], fg=t["hi"], insertbackground=t["hi"], bd=0,
+                                      highlightthickness=1, highlightbackground=t["line"], highlightcolor=t["accent"])
+        self.market_filter._st = {"bg": "input", "fg": "hi"}
+        self.market_filter.pack(side="left", fill="x", expand=True, padx=(8, 12), ipady=5)
+        self.market_filter.bind("<KeyRelease>", lambda e: self._render_market())
+        self.market_status = self._st_label(frow, "Press Refresh to load the market.", bg="bg", fg="faint", font=("ui", 9))
+        self.market_status.pack(side="right")
+
+        self._market_list = tk.Frame(wrap, bg=t["bg"]); self._market_list._st = {"bg": "bg"}
+        self._market_list.pack(fill="x", padx=26, pady=(0, 24))
+        self.plugins.add_listener(self._market_changed)
+        if self.config.get("plugin_market_autoload", True):
+            self.root.after(1500, self._market_refresh)
+
+    def _market_save_sources(self):
+        lines = [l.strip() for l in self.market_src_text.get("1.0", "end").splitlines() if l.strip()]
+        bad = [l for l in lines if not l.lower().startswith(("https://", "http://", "file://"))]
+        if bad:
+            messagebox.showerror("Plugin market", "Not a URL:\n" + "\n".join(bad))
+            return
+        self.config["plugin_market_sources"] = lines or [PLUGIN_MARKET_DEFAULT]
+        self.save_settings()
+        self.toast("Market sources saved", "ok")
+        self._market_refresh()
+
+    def _market_reset_sources(self):
+        self.market_src_text.delete("1.0", "end")
+        self.market_src_text.insert("1.0", PLUGIN_MARKET_DEFAULT)
+        self._market_save_sources()
+
+    def _market_set_status(self, text, fg="faint"):
+        lbl = getattr(self, "market_status", None)
+        if lbl is not None:
+            self.ui(lambda: lbl.configure(text=text, fg=_studio_color(fg)))
+
+    def _market_refresh(self):
+        if getattr(self, "_market_busy", False):
+            return
+        self._market_busy = True
+        self._market_set_status("Loading...")
+        def work():
+            items, errs = [], []
+            for url in self._market_sources():
+                try:
+                    idx = market_fetch_index(url)
+                    for e in idx["plugins"]:
+                        e["_source_name"] = idx["name"]
+                        items.append(e)
+                except Exception as ex:
+                    errs.append(f"{url}: {ex}")
+                    plog("MARKET", f"index {url} failed: {ex}")
+            seen, uniq = set(), []
+            for e in items:
+                if e["id"] not in seen:
+                    seen.add(e["id"]); uniq.append(e)
+            self._market_items = uniq
+            self._market_busy = False
+            msg = f"{len(uniq)} plugin(s)" + (f", {len(errs)} source(s) failed" if errs else "")
+            self._market_set_status(msg, "bad" if errs and not uniq else "faint")
+            if errs and not uniq:
+                self.toast("Plugin market: " + errs[0][:120], "bad")
+            self.ui(self._render_market)
+        threading.Thread(target=work, daemon=True, name="market-refresh").start()
+
+    def _market_changed(self):
+        if getattr(self, "_market_list", None) is not None:
+            self.ui(self._render_market)
+
+    def _render_market(self):
+        host = getattr(self, "_market_list", None)
+        if host is None:
+            return
+        for w in host.winfo_children():
+            w.destroy()
+        flt = ""
+        try: flt = self.market_filter.get().strip().lower()
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+        shown = 0
+        for e in self._market_items:
+            blob = " ".join(str(e.get(k, "")) for k in ("id", "name", "author", "description")) + " " + " ".join(e.get("tags") or [])
+            if flt and flt not in blob.lower():
+                continue
+            self._market_card(host, e)
+            shown += 1
+        if not shown and self._market_items:
+            self._st_label(host, "Nothing matches that search.", bg="bg", fg="faint", font=("ui", 10)).pack(anchor="w", pady=8)
+        try: self._studio_restyle(target=host)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+
+    def _market_card(self, host, e):
+        t = self._tok
+        inst = self.plugins.plugins.get(e["id"])
+        o, c = self._st_card(host)
+        o.pack(fill="x", pady=(0, 12))
+        top = tk.Frame(c, bg=t["card"]); top._st = {"bg": "card"}
+        top.pack(fill="x", padx=16, pady=(14, 0))
+        self._st_label(top, e.get("name") or e["id"], fg="hi", font=("ui", 12, "semi")).pack(side="left")
+        self._st_label(top, f"  v{e.get('version', '?')}  by {e.get('author', 'unknown')}", fg="faint", font=("ui", 9)).pack(side="left", pady=(3, 0))
+        if e.get("_source") == PLUGIN_MARKET_DEFAULT:
+            self._st_label(top, "  ✓ official", fg="ok", font=("ui", 9, "semi")).pack(side="left", pady=(3, 0))
+        if e.get("description"):
+            self._st_label(c, e["description"], fg="muted", font=("ui", 9), anchor="w", justify="left",
+                           wraplength=760).pack(fill="x", padx=16, pady=(4, 0))
+        meta = []
+        if e.get("tags"): meta.append("  ".join("#" + str(x) for x in e["tags"]))
+        if e.get("commands"): meta.append("adds " + " ".join("!" + str(x).lstrip("!") for x in e["commands"]))
+        meta.append("from " + str(e.get("_source_name", "")))
+        self._st_label(c, "   ·   ".join(meta), fg="faint", font=("ui", 8), anchor="w", justify="left",
+                       wraplength=760).pack(fill="x", padx=16, pady=(6, 0))
+        row = tk.Frame(c, bg=t["card"]); row._st = {"bg": "card"}
+        row.pack(fill="x", padx=12, pady=(10, 14))
+        if inst is None:
+            self._st_button(row, "Install", lambda: self._market_install(e), "primary", 9).pack(side="left", padx=4, ipadx=10)
+        else:
+            have = inst.manifest.get("version", "0")
+            if _version_tuple(e.get("version")) > _version_tuple(have):
+                self._st_button(row, f"Update {have} → {e.get('version')}", lambda: self._market_install(e), "primary", 9).pack(side="left", padx=4, ipadx=10)
+            else:
+                self._st_label(row, f"✓ Installed (v{have})", fg="ok", font=("ui", 9, "semi")).pack(side="left", padx=6)
+                self._st_button(row, "Reinstall", lambda: self._market_install(e), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+            self._st_button(row, "Uninstall", lambda: self._plugin_uninstall(e["id"]), "danger", 9).pack(side="right", padx=4, ipadx=8)
+        if e.get("homepage"):
+            self._st_button(row, "Homepage", lambda: self._market_open_home(e["homepage"]), "neutral", 9).pack(side="left", padx=4, ipadx=8)
+
+    def _market_open_home(self, url):
+        if str(url).lower().startswith(("https://", "http://")):
+            import webbrowser
+            webbrowser.open(url)
+
+    def _market_install(self, e):
+        name = e.get("name") or e["id"]
+        if e.get("_source") != PLUGIN_MARKET_DEFAULT and not messagebox.askyesno(
+                "Install plugin",
+                f"Install {name} {e.get('version', '')} by {e.get('author', 'unknown')}?\n\n"
+                "Plugins run Python code with the same access to your PC as YT2VM. "
+                "This one is not from the official market, so only continue if you trust the source:\n\n"
+                f"{e.get('_source')}"):
+            return
+        self._market_set_status(f"Installing {name}...")
+        def work():
+            try:
+                self.plugins.unload(e["id"])
+                market_install(e, progress=lambda s: self._market_set_status(s))
+                self.plugins._enabled_map()[e["id"]] = True
+                self.save_settings()
+                self.plugins.discover()
+                ok = self.plugins.load(e["id"])
+                self._market_set_status(f"Installed {name}" if ok else f"{name} installed but failed to load - see Plugins page",
+                                        "ok" if ok else "bad")
+                self.toast(f"Installed {name}" if ok else f"{name} failed to load", "ok" if ok else "bad")
+            except Exception as ex:
+                log_crash(f"market install {e['id']}", ex)
+                self._market_set_status(f"Install failed: {ex}", "bad")
+                self.toast(f"Install failed: {ex}", "bad")
+                self.plugins.discover()
+                if self.plugins.is_enabled(e["id"]):
+                    self.plugins.load(e["id"])
+            self._market_changed()
+        threading.Thread(target=work, daemon=True, name=f"market-install-{e['id']}").start()
+
     def build_diagnostics_tab(self):
         wrap = tk.Frame(self.tab_diag, bg="#09090B"); wrap.pack(fill="both", expand=True, padx=26, pady=18)
         top = tk.Frame(wrap, bg="#09090B"); top.pack(fill="x")
@@ -10826,6 +11729,8 @@ class ChatPlaysApp:
     def _split_chain(self, msg, depth=0, trusted=False):
         p = self.command_prefix or "!"
         known = set(_KNOWN_CMDS)
+        pm = getattr(self, "plugins", None)
+        if pm is not None: known.update(pm.command_names())
         for k in self.custom_commands:
             if str(k).startswith(p):
                 known.add(str(k)[len(p):].lower())
@@ -11055,6 +11960,14 @@ class ChatPlaysApp:
                 if is_admin: action_chain.append(("revert", "", user))
                 else: self.process_vote(user, f"{self.command_prefix}revert", 2)
                 continue
+            if cmd in ("!plugins", "!plugin"):
+                if is_owner: self._plugin_owner_cmd(arg)
+                continue
+            _pm = getattr(self, "plugins", None)
+            if _pm is not None:
+                _pm.emit("command", user, cmd, arg)
+                if _pm.handle_command(cmd, arg, user, is_mod or is_admin, is_owner, _src):
+                    continue
             valid_user_cmds = ["!run", "!startvm", "!type", "!send", "!key", "!combo", "!keydown", "!keyup", "!move", "!abs", "!click", "!rclick", "!mclick", "!scroll", "!drag", "!wait", "!cmd", "!roll", "!coinflip"]
             if cmd in valid_user_cmds: action_chain.append((cmd, arg, user))
         if action_chain and not is_admin:
@@ -11227,6 +12140,7 @@ class ChatPlaysApp:
                                     _trace(_ex_where(), _ex)
                                 console_log("CHAT", f"[{c.author.name}]{' (owner)' if is_owner else (' (mod)' if is_mod else '')}: {_shown}")
                                 append_to_all_msgs_log(c.author.name, _shown)
+                                self._plugin_chat(c.author.name, c.message, is_mod, is_owner, "youtube")
                                 if self.listening_to_chat and not yt_cmds_off:
                                     try: self.parse_command(c.message, c.author.name, is_mod, is_owner)
                                     except Exception as parse_ex:

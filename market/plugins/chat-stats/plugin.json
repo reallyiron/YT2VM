@@ -1,0 +1,12 @@
+{
+    "id": "chat-stats",
+    "name": "Chat Stats",
+    "version": "1.0.0",
+    "author": "reallyiron",
+    "description": "Counts messages per viewer across YouTube and Discord. Adds !top and !mystats and a live leaderboard panel.",
+    "api": 1,
+    "entry": "plugin.py",
+    "tags": ["chat", "stats"],
+    "commands": ["top", "mystats", "resetstats"],
+    "homepage": "https://github.com/reallyiron/YT2VM"
+}

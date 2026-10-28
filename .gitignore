@@ -1,0 +1,3 @@
+plugins/*
+!plugins/README.md
+__pycache__/

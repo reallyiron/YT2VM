@@ -31,6 +31,25 @@ Attention: `pywin32` works on Windows only and should be installed if you use th
 - VM Integration: Designed to work with VirtualBox-powered environments.
 - OBS Support: Can integrate with OBS WebSocket for automation.
 - Flask-Based Control: Includes a lightweight Python web interface.
+- Plugins: Add your own chat commands, chat reactions, timers and GUI panels without touching `yt2vm.py`.
+- Plugin Market: Browse and install plugins straight from the app (Tools → Plugin Market).
+
+# Plugins
+
+Plugins are folders inside `plugins/` next to `yt2vm.py`. Manage them on **Tools → Plugins**, or install them from **Tools → Plugin Market**. A plugin can be as small as:
+
+```python
+# plugins/greeter/plugin.py   (plus a plugin.json with "id": "greeter")
+def setup(api):
+    @api.command("hi", help="Say hi")
+    def hi(ctx):
+        ctx.reply(f"Hi {ctx.user}!")
+```
+
+- [docs/plugins.md](docs/plugins.md): installing, writing plugins, and the full API
+- [docs/plugin-market.md](docs/plugin-market.md): using the market, publishing a plugin, and hosting your own market
+
+Plugins run with the same access to your PC as YT2VM, so only install ones you trust.
 
 # FAQ
 

@@ -1,0 +1,12 @@
+{
+    "id": "shortcuts",
+    "name": "Shortcuts",
+    "version": "1.0.0",
+    "author": "reallyiron",
+    "description": "Friendly one-word commands for common Windows shortcuts: !copy, !paste, !undo, !selectall, !save, !taskmgr and more.",
+    "api": 1,
+    "entry": "plugin.py",
+    "tags": ["input", "windows"],
+    "commands": ["copy", "paste", "cut", "undo", "redo", "selectall", "save", "closetab", "newtab", "desktop", "taskmgr", "explorer", "alttab"],
+    "homepage": "https://github.com/reallyiron/YT2VM"
+}

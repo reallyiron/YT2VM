@@ -6144,7 +6144,7 @@ PLUGIN_DIR_NAME = "plugins"
 # The one plugin market: the YT2VM market server. The Plugin Market page installs from <server>/index.json and
 # the Submit button uploads to <server>/api/submit. Empty = no market in this build.
 # YT2VM_MARKET_SERVER overrides it, for testing a server before it goes live.
-PLUGIN_MARKET_SERVER = ""
+PLUGIN_MARKET_SERVER = "https://plugins.reallyiron.net"
 
 
 def market_server_url():

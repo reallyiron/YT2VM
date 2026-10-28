@@ -1262,7 +1262,8 @@ mclick modhelp move music mute nuke pardon pausechat pausesong pin ping protect 
 remake2 replay restartnow restartvm resumesong revert revertnow roll run s say scene scroll send settle shout shutdown
 skip skipsong slowmode snapshotnow startvm stats stopsong strikes swichsnapshot switchsnapshot t testanticopyright
 timeout title trace type unban unlock unlockall unmute uptime vmstatus vmswitch volumedown volumeup votedrop voterandom
-votereplay voteshuffle votestop w wait warn whois lclick tob64 eb64 unblock unb64 plugins plugin""".split())
+votereplay voteshuffle votestop w wait warn whois lclick tob64 eb64 unblock unb64 plugins plugin
+help lock screen screenshot""".split())
 
 
 _B64_ALPHA_RUN = re.compile(r"[A-Za-z0-9+/]{64,}={0,2}")
@@ -1648,6 +1649,11 @@ class DiscordBridge:
         if not play or int(message.channel.id) != play:
             return
         content = str(message.content or "")
+        try:
+            for mem in getattr(message, "mentions", []) or []:
+                content = re.sub(rf"<@!?{int(mem.id)}>", _dc_name(mem), content)
+        except Exception:
+            pass
         if not content.strip():
             if not getattr(message, "attachments", None) and not getattr(message, "embeds", None):
                 self._empty_seen += 1
@@ -1696,23 +1702,104 @@ class DiscordBridge:
                 self.stats["errors"] += 1
                 log_crash("discord ingest", e)
 
+    _VERB = {"type": "typed", "send": "sent", "key": "pressed", "combo": "pressed combo",
+             "keydown": "held", "keyup": "released", "click": "clicked", "rclick": "right-clicked",
+             "mclick": "middle-clicked", "move": "moved the mouse", "abs": "moved the mouse",
+             "scroll": "scrolled", "drag": "dragged the mouse", "run": "ran", "cmd": "ran in CMD",
+             "roll": "rolled the dice", "coinflip": "flipped a coin", "startvm": "started the VM"}
+    _NOARG = {"click", "rclick", "mclick", "roll", "coinflip", "scroll", "move", "abs", "drag"}
+
     def pressed(self, cmd, arg, user):
         now = time.time()
         if not self._pressed:
             self._first_press = now
         self._last_press = now
-        a = str(arg or "").replace("`", "'").replace("\n", " ")
-        if len(a) > 80:
-            a = a[:77] + "..."
         who = str(user)[3:] if str(user).startswith("dc_") else str(user)
-        c = str(cmd)
-        if not c.startswith("!"):
-            c = "!" + c
-        self._pressed.append(f"`{c}{(' ' + a) if a else ''}` - {who}")
-        self.log_line(f"executed {c} {a} for {user}")
+        base = str(cmd).lower().lstrip("!")
+        verb = self._VERB.get(base, "ran")
+        a = str(arg or "").replace("`", "'").replace("\n", " ").strip()
+        if base in self._NOARG or not a:
+            line = f"{who} {verb}"
+        elif len(a) > 120:
+            line = f"{who} {verb}: `!{base}` (too long for Discord to show here, but your command will be run)"
+        else:
+            line = f"{who} {verb} `{a}`"
+        self._pressed.append(line)
+        self.log_line(f"executed !{base} {a} for {user}")
+
+    def screenshot_now(self, requester):
+        loop = self.loop
+        if loop is None or self.client is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._do_screenshot(requester), loop)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+
+    async def _do_screenshot(self, requester):
+        ch = self._chan(self.client, "discord_channel_id")
+        if ch is None:
+            return
+        who = str(requester)[3:] if str(requester).startswith("dc_") else str(requester)
+        loop = asyncio.get_running_loop()
+        for attempt in (1, 2):
+            path, why = None, ""
+            try:
+                path, why = await loop.run_in_executor(None, self.app._capture_vm_png)
+            except Exception as e:
+                path, why = None, f"{type(e).__name__}"
+            if not path:
+                if why in ("VM is not running", "VNC not connected", "VNC capture unavailable"):
+                    await self._send(ch, f"Can't take a screenshot: {why}.")
+                    return
+                await asyncio.sleep(0.6)
+                continue
+            ok = await self._send(ch, f"Screenshot (asked by {who})", path)
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+            if ok:
+                self.stats["shots"] += 1
+                return
+            await asyncio.sleep(0.6)
+        await self._send(ch, "Uploading image didnt work tried 2 times Still not working")
 
     def announce(self, text):
         self._announce.append(str(text))
+
+    def maint_announce(self, text, shot=False):
+        if not shot:
+            self.announce(text)
+            return
+        loop = self.loop
+        if loop is None or self.client is None:
+            self.announce(text)
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._announce_shot(str(text)), loop)
+        except Exception:
+            self.announce(text)
+
+    async def _announce_shot(self, text):
+        ch = self._chan(self.client, "discord_channel_id")
+        if ch is None:
+            return
+        path, why = None, ""
+        if self.cfg("discord_screens", True):
+            loop = asyncio.get_running_loop()
+            try:
+                path, why = await loop.run_in_executor(None, self.app._capture_vm_png)
+            except Exception as e:
+                path, why = None, f"{type(e).__name__}"
+        if not path and why:
+            text += f"\n_(no screenshot: {why})_"
+        await self._send(ch, text[:1990], path)
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
     def log_line(self, text):
         if not self.cfg("discord_log_all", True) and not str(text).startswith("[!]"):
@@ -1821,11 +1908,16 @@ class DiscordBridge:
                 lines.append(self._pressed.popleft())
             self._last_shot = time.time()
             if ch is not None:
-                shown = lines[-10:]
-                head = "**Pressed:**"
-                if len(lines) > len(shown):
-                    head += f" ({len(lines) - len(shown)} earlier not shown)"
-                text = head + "\n" + "\n".join(shown)
+                shown, used, budget = [], 0, 1850
+                for ln in lines:
+                    if used + len(ln) + 1 > budget:
+                        break
+                    shown.append(ln)
+                    used += len(ln) + 1
+                text = "\n".join(shown)
+                hidden = len(lines) - len(shown)
+                if hidden > 0:
+                    text += f"\n+{hidden} more"
                 path, why = None, ""
                 if self.cfg("discord_screens", True):
                     loop = asyncio.get_running_loop()
@@ -1838,6 +1930,11 @@ class DiscordBridge:
                     elif why:
                         text += f"\n_(no screenshot: {why})_"
                 await self._send(ch, text[:1990], path)
+                if path:
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
         if self._logq and now - self._last_log >= self.LOG_GAP:
             self._last_log = now
             ch = self._chan(client, "discord_log_channel_id")
@@ -1872,7 +1969,7 @@ def payload_is_dangerous(text):
 banned_words = []
 custom_commands = {}
 
-_dkd = {"VERSION": 4, "RAW":{"esc":[1],"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"-":[12],"=":[13],"backspace":[14],"tab":[15],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"[":[26],"]":[27],"enter":[28],"ctrl":[29],"lctrl":[29],"rctrl":[224,29],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],";":[39],"'":[40],"`":[41],"shift":[42],"lshift":[42],"\\":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],",":[51],".":[52],"/":[53],"rshift":[54],"alt":[56],"lalt":[56],"ralt":[224,56],"space":[57],"capslock":[58],"f1":[59],"f2":[60],"f3":[61],"f4":[62],"f5":[63],"f6":[64],"f7":[65],"f8":[66],"f9":[67],"f10":[68],"f11":[87],"f12":[88],"numlock":[69],"scrolllock":[70],"home":[224,71],"up":[224,72],"pageup":[224,73],"left":[224,75],"right":[224,77],"end":[224,79],"down":[224,80],"pagedown":[224,81],"insert":[224,82],"delete":[224,83],"del":[224,83],"win":[224,91],"lwin":[224,91],"rwin":[224,92],"cmd":[224,91],"super":[224,91],"menu":[224,93],"plus":[13],"minus":[12],"return":[28],"numpad0":[82],"numpad1":[79],"numpad2":[80],"numpad3":[81],"numpad4":[75],"numpad5":[76],"numpad6":[77],"numpad7":[71],"numpad8":[72],"numpad9":[73],"numpad_dot":[83],"numpad_enter":[224,28],"numpad_plus":[78],"numpad_minus":[74],"numpad_mul":[55],"numpad_div":[224,53],"printscreen":[224,55,224,183],"pause":[225,29,69,225,157,197],"vol_mute":[224,32],"vol_down":[224,46],"vol_up":[224,48],"media_next":[224,25],"media_prev":[224,16],"media_stop":[224,36],"media_play_pause":[224,34]},"LAYOUTS":{"US":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"\\":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53]},"shift":{"!":[2],"@":[3],"#":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"|":[43],":":[39],"\"":[40],"~":[41],"<":[51],">":[52],"?":[53]},"altgr":{}},"UK":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"#":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53],"\\":[86]},"shift":{"!":[2],"\"":[3],"£":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"~":[43],":":[39],"@":[40],"¬":[41],"<":[51],">":[52],"?":[53],"|":[86]},"altgr":{"€":[5],"\\":[86]}},"DANISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"æ":[39],"ø":[40],"½":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Æ":[39],"Ø":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[86],"~":[27],"€":[18],"µ":[50]}},"GERMAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"z":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"y":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"ß":[12],"´":[13],"ü":[26],"+":[27],"#":[43],"ö":[39],"ä":[40],"^":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"§":[4],"$":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Ü":[26],"*":[27],"'":[43],"Ö":[39],"Ä":[40],"°":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"²":[3],"³":[4],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"@":[16],"€":[18],"~":[27],"|":[86],"µ":[50]}},"FRENCH":{"noshift":{"&":[2],"é":[3],"\"":[4],"'":[5],"(":[6],"-":[7],"è":[8],"_":[9],"ç":[10],"à":[11],")":[12],"=":[13],"a":[16],"z":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"^":[26],"$":[27],"q":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"m":[39],"ù":[40],"²":[41],"*":[43],"w":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],",":[50],";":[51],":":[52],"!":[53],"<":[86]," ":[57]},"shift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"°":[12],"+":[13],"¨":[26],"£":[27],"%":[40],"µ":[43],"?":[50],".":[51],"/":[52],"§":[53],">":[86]},"altgr":{"~":[3],"#":[4],"{":[5],"[":[6],"|":[7],"`":[8],"\\":[9],"^":[10],"@":[11],"]":[12],"}":[13],"€":[18]}},"TURKISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"ı":[23],"o":[24],"p":[25],"ğ":[26],"ü":[27],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"ş":[39],"i":[40],"\"":[41],",":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],"ö":[51],"ç":[52],".":[53],"<":[86]," ":[57],"*":[12],"-":[13]},"shift":{"!":[2],"'":[3],"^":[4],"+":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"_":[13],"Ğ":[26],"Ü":[27],"Ş":[39],"İ":[40],"é":[41],";":[43],"Ö":[51],"Ç":[52],":":[53],">":[86]},"altgr":{"@":[3],"#":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[13],"€":[18],"~":[41],"`":[43]}},"NORWEGIAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"\\":[13],"å":[26],"¨":[27],"@":[43],"ø":[39],"æ":[40],"|":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ø":[39],"Æ":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"~":[27],"€":[18],"µ":[50]}},"SWEDISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"ö":[39],"ä":[40],"§":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ö":[39],"Ä":[40],"½":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"~":[27],"|":[86],"€":[18],"µ":[50]}}}}
+_dkd = {"VERSION":5,"RAW":{"esc":[1],"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"-":[12],"=":[13],"backspace":[14],"tab":[15],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"[":[26],"]":[27],"enter":[28],"ctrl":[29],"lctrl":[29],"rctrl":[224,29],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],";":[39],"'":[40],"`":[41],"shift":[42],"lshift":[42],"\\":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],",":[51],".":[52],"/":[53],"rshift":[54],"alt":[56],"lalt":[56],"ralt":[224,56],"space":[57],"capslock":[58],"f1":[59],"f2":[60],"f3":[61],"f4":[62],"f5":[63],"f6":[64],"f7":[65],"f8":[66],"f9":[67],"f10":[68],"f11":[87],"f12":[88],"numlock":[69],"scrolllock":[70],"home":[224,71],"up":[224,72],"pageup":[224,73],"left":[224,75],"right":[224,77],"end":[224,79],"down":[224,80],"pagedown":[224,81],"insert":[224,82],"delete":[224,83],"del":[224,83],"win":[224,91],"lwin":[224,91],"rwin":[224,92],"cmd":[224,91],"super":[224,91],"menu":[224,93],"plus":[13],"minus":[12],"return":[28],"numpad0":[82],"numpad1":[79],"numpad2":[80],"numpad3":[81],"numpad4":[75],"numpad5":[76],"numpad6":[77],"numpad7":[71],"numpad8":[72],"numpad9":[73],"numpad_dot":[83],"numpad_enter":[224,28],"numpad_plus":[78],"numpad_minus":[74],"numpad_mul":[55],"numpad_div":[224,53],"printscreen":[224,55,224,183],"pause":[225,29,69,225,157,197],"vol_mute":[224,32],"vol_down":[224,46],"vol_up":[224,48],"media_next":[224,25],"media_prev":[224,16],"media_stop":[224,36],"media_play_pause":[224,34]},"LAYOUTS":{"US":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"\\":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53]},"shift":{"!":[2],"@":[3],"#":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"|":[43],":":[39],"\"":[40],"~":[41],"<":[51],">":[52],"?":[53]},"altgr":{}},"UK":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"-":[12],"=":[13],"[":[26],"]":[27],"#":[43],";":[39],"'":[40],"`":[41],",":[51],".":[52],"/":[53],"\\":[86]},"shift":{"!":[2],"\"":[3],"£":[4],"$":[5],"%":[6],"^":[7],"&":[8],"*":[9],"(":[10],")":[11],"_":[12],"+":[13],"{":[26],"}":[27],"~":[43],":":[39],"@":[40],"¬":[41],"<":[51],">":[52],"?":[53],"|":[86]},"altgr":{"€":[5]}},"DANISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"æ":[39],"ø":[40],"½":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Æ":[39],"Ø":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[86],"|":[13],"~":[27],"€":[18],"µ":[50]}},"GERMAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"z":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"y":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"ß":[12],"´":[13],"ü":[26],"+":[27],"#":[43],"ö":[39],"ä":[40],"^":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"§":[4],"$":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Ü":[26],"*":[27],"'":[43],"Ö":[39],"Ä":[40],"°":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"²":[3],"³":[4],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"@":[16],"€":[18],"~":[27],"|":[86],"µ":[50]}},"FRENCH":{"noshift":{"&":[2],"é":[3],"\"":[4],"'":[5],"(":[6],"-":[7],"è":[8],"_":[9],"ç":[10],"à":[11],")":[12],"=":[13],"a":[16],"z":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"^":[26],"$":[27],"q":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"m":[39],"ù":[40],"²":[41],"*":[43],"w":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],",":[50],";":[51],":":[52],"!":[53],"<":[86]," ":[57]},"shift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"°":[12],"+":[13],"¨":[26],"£":[27],"%":[40],"µ":[43],"?":[50],".":[51],"/":[52],"§":[53],">":[86]},"altgr":{"~":[3],"#":[4],"{":[5],"[":[6],"|":[7],"`":[8],"\\":[9],"^":[10],"@":[11],"]":[12],"}":[13],"€":[18]}},"TURKISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"ı":[23],"o":[24],"p":[25],"ğ":[26],"ü":[27],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"ş":[39],"i":[40],"\"":[41],",":[43],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50],"ö":[51],"ç":[52],".":[53],"<":[86]," ":[57],"*":[12],"-":[13]},"shift":{"!":[2],"'":[3],"^":[4],"+":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"_":[13],"Ğ":[26],"Ü":[27],"Ş":[39],"İ":[40],"é":[41],";":[43],"Ö":[51],"Ç":[52],":":[53],">":[86],"I":[23]},"altgr":{"@":[16],"#":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"|":[13],"€":[18],"~":[27],"`":[43],"´":[39],"¨":[26]}},"NORWEGIAN":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"\\":[13],"å":[26],"¨":[27],"ø":[39],"æ":[40],"|":[41],",":[51],".":[52],"-":[53],"<":[86],"'":[43]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ø":[39],"Æ":[40],"§":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"~":[27],"€":[18],"µ":[50],"@":[3],"´":[13]}},"SWEDISH":{"noshift":{"1":[2],"2":[3],"3":[4],"4":[5],"5":[6],"6":[7],"7":[8],"8":[9],"9":[10],"0":[11],"q":[16],"w":[17],"e":[18],"r":[19],"t":[20],"y":[21],"u":[22],"i":[23],"o":[24],"p":[25],"a":[30],"s":[31],"d":[32],"f":[33],"g":[34],"h":[35],"j":[36],"k":[37],"l":[38],"z":[44],"x":[45],"c":[46],"v":[47],"b":[48],"n":[49],"m":[50]," ":[57],"+":[12],"´":[13],"å":[26],"¨":[27],"'":[43],"ö":[39],"ä":[40],"§":[41],",":[51],".":[52],"-":[53],"<":[86]},"shift":{"!":[2],"\"":[3],"#":[4],"¤":[5],"%":[6],"&":[7],"/":[8],"(":[9],")":[10],"=":[11],"?":[12],"`":[13],"Å":[26],"^":[27],"*":[43],"Ö":[39],"Ä":[40],"½":[41],";":[51],":":[52],"_":[53],">":[86]},"altgr":{"@":[3],"£":[4],"$":[5],"{":[8],"[":[9],"]":[10],"}":[11],"\\":[12],"~":[27],"|":[86],"€":[18],"µ":[50]}}}}
 
 _needs_update = False
 if os.path.exists(scancodes_file):
@@ -1890,6 +1987,43 @@ if _needs_update:
 
 scancodes = _loaded_data["RAW"]
 _layouts = _loaded_data["LAYOUTS"]
+
+_DEAD_KEYS = {"DANISH": "\u00b4`\u00a8^~", "NORWEGIAN": "\u00b4`\u00a8^~", "SWEDISH": "\u00b4`\u00a8^~",
+              "GERMAN": "^\u00b4`", "FRENCH": "\u00a8~`", "TURKISH": "^\u00a8~`\u00b4"}
+
+
+def is_dead_key(char, layout):
+    if char not in _DEAD_KEYS.get(str(layout or "").upper(), ""):
+        return False
+    t = _layouts.get(str(layout or "").upper()) or {}
+    if str(layout).upper() == "FRENCH" and char == "^":
+        return False
+    return any(char in (t.get(lv) or {}) for lv in ("noshift", "shift", "altgr"))
+
+
+def _wait_seconds(arg, default=0.5, cap=30.0):
+    s = str(arg or "").strip().lower().replace(" ", "")
+    if not s:
+        return default
+    try:
+        if s.endswith("ms"):
+            v = float(s[:-2]) / 1000.0
+        elif s.endswith("sec"):
+            v = float(s[:-3])
+        elif s.endswith("secs"):
+            v = float(s[:-4])
+        elif s.endswith("s"):
+            v = float(s[:-1])
+        elif s.endswith("m"):
+            v = float(s[:-1]) * 60.0
+        elif s.endswith("min"):
+            v = float(s[:-3]) * 60.0
+        else:
+            v = float(s)
+    except Exception:
+        return default
+    return max(0.0, min(v, cap))
+
 
 def get_typed_codes(char, layout="US"):
     SHIFT = [[0x2A]]
@@ -3000,6 +3134,8 @@ class VMwareController:
                                     try: self.client.keyUp(mod)
                                     except Exception as _ex:
                                         _trace(_ex_where(), _ex)
+                    if ch not in (" ", chr(10), chr(9)) and is_dead_key(ch, lay):
+                        self.client.keyPress("space")
                     if per_char: time.sleep(per_char)
                 except Exception as e:
                     fails += 1
@@ -4281,6 +4417,57 @@ class SidebarNav(tk.Frame):
         if self._current is None:
             self.select(frame)
         return frame
+
+    def frame_for(self, label):
+        want = str(label).strip()
+        for f, l in self._pages:
+            if l.strip() == want:
+                return f
+        return None
+
+    def remove(self, frame):
+        label = self.label_of(frame)
+        self._pages = [(f, l) for (f, l) in self._pages if f is not frame]
+        it = self._items.pop(label, None)
+        self._buttons.pop(label, None)
+        if it is not None:
+            try: it[0].destroy()
+            except Exception: pass
+        if self._current is frame:
+            self._current = None
+            if self._pages:
+                self.select(self._pages[0][0])
+        try: frame.destroy()
+        except Exception: pass
+
+    def set_row_visible(self, label, visible):
+        it = self._items.get(label)
+        if not it:
+            return
+        row = it[0]
+        try:
+            if not visible:
+                row.pack_forget()
+                if self._current is it[4]:
+                    for f, l in self._pages:
+                        other = self._items.get(l)
+                        if f is not it[4] and other is not None and other[0].winfo_manager():
+                            self.select(f)
+                            break
+            else:
+                gf = row.master
+                rank = getattr(row, "_nav_rank", 999)
+                before = None
+                for other in gf.pack_slaves():
+                    if getattr(other, "_nav_rank", 999) > rank:
+                        before = other
+                        break
+                if before is not None:
+                    row.pack(fill="x", padx=(10, 12), pady=1, before=before)
+                else:
+                    row.pack(fill="x", padx=(10, 12), pady=1)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
 
     def set_badge(self, label, text):
         it = self._items.get(label)
@@ -6139,8 +6326,9 @@ if platform.system() != "Darwin":
 # plugin.json manifest and a python entry file (plugin.py by default) that
 # defines  setup(api)  and optionally  teardown(api).  See docs/plugins.md.
 
-PLUGIN_API_VERSION = 1
+PLUGIN_API_VERSION = 2
 PLUGIN_DIR_NAME = "plugins"
+PLUGIN_SINGLE_EXTS = (".py", ".y2vp")
 # The one plugin market: the YT2VM market server. The Plugin Market page installs from <server>/index.json and
 # the Submit button uploads to <server>/api/submit. Empty = no market in this build.
 # YT2VM_MARKET_SERVER overrides it, for testing a server before it goes live.
@@ -6155,7 +6343,7 @@ _PLUGIN_EVENTS = ("ready", "chat", "command", "shutdown")
 # the viewer action commands ctx.run() may queue (same list parse_command lets viewers chain)
 _PLUGIN_ACTION_CMDS = ("!run", "!startvm", "!type", "!send", "!key", "!combo", "!keydown", "!keyup", "!move", "!abs",
                        "!click", "!rclick", "!mclick", "!scroll", "!drag", "!wait", "!cmd", "!roll", "!coinflip")
-_PLUGIN_ALIASES = {"!c": "!combo", "!k": "!key", "!t": "!type", "!s": "!send", "!m": "!move", "!d": "!drag", "!w": "!wait",
+_PLUGIN_ALIASES = {"!c": "!combo", "!k": "!key", "!t": "!type", "!m": "!move", "!d": "!drag", "!w": "!wait",
                    "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick"}
 
 
@@ -6198,6 +6386,51 @@ def read_plugin_manifest(folder):
     return man
 
 
+def _btn_text(c):
+    t = getattr(c, "_text", None)
+    if t is not None:
+        return str(t)
+    try:
+        return str(c.cget("text"))
+    except Exception:
+        return ""
+
+
+def _hide_widget(c):
+    mgr = ""
+    info = None
+    try:
+        mgr = c.winfo_manager()
+        if mgr == "pack":
+            info = c.pack_info()
+            c.pack_forget()
+        elif mgr == "grid":
+            info = c.grid_info()
+            c.grid_forget()
+        elif mgr == "place":
+            info = c.place_info()
+            c.place_forget()
+    except Exception:
+        pass
+    return (mgr, info)
+
+
+def _show_widget(c, saved):
+    mgr, info = saved
+    if not info:
+        return
+    clean = {k: v for k, v in dict(info).items() if k != "in"}
+    try:
+        if mgr == "pack":
+            c.pack(**clean)
+        elif mgr == "grid":
+            c.grid(**clean)
+        elif mgr == "place":
+            c.place(**clean)
+    except Exception:
+        pass
+
+
 class PluginContext:
     """What a command handler receives. Built per command call."""
 
@@ -6215,6 +6448,14 @@ class PluginContext:
 
     def reply(self, text):
         self._plugin.api.say(text)
+        if self.source == "discord":
+            app = self._plugin.manager.app
+            br = getattr(app, "discord", None)
+            if br is not None and br.running:
+                try:
+                    br.announce(f"[{self._plugin.name}] {text}")
+                except Exception:
+                    pass
 
     def run(self, chain):
         """Queue VM actions (!type, !key, !combo, ...) on behalf of the user who ran the command.
@@ -6260,6 +6501,134 @@ class PluginAPI:
         self._plugin.panels.append((title or self._plugin.name, build_fn))
         self._mgr._changed()
 
+    # -- tabs & buttons (API v2) -------------------------------------------
+    def _ui_ready(self):
+        return getattr(self.app, "tabview", None) is not None
+
+    def _do_ui(self, fn):
+        if self._ui_ready():
+            return self.app.ui(fn)
+        self._mgr._defer(self._plugin, fn)
+        return None
+
+    def add_tab(self, title, build_fn=None, group="TOOLS"):
+        """Add a new sidebar tab. build_fn(frame) draws its contents. Removed automatically on unload."""
+        title = str(title).strip() or self._plugin.name
+        def _mk():
+            nav = getattr(self.app, "tabview", None)
+            if nav is None:
+                return None
+            frame = ttk.Frame(nav, style="TFrame")
+            if build_fn:
+                try:
+                    build_fn(frame)
+                except Exception as e:
+                    log_crash(f"plugin {self.id} add_tab", e)
+            nav.add(frame, text="  " + title + "  ")
+            self._plugin.ui_tabs.append((title, frame))
+            try:
+                self.app._studio_restyle(target=frame)
+            except Exception:
+                pass
+            return frame
+        return self._do_ui(_mk)
+
+    def remove_tab(self, title):
+        """Remove a tab this plugin added, by its title."""
+        want = str(title).strip()
+        def _mk():
+            nav = getattr(self.app, "tabview", None)
+            if nav is None:
+                return
+            for item in list(self._plugin.ui_tabs):
+                t, frame = item
+                if t == want:
+                    try:
+                        nav.remove(frame)
+                    except Exception:
+                        pass
+                    self._plugin.ui_tabs.remove(item)
+        self._do_ui(_mk)
+
+    def add_button(self, page, text, fn, variant="neutral"):
+        """Add a button to a page (a frame from add_tab/page(), or a tab title). Removed automatically on unload."""
+        def _cb():
+            try:
+                fn()
+            except Exception as e:
+                log_crash(f"plugin {self.id} button {text!r}", e)
+        def _mk():
+            nav = getattr(self.app, "tabview", None)
+            if nav is None:
+                return None
+            if hasattr(page, "winfo_children"):
+                target = page
+            else:
+                target = nav.frame_for("  " + str(page) + "  ") or nav.frame_for(str(page))
+            if target is None:
+                plog("PLUGIN", f"{self.id}: add_button could not find page {page!r}")
+                return None
+            b = self.app._st_button(target, str(text), _cb, variant, 10)
+            b.pack(anchor="w", padx=16, pady=6, ipady=3, ipadx=10)
+            self._plugin.ui_buttons.append(b)
+            return b
+        return self._do_ui(_mk)
+
+    def hide_tab(self, title):
+        """Hide a built-in (or any) tab by its title. Restored automatically on unload."""
+        key = str(title).strip()
+        def _mk():
+            nav = getattr(self.app, "tabview", None)
+            if nav is None:
+                return
+            nav.set_row_visible(key, False)
+            if key not in self._plugin.hidden_tabs:
+                self._plugin.hidden_tabs.append(key)
+        self._do_ui(_mk)
+
+    def hide_button(self, text, page=None):
+        """Hide a button by its text, on one page or anywhere. Restored automatically on unload."""
+        want = str(text).strip().lower()
+        def _mk():
+            nav = getattr(self.app, "tabview", None)
+            if nav is None:
+                return
+            if page is None:
+                frames = [f for f, _l in nav._pages]
+            elif hasattr(page, "winfo_children"):
+                frames = [page]
+            else:
+                tgt = nav.frame_for("  " + str(page) + "  ") or nav.frame_for(str(page))
+                frames = [tgt] if tgt is not None else []
+            found = []
+            def walk(w):
+                for c in w.winfo_children():
+                    try:
+                        if isinstance(c, (tk.Button, RoundedButton)) and _btn_text(c).strip().lower() == want:
+                            found.append(c)
+                    except Exception:
+                        pass
+                    walk(c)
+            for fr in frames:
+                walk(fr)
+            for c in found:
+                self._plugin.hidden_buttons.append((c, _hide_widget(c)))
+        self._do_ui(_mk)
+
+    def pages(self):
+        """List all tab titles currently in the sidebar."""
+        nav = getattr(self.app, "tabview", None)
+        if nav is None:
+            return []
+        return [l.strip() for _f, l in nav._pages]
+
+    def page(self, title):
+        """Return the frame for a tab title (to add buttons to), or None."""
+        nav = getattr(self.app, "tabview", None)
+        if nav is None:
+            return None
+        return nav.frame_for("  " + str(title) + "  ") or nav.frame_for(str(title))
+
     # -- actions -----------------------------------------------------------
     def say(self, text):
         self.app.log(f"[{self._plugin.name}]", str(text), "sysmsg")
@@ -6298,10 +6667,11 @@ class PluginAPI:
 
 
 class LoadedPlugin:
-    def __init__(self, manager, folder, manifest):
+    def __init__(self, manager, folder, manifest, single_file=None):
         self.manager = manager
         self.folder = folder
         self.manifest = manifest
+        self.single_file = single_file
         self.id = manifest["id"]
         self.name = manifest.get("name", self.id)
         self.module = None
@@ -6312,6 +6682,10 @@ class LoadedPlugin:
         self.events = collections.defaultdict(list)
         self.timers = []
         self.panels = []
+        self.ui_tabs = []
+        self.ui_buttons = []
+        self.hidden_tabs = []
+        self.hidden_buttons = []
 
 
 class PluginManager:
@@ -6323,6 +6697,7 @@ class PluginManager:
         self._listeners = []
         self._worker = None
         self._dropped = 0
+        self._deferred_ui = []
 
     # -- state -------------------------------------------------------------
     def _enabled_map(self):
@@ -6350,6 +6725,66 @@ class PluginManager:
         with self._lock:
             return {c for p in self.plugins.values() if p.loaded for c in p.commands}
 
+    def help_lines(self):
+        pre = (self.app.command_prefix or "!")
+        out = []
+        with self._lock:
+            for p in sorted(self.plugins.values(), key=lambda x: x.name.lower()):
+                if not p.loaded:
+                    continue
+                for n, s in sorted(p.commands.items()):
+                    tag = " (owner)" if s["owner_only"] else (" (mods)" if s["mod_only"] else "")
+                    desc = (s["help"] or f"from {p.name}") + tag
+                    out.append((f"{pre}{n}", desc))
+        return out
+
+    def _defer(self, plugin, fn):
+        self._deferred_ui.append((plugin, fn))
+
+    def apply_deferred_ui(self):
+        pending, self._deferred_ui = self._deferred_ui, []
+        for plugin, fn in pending:
+            if not plugin.loaded:
+                continue
+            try:
+                self.app.ui(fn)
+            except Exception as e:
+                log_crash(f"plugin {plugin.id} deferred ui", e)
+
+    def _revert_ui(self, p):
+        app = self.app
+        tabs = list(p.ui_tabs)
+        buttons = list(p.ui_buttons)
+        hidden_tabs = list(p.hidden_tabs)
+        hidden_buttons = list(p.hidden_buttons)
+        p.ui_tabs = []
+        p.ui_buttons = []
+        p.hidden_tabs = []
+        p.hidden_buttons = []
+        self._deferred_ui = [(pl, fn) for (pl, fn) in self._deferred_ui if pl is not p]
+        def _go():
+            nav = getattr(app, "tabview", None)
+            for _t, frame in tabs:
+                if nav is not None:
+                    try:
+                        nav.remove(frame)
+                    except Exception:
+                        pass
+            for b in buttons:
+                try:
+                    b.destroy()
+                except Exception:
+                    pass
+            if nav is not None:
+                for key in hidden_tabs:
+                    try:
+                        nav.set_row_visible(key, True)
+                    except Exception:
+                        pass
+            for c, saved in hidden_buttons:
+                _show_widget(c, saved)
+        app.ui(_go)
+
     def all_commands(self):
         with self._lock:
             return [(p, n, c) for p in self.plugins.values() if p.loaded for n, c in sorted(p.commands.items())]
@@ -6359,28 +6794,42 @@ class PluginManager:
         root = plugins_dir()
         found = {}
         for name in sorted(os.listdir(root)):
-            folder = os.path.join(root, name)
-            if name.startswith((".", "_")) or not os.path.isfile(os.path.join(folder, "plugin.json")):
+            full = os.path.join(root, name)
+            if name.startswith((".", "_")):
                 continue
-            try:
-                man = read_plugin_manifest(folder)
-            except Exception as e:
-                plog("PLUGIN", f"skipping {name}: {e}")
-                continue
-            if man["id"] in found:
-                plog("PLUGIN", f"duplicate plugin id {man['id']} in {name} - skipped")
-                continue
-            found[man["id"]] = (folder, man)
+            if os.path.isdir(full):
+                if not os.path.isfile(os.path.join(full, "plugin.json")):
+                    continue
+                try:
+                    man = read_plugin_manifest(full)
+                except Exception as e:
+                    plog("PLUGIN", f"skipping {name}: {e}")
+                    continue
+                if man["id"] in found:
+                    plog("PLUGIN", f"duplicate plugin id {man['id']} in {name} - skipped")
+                    continue
+                found[man["id"]] = (full, man, None)
+            elif os.path.isfile(full) and os.path.splitext(name)[1].lower() in PLUGIN_SINGLE_EXTS:
+                pid = os.path.splitext(name)[0].strip().lower()
+                if not _PLUGIN_ID_RE.match(pid):
+                    plog("PLUGIN", f"skipping {name}: bad plugin id {pid!r}")
+                    continue
+                if pid in found:
+                    plog("PLUGIN", f"duplicate plugin id {pid} ({name}) - skipped")
+                    continue
+                man = {"id": pid, "name": pid, "version": "0.0.0", "author": "unknown",
+                       "description": "", "api": PLUGIN_API_VERSION, "entry": name, "single_file": True}
+                found[pid] = (root, man, full)
         with self._lock:
             for pid in list(self.plugins):
                 if pid not in found:
                     self.unload(pid)
                     self.plugins.pop(pid, None)
-            for pid, (folder, man) in found.items():
+            for pid, (folder, man, single) in found.items():
                 cur = self.plugins.get(pid)
-                if cur is None or cur.folder != folder or not cur.loaded:
+                if cur is None or cur.folder != folder or cur.single_file != single or not cur.loaded:
                     if cur is not None: self.unload(pid)
-                    self.plugins[pid] = LoadedPlugin(self, folder, man)
+                    self.plugins[pid] = LoadedPlugin(self, folder, man, single_file=single)
                 else:
                     cur.manifest = man
         return found
@@ -6396,7 +6845,7 @@ class PluginManager:
         self._changed()
 
     def load(self, pid):
-        import importlib.util
+        import importlib.util, importlib.machinery
         with self._lock:
             p = self.plugins.get(pid)
             if p is None:
@@ -6406,26 +6855,37 @@ class PluginManager:
                 return False
             if p.loaded:
                 return True
-            try:
-                p.manifest = read_plugin_manifest(p.folder)
-                p.name = p.manifest.get("name", pid)
-            except Exception as e:
-                p.error = f"manifest: {e}"
-                self._changed()
-                return False
+            if p.single_file:
+                entry = p.single_file
+            else:
+                try:
+                    p.manifest = read_plugin_manifest(p.folder)
+                    p.name = p.manifest.get("name", pid)
+                except Exception as e:
+                    p.error = f"manifest: {e}"
+                    self._changed()
+                    return False
+                entry = os.path.join(p.folder, p.manifest["entry"])
             if p.manifest["api"] > PLUGIN_API_VERSION:
                 p.error = f"needs plugin API {p.manifest['api']} (this app has {PLUGIN_API_VERSION}) - update YT2VM"
                 self._changed()
                 return False
             p.commands.clear(); p.events.clear(); p.timers.clear(); p.panels.clear()
+            p.ui_tabs = []; p.ui_buttons = []; p.hidden_tabs = []; p.hidden_buttons = []
             p.error = ""
             p.api = PluginAPI(self, p)
-            entry = os.path.join(p.folder, p.manifest["entry"])
             try:
-                spec = importlib.util.spec_from_file_location(f"yt2vm_plugin_{pid.replace('-', '_')}", entry)
+                modname = f"yt2vm_plugin_{pid.replace('-', '_')}"
+                loader = importlib.machinery.SourceFileLoader(modname, entry)
+                spec = importlib.util.spec_from_loader(modname, loader)
                 mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
+                loader.exec_module(mod)
                 p.module = mod
+                for attr, key in (("PLUGIN_NAME", "name"), ("PLUGIN_VERSION", "version"),
+                                  ("PLUGIN_AUTHOR", "author"), ("PLUGIN_DESCRIPTION", "description")):
+                    if hasattr(mod, attr):
+                        p.manifest[key] = str(getattr(mod, attr))
+                p.name = p.manifest.get("name", pid)
                 if not hasattr(mod, "setup"):
                     raise AttributeError("plugin has no setup(api) function")
                 mod.setup(p.api)
@@ -6454,6 +6914,10 @@ class PluginManager:
                     mod.teardown(p.api)
             except Exception as e:
                 log_crash(f"plugin {pid} teardown", e)
+            try:
+                self._revert_ui(p)
+            except Exception as e:
+                log_crash(f"plugin {pid} ui revert", e)
             p.commands.clear(); p.events.clear(); p.timers.clear(); p.panels.clear()
             p.module = None
             plog("PLUGIN", f"unloaded {pid}")
@@ -6727,9 +7191,15 @@ def market_submit(server, folder, owner_key="", note=""):
 def market_uninstall(pid):
     if not _PLUGIN_ID_RE.match(str(pid)):
         raise ValueError(f"bad plugin id {pid!r}")
-    dest = os.path.join(plugins_dir(), pid)
-    if os.path.isdir(dest):
+    root = os.path.abspath(plugins_dir())
+    dest = os.path.join(root, pid)
+    if os.path.isdir(dest) and os.path.dirname(os.path.abspath(dest)) == root:
         shutil.rmtree(dest)
+        return
+    for ext in PLUGIN_SINGLE_EXTS:
+        f = os.path.join(root, pid + ext)
+        if os.path.isfile(f):
+            os.remove(f)
 
 
 def _market_plugin_files(folder):
@@ -6946,6 +7416,35 @@ def teardown(api):
     pass
 ```
 
+### Single-file plugins (.py / .y2vp)
+
+You don't need a folder or a `plugin.json` for a quick plugin. Drop a single file straight into `plugins/`:
+
+```
+plugins/
+  greeter.py        <- a single-file plugin, id "greeter"
+  mymacros.y2vp     <- also a plugin (.y2vp = "yt2vm plugin"), id "mymacros"
+```
+
+A `.y2vp` file is just Python with the YT2VM plugin API available (same as `.py`); the different extension only keeps your plugins easy to spot. The plugin's **id** is the file name without the extension, so it must be lowercase letters, digits, `-` and `_`. The file needs a `setup(api)` function, exactly like `plugin.py`. There is no `plugin.json`, so set these at the top of the file if you want them:
+
+```python
+PLUGIN_NAME = "My Macros"
+PLUGIN_VERSION = "1.0.0"
+PLUGIN_AUTHOR = "you"
+PLUGIN_DESCRIPTION = "A couple of handy macros."
+
+def setup(api):
+    @api.command("np", help="open notepad")
+    def np(ctx):
+        ctx.run("!combo win+r | !wait 1 | !send notepad")
+
+def teardown(api):
+    pass
+```
+
+Single-file plugins get the whole API, including tabs and buttons. They can't be submitted to the market (put them in a folder with a `plugin.json` first), but everything else works the same. Click **Reload all** on the Plugins page after adding one.
+
 The market's starter plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** on the Plugins page to read them:
 
 | Plugin | Shows how to |
@@ -6966,7 +7465,7 @@ The market's starter plugins are short, working examples. Install them from the 
 | `version` | yes for the market | Version such as `1.2.0`. The market compares versions to offer updates. |
 | `author` | yes for the market | Shown in the GUI. |
 | `description` | yes for the market | One or two sentences, shown in the GUI. |
-| `api` | no | Plugin API version the plugin needs. Defaults to `1`. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
+| `api` | no | Plugin API version the plugin needs. Defaults to `1`. Set it to `2` if you use tabs/buttons (`add_tab`, `add_button`, `hide_tab`, `hide_button`). If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
 | `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
 | `tags`, `commands`, `homepage` | no | Shown on the market card. |
 
@@ -6988,6 +7487,12 @@ The market's starter plugins are short, working examples. Install them from the 
 | `@api.on(event)` | Subscribes to an event (see below). Also works as `api.on(event, fn)`. |
 | `@api.every(seconds)` | Calls `fn()` every `seconds` (minimum 1). Also works as `api.every(seconds, fn)`. |
 | `api.add_panel(build_fn, title=None)` | `build_fn(parent)` is called on the UI thread whenever the Plugins page redraws. Put your Tk widgets inside `parent`. Use `parent["bg"]` as the background so the panel matches the theme. |
+| `api.add_tab(title, build_fn=None, group="TOOLS")` | **(API 2)** Adds a new sidebar tab. `build_fn(frame)` draws its contents (runs on the UI thread). The tab is removed automatically when the plugin unloads. Returns the tab's frame. |
+| `api.add_button(page, text, fn, variant="neutral")` | **(API 2)** Adds a button to a page. `page` is a frame (from `add_tab` or `api.page(title)`) or a tab title. `fn()` runs when clicked. Removed automatically on unload. `variant` is `neutral`, `go`, `primary` or `danger`. |
+| `api.hide_tab(title)` | **(API 2)** Hides any tab by its title (built-in or added). Restored automatically on unload. |
+| `api.hide_button(text, page=None)` | **(API 2)** Hides buttons whose text matches, on one page (frame or title) or everywhere. Restored automatically on unload. |
+| `api.remove_tab(title)` | **(API 2)** Removes a tab this plugin added. |
+| `api.pages()` / `api.page(title)` | **(API 2)** List all tab titles / get one tab's frame (or `None`) so you can add buttons to it. |
 
 Viewer commands go through the same protections as built-in ones before they reach your handler: blacklist, timed bans, cooldown, rate limit, chat pause and disabled commands. Built-in commands always take priority over plugin commands.
 
@@ -7010,7 +7515,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `ctx.arg` / `ctx.args` | Everything after the command, as one string and split on spaces. |
 | `ctx.is_mod`, `ctx.is_owner`, `ctx.is_admin` | Permission flags. |
 | `ctx.source` | `"youtube"` or `"discord"`. Commands from the console and from automations report `"youtube"`. |
-| `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
+| `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. If the command came from Discord, it is also posted back to the Discord command channel. |
 | `ctx.run(chain)` | Queues VM input **on behalf of the user**. Only viewer action commands are accepted: `!type !send !key !combo !keydown !keyup !move !abs !click !rclick !mclick !scroll !drag !wait !cmd !run !startvm !roll !coinflip` and their short aliases. For non-admins the normal payload filter applies. Returns the number of steps queued. |
 
 ### Everything else on api
@@ -7026,7 +7531,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `api.settings` | A copy of all of this plugin's settings. |
 | `api.ui(fn, *args)` | Runs `fn` on the Tk UI thread. |
 | `api.id`, `api.manifest`, `api.path` | The plugin's id, its parsed `plugin.json`, and its folder. Keep your own files in `os.path.join(api.path, "data")`, which survives market updates. |
-| `api.api_version`, `api.app_version` | Plugin API version (currently `1`) and the YT2VM version string. |
+| `api.api_version`, `api.app_version` | Plugin API version (currently `2`) and the YT2VM version string. |
 | `api.app` | The `ChatPlaysApp` object itself. It is powerful but internal and can change between releases, so prefer the API above. |
 
 ---
@@ -7047,7 +7552,7 @@ You release a plugin by clicking **Submit** on its card. The app uploads it to t
 
 - Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. The market requires all four. Adding `tags`, `commands` and `homepage` makes the market card more useful.
 - Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only accepts a version higher than the published one.
-- Set `api` to the plugin API version you tested with (currently `1`).
+- Set `api` to the plugin API version you tested with (currently `2`; use `1` if you only use commands, events, timers and panels).
 - Don't put passwords, tokens or anything personal in the plugin folder. Every file in it except `data/` and dotfiles gets uploaded. Only text files can be published, up to 25 files and 600 KB in total.
 
 ### 2. Test it
@@ -7352,6 +7857,9 @@ class ChatPlaysApp:
             except Exception as _ex:
                 log_crash("plugins load_all", _ex)
             self.build_unified_dashboard()
+            try: self.plugins.apply_deferred_ui()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
             self.start_terminal_thread()
             self.start_app_threads()
             if self.twenty_four_seven_mode and self.active_url: self.go_live()
@@ -7576,6 +8084,106 @@ class ChatPlaysApp:
                 br.announce(text)
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
+
+    _MAINT_MSGS = {
+        "revert": ("Reverting!", "Revert done!", "Revert failed."),
+        "restartvm": ("Restarting the VM!", "VM restarted!", "Restart failed."),
+        "startvm": ("Starting the VM!", "VM started!", "Couldn't start the VM."),
+        "shutdown": ("Shutting down the VM!", "VM shut down.", "Shutdown failed."),
+        "changevm": ("Switching VM!", "VM switched!", "Couldn't switch the VM."),
+        "fixvm": ("Fixing the VM!", "VM fixed!", "Fix failed."),
+        "forcefixvm": ("Force-fixing the VM!", "VM fixed!", "Fix failed."),
+        "makesnapshot": ("Taking a snapshot!", "Snapshot saved!", "Snapshot failed."),
+        "remake2": ("Rebuilding the snapshot!", "Snapshot rebuilt!", "Rebuild failed."),
+    }
+
+    def _maint_messages(self, base):
+        return self._MAINT_MSGS.get(base, (f"Running {base}!", f"{base} done!", f"{base} failed."))
+
+    def _discord_maint(self, text, shot=False):
+        br = getattr(self, "discord", None)
+        if br is not None and br.running:
+            try:
+                br.maint_announce(text, shot)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+
+    def _cmd_screenshot(self, user):
+        now = time.time()
+        if now - getattr(self, "_last_shot_req", 0.0) < 3.0:
+            return
+        self._last_shot_req = now
+        br = getattr(self, "discord", None)
+        if br is not None and br.running:
+            br.screenshot_now(user)
+        else:
+            self.log("[system]", "screenshot requested, but the Discord bot is offline.", "sysmsg")
+
+    _HELP_VIEWER = [
+        ("!type <text>", "type text into the VM"),
+        ("!send <text>", "type text, then press Enter"),
+        ("!key <key>", "press one key (enter, tab, f5, esc ...)"),
+        ("!combo <a+b>", "press keys together (win+r, ctrl+c)"),
+        ("!keydown <key> / !keyup <key>", "hold a key down / release it"),
+        ("!click / !rclick / !mclick", "left / right / middle mouse click"),
+        ("!move <x> <y> / !abs <x> <y>", "move the mouse by, or to, x y"),
+        ("!scroll <n> / !drag <x> <y>", "scroll the wheel / drag the mouse"),
+        ("!wait <time>", "pause in a chain - !wait 2, !wait 2s, !wait 500ms"),
+        ("!run <cmd> / !cmd <cmd>", "run a program / run a line in CMD"),
+        ("!screenshot / !screen / !s", "post a screenshot of the VM to Discord"),
+        ("!roll / !coinflip", "roll a dice / flip a coin"),
+        ("!revert", "vote to revert the VM (mods revert instantly)"),
+        ("!music <url>", "queue a song"),
+        ("!skipsong / !pausesong / !resumesong", "vote song controls"),
+        ("chaining", "join commands with | : !combo win+r | !wait 1 | !send notepad"),
+        ("!help", "show this list"),
+    ]
+    _HELP_MOD = [
+        ("!ban @user / !unban @user", "ban or unban a user from using commands"),
+        ("!timeout @user <min>", "mute a user for some minutes"),
+        ("!lock / !unlock", "lock commands to mods only / re-open to everyone"),
+        ("!purge", "clear the command queue"),
+        ("!slowmode <sec>", "set the viewer cooldown"),
+        ("!whois @user / !strikes @user", "show / clear a user's status"),
+        ("!clearvotes", "clear the active votes"),
+        ("!revertnow / !restartnow / !snapshotnow", "run VM maintenance right now"),
+        ("!vmstatus / !stats / !queue", "status info"),
+        ("!flash <text> / !announce <text>", "show a message on stream"),
+        ("!protect", "toggle blocking dangerous VM commands"),
+    ]
+    _HELP_OWNER = [
+        ("!tob64 / !eb64", "turn the base64 filter off / on"),
+        ("!unblock @user", "remove a user from the base64 block list"),
+        ("!pausechat / !enablechat", "owner-only chat pause"),
+        ("!plugins ...", "manage plugins (list / reload / enable / disable)"),
+    ]
+
+    def _send_help(self, user, is_mod, is_admin, is_owner, src):
+        sections = [("Commands", self._HELP_VIEWER)]
+        if is_admin:
+            sections.append(("Mod commands", self._HELP_MOD))
+        if is_owner:
+            sections.append(("Owner commands", self._HELP_OWNER))
+        pm = getattr(self, "plugins", None)
+        if pm is not None:
+            try:
+                pcmds = pm.help_lines()
+            except Exception:
+                pcmds = []
+            if pcmds:
+                sections.append(("Plugin commands", list(pcmds)))
+        br = getattr(self, "discord", None)
+        if src == "discord" and br is not None and br.running:
+            for title, items in sections:
+                br.announce(f"**{title}**")
+                for c, d in items:
+                    br.announce(f"`{c}` - {d}")
+        else:
+            self.send_flash("commands listed in the log below", "info", 5)
+            for title, items in sections:
+                self.log("[help]", title, "sysmsg")
+                for c, d in items:
+                    self.log("[help]", f"{c}  -  {d}", "sysmsg")
 
     def toggle_crossplay(self):
         br = self.discord
@@ -7899,11 +8507,8 @@ class ChatPlaysApp:
             base = str(cmd_type).lower()
             if base.startswith(self.command_prefix): base = base[len(self.command_prefix):]
             base = base.lstrip("!")
-            if base == "wait":
-                try:
-                    w = max(0.0, min(float(str(arg).strip() or 0.5), 30.0))
-                except Exception:
-                    w = 0.5
+            if base in ("wait", "w"):
+                w = _wait_seconds(arg)
                 items.append(("__wait__", str(w), user))
             else:
                 items.append(action)
@@ -11346,13 +11951,19 @@ class ChatPlaysApp:
         p = self.plugins.plugins.get(pid)
         if p is None:
             return
-        if not messagebox.askyesno("Uninstall plugin", f"Remove {p.name} and delete its folder?\n\n{p.folder}"):
+        where = p.single_file or p.folder
+        if not messagebox.askyesno("Uninstall plugin", f"Remove {p.name} and delete it?\n\n{where}"):
             return
         def work():
             self.plugins.unload(pid)
-            folder = os.path.abspath(p.folder)
-            if os.path.dirname(folder) == os.path.abspath(plugins_dir()):
-                shutil.rmtree(folder, ignore_errors=True)
+            root = os.path.abspath(plugins_dir())
+            if p.single_file and os.path.isfile(p.single_file) and os.path.dirname(os.path.abspath(p.single_file)) == root:
+                try: os.remove(p.single_file)
+                except Exception as _ex: _trace(_ex_where(), _ex)
+            else:
+                folder = os.path.abspath(p.folder)
+                if os.path.dirname(folder) == root and folder != root:
+                    shutil.rmtree(folder, ignore_errors=True)
             self.plugins.discover()
             self.plugins._changed()
             self._market_changed()
@@ -11539,6 +12150,10 @@ class ChatPlaysApp:
     def _plugin_submit(self, pid):
         p = self.plugins.plugins.get(pid)
         if p is None:
+            return
+        if p.single_file:
+            messagebox.showinfo("Submit plugin", "Single-file plugins (.py / .y2vp) can't be submitted to the market. "
+                                "Put it in its own folder with a plugin.json first, then submit that.")
             return
         server = market_server_url()
         if not server:
@@ -12421,9 +13036,11 @@ class ChatPlaysApp:
             flash("VM: " + ("running" if self._vm_is_running() else "stopped"), "info", 5); return True
         if cmd == "!stats":
             flash(f"{current_viewers} viewers | {total_commands_executed} cmds run", "info", 6); return True
-        if cmd == "!lockdown":
+        if cmd in ("!lockdown", "!lock"):
             self.chat_paused = True
-            flash("LOCKDOWN - mods only", "warn", 6); return True
+            flash("LOCKED - mods only", "warn", 6)
+            self.log("[system]", f"commands locked by {user} - mods only. !unlock re-opens.", "sysmsg")
+            return True
         if cmd == "!unlock":
             self.chat_paused = False
             flash("chat open again", "good", 5); return True
@@ -12531,7 +13148,7 @@ class ChatPlaysApp:
             raw_cmd = parts[0].lower()
             if not raw_cmd.startswith(self.command_prefix): continue
             cmd = "!" + raw_cmd[len(self.command_prefix):]
-            aliases = {"!c": "!combo", "!k": "!key", "!t": "!type", "!s": "!send", "!m": "!move", "!d": "!drag", "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick"}
+            aliases = {"!c": "!combo", "!k": "!key", "!t": "!type", "!m": "!move", "!d": "!drag", "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick", "!s": "!screenshot", "!screen": "!screenshot"}
             if cmd in aliases: cmd = aliases[cmd]
             arg = parts[1].strip() if len(parts) > 1 else ""
             total_commands_executed += 1
@@ -12579,9 +13196,15 @@ class ChatPlaysApp:
                     self.chat_paused = False
                     self.log("[system]", "chat has been unpaused. everyone can send commands again.", "sysmsg")
                 continue
-            if self.chat_paused and not is_owner: continue
+            if self.chat_paused and not is_admin: continue
             append_to_json_log(logs_file, user, f"{cmd} {arg}".strip())
             if is_admin: append_to_json_log(modlogs_file, user, f"{cmd} {arg}".strip())
+            if cmd == "!help":
+                self._send_help(user, is_mod, is_admin, is_owner, _src)
+                continue
+            if cmd == "!screenshot":
+                self._cmd_screenshot(user)
+                continue
             if cmd == "!ping":
                 self.log("[system]", "pong! chat control is active.", "sysmsg")
                 continue
@@ -12701,9 +13324,8 @@ class ChatPlaysApp:
                 if len(kept) >= max_steps:
                     cut += 1
                     continue
-                if str(st[0]).lower().lstrip("!").endswith("wait"):
-                    try: w = max(0.0, min(float(str(st[1]).strip() or 0.5), 30.0))
-                    except Exception: w = 0.5
+                if str(st[0]).lower().lstrip("!") in ("wait", "w"):
+                    w = _wait_seconds(st[1])
                     w = min(w, max(0.0, max_wait - waited))
                     waited += w
                     if w <= 0:
@@ -14008,6 +14630,8 @@ class ChatPlaysApp:
         seq += list(codes)
         seq += self._break(codes)
         for mseq in reversed(mods): seq += self._break(mseq)
+        if is_dead_key(ch, keyboard_layout):
+            seq += [0x39, 0xB9]
         self._send_scancodes(seq)
 
     def _mouse_event(self, dx, dy, dz, buttons):
@@ -14305,10 +14929,7 @@ class ChatPlaysApp:
                 if not action or len(action) < 3: continue
                 cmd, arg, user = action[0], action[1], action[2]
                 if cmd == "__wait__":
-                    try:
-                        w = max(0.0, min(float(arg), 30.0))
-                    except Exception:
-                        w = 0.5
+                    w = _wait_seconds(arg)
                     dbg("exec", f"wait {w}s")
                     self._exec_current = f"wait {w}s"
                     end = time.time() + w
@@ -14326,9 +14947,14 @@ class ChatPlaysApp:
                 if base.startswith(self.command_prefix): base = base[len(self.command_prefix):]
                 if base.startswith("!"): base = base[1:]
                 if base in maintenance_actions:
+                    self.__dict__.pop("_exec_done", None)
+                    start_msg, done_msg, fail_msg = self._maint_messages(base)
+                    if start_msg:
+                        self._discord_maint(start_msg)
                     plog("EXEC", f"maintenance action {base} starting")
-                    self._do_vm_maintenance(base, arg, user)
+                    ok = self._do_vm_maintenance(base, arg, user)
                     plog("EXEC", f"maintenance action {base} finished in {time.time()-self._exec_started:.1f}s")
+                    self._discord_maint(done_msg if ok else fail_msg, shot=bool(ok))
                     self._exec_current = ""
                     continue
                 if getattr(self, 'vm_maintenance', False):

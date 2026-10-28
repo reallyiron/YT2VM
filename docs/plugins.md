@@ -140,6 +140,35 @@ def teardown(api):
     pass
 ```
 
+### Single-file plugins (.py / .y2vp)
+
+You don't need a folder or a `plugin.json` for a quick plugin. Drop a single file straight into `plugins/`:
+
+```
+plugins/
+  greeter.py        <- a single-file plugin, id "greeter"
+  mymacros.y2vp     <- also a plugin (.y2vp = "yt2vm plugin"), id "mymacros"
+```
+
+A `.y2vp` file is just Python with the YT2VM plugin API available (same as `.py`); the different extension only keeps your plugins easy to spot. The plugin's **id** is the file name without the extension, so it must be lowercase letters, digits, `-` and `_`. The file needs a `setup(api)` function, exactly like `plugin.py`. There is no `plugin.json`, so set these at the top of the file if you want them:
+
+```python
+PLUGIN_NAME = "My Macros"
+PLUGIN_VERSION = "1.0.0"
+PLUGIN_AUTHOR = "you"
+PLUGIN_DESCRIPTION = "A couple of handy macros."
+
+def setup(api):
+    @api.command("np", help="open notepad")
+    def np(ctx):
+        ctx.run("!combo win+r | !wait 1 | !send notepad")
+
+def teardown(api):
+    pass
+```
+
+Single-file plugins get the whole API, including tabs and buttons. They can't be submitted to the market (put them in a folder with a `plugin.json` first), but everything else works the same. Click **Reload all** on the Plugins page after adding one.
+
 The market's starter plugins are short, working examples. Install them from the Plugin Market page and click **Open folder** on the Plugins page to read them:
 
 | Plugin | Shows how to |
@@ -160,7 +189,7 @@ The market's starter plugins are short, working examples. Install them from the 
 | `version` | yes for the market | Version such as `1.2.0`. The market compares versions to offer updates. |
 | `author` | yes for the market | Shown in the GUI. |
 | `description` | yes for the market | One or two sentences, shown in the GUI. |
-| `api` | no | Plugin API version the plugin needs. Defaults to `1`. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
+| `api` | no | Plugin API version the plugin needs. Defaults to `1`. Set it to `2` if you use tabs/buttons (`add_tab`, `add_button`, `hide_tab`, `hide_button`). If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
 | `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
 | `tags`, `commands`, `homepage` | no | Shown on the market card. |
 
@@ -182,6 +211,12 @@ The market's starter plugins are short, working examples. Install them from the 
 | `@api.on(event)` | Subscribes to an event (see below). Also works as `api.on(event, fn)`. |
 | `@api.every(seconds)` | Calls `fn()` every `seconds` (minimum 1). Also works as `api.every(seconds, fn)`. |
 | `api.add_panel(build_fn, title=None)` | `build_fn(parent)` is called on the UI thread whenever the Plugins page redraws. Put your Tk widgets inside `parent`. Use `parent["bg"]` as the background so the panel matches the theme. |
+| `api.add_tab(title, build_fn=None, group="TOOLS")` | **(API 2)** Adds a new sidebar tab. `build_fn(frame)` draws its contents (runs on the UI thread). The tab is removed automatically when the plugin unloads. Returns the tab's frame. |
+| `api.add_button(page, text, fn, variant="neutral")` | **(API 2)** Adds a button to a page. `page` is a frame (from `add_tab` or `api.page(title)`) or a tab title. `fn()` runs when clicked. Removed automatically on unload. `variant` is `neutral`, `go`, `primary` or `danger`. |
+| `api.hide_tab(title)` | **(API 2)** Hides any tab by its title (built-in or added). Restored automatically on unload. |
+| `api.hide_button(text, page=None)` | **(API 2)** Hides buttons whose text matches, on one page (frame or title) or everywhere. Restored automatically on unload. |
+| `api.remove_tab(title)` | **(API 2)** Removes a tab this plugin added. |
+| `api.pages()` / `api.page(title)` | **(API 2)** List all tab titles / get one tab's frame (or `None`) so you can add buttons to it. |
 
 Viewer commands go through the same protections as built-in ones before they reach your handler: blacklist, timed bans, cooldown, rate limit, chat pause and disabled commands. Built-in commands always take priority over plugin commands.
 
@@ -204,7 +239,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `ctx.arg` / `ctx.args` | Everything after the command, as one string and split on spaces. |
 | `ctx.is_mod`, `ctx.is_owner`, `ctx.is_admin` | Permission flags. |
 | `ctx.source` | `"youtube"` or `"discord"`. Commands from the console and from automations report `"youtube"`. |
-| `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. |
+| `ctx.reply(text)` | Posts `[Plugin Name]: text` to the console and overlay chat. If the command came from Discord, it is also posted back to the Discord command channel. |
 | `ctx.run(chain)` | Queues VM input **on behalf of the user**. Only viewer action commands are accepted: `!type !send !key !combo !keydown !keyup !move !abs !click !rclick !mclick !scroll !drag !wait !cmd !run !startvm !roll !coinflip` and their short aliases. For non-admins the normal payload filter applies. Returns the number of steps queued. |
 
 ### Everything else on api
@@ -220,7 +255,7 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `api.settings` | A copy of all of this plugin's settings. |
 | `api.ui(fn, *args)` | Runs `fn` on the Tk UI thread. |
 | `api.id`, `api.manifest`, `api.path` | The plugin's id, its parsed `plugin.json`, and its folder. Keep your own files in `os.path.join(api.path, "data")`, which survives market updates. |
-| `api.api_version`, `api.app_version` | Plugin API version (currently `1`) and the YT2VM version string. |
+| `api.api_version`, `api.app_version` | Plugin API version (currently `2`) and the YT2VM version string. |
 | `api.app` | The `ChatPlaysApp` object itself. It is powerful but internal and can change between releases, so prefer the API above. |
 
 ---
@@ -241,7 +276,7 @@ You release a plugin by clicking **Submit** on its card. The app uploads it to t
 
 - Pick an `id` you will keep forever, and fill in `name`, `author`, `description` and `version` in `plugin.json`. The market requires all four. Adding `tags`, `commands` and `homepage` makes the market card more useful.
 - Use version numbers like `1.0.0`. Raise the last number for fixes (`1.0.1`), the middle one for new features (`1.1.0`), and the first one for changes that break existing settings (`2.0.0`). The market only accepts a version higher than the published one.
-- Set `api` to the plugin API version you tested with (currently `1`).
+- Set `api` to the plugin API version you tested with (currently `2`; use `1` if you only use commands, events, timers and panels).
 - Don't put passwords, tokens or anything personal in the plugin folder. Every file in it except `data/` and dotfiles gets uploaded. Only text files can be published, up to 25 files and 600 KB in total.
 
 ### 2. Test it

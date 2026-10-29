@@ -266,7 +266,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.0.0_2026"
+version = "1.1.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 

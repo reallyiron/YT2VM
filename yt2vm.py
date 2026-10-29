@@ -3341,7 +3341,7 @@ _PAGE_BLURB = {
     "Snapshots": "Create, restore and delete snapshots for the active VM.",
     "OS Voting": "Let chat vote on which OS runs next.",
     "Real PC": "Route chat input to a physical machine through the Pico.",
-    "System": "Live internals and the recovery buttons.",
+    "System": "Live internals, the recovery buttons and app updates.",
     "OBS": "Scenes, media playback, the relay and overlay flashes.",
     "Overlays": "Browser sources for OBS, served from this app.",
     "Media": "Music queue controls and VM volume.",
@@ -7664,6 +7664,88 @@ If your plugin is rejected, fix the problem, raise the version and submit again.
 )
 
 
+# ---------------------------------------------------------------------------
+# updater
+# ---------------------------------------------------------------------------
+# Updates come only from GitHub Releases: publishing a release tagged v<version> makes every copy of
+# YT2VM offer that version. The new yt2vm.py is fetched from the tag, checked (it must compile, be
+# this app, and carry the same version as the tag), the old file is kept as yt2vm.py.bak-<old>, and
+# nothing restarts until the user says so. YT2VM_UPDATE_API / YT2VM_UPDATE_RAW override the URLs for testing.
+
+UPDATE_REPO = "reallyiron/YT2VM"
+UPDATE_CHECK_HOURS = 6
+_UPDATE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _update_urls():
+    api = os.environ.get("YT2VM_UPDATE_API") or f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+    raw = os.environ.get("YT2VM_UPDATE_RAW") or f"https://raw.githubusercontent.com/{UPDATE_REPO}/{{tag}}/yt2vm.py"
+    return api, raw
+
+
+def update_supported():
+    """(True, "") when this copy can update itself, otherwise (False, why)."""
+    if getattr(sys, "frozen", False):
+        return False, "this is a packaged .exe build - download new versions by hand"
+    target = os.path.abspath(sys.argv[0])
+    if not target.lower().endswith(".py") or not os.path.isfile(target):
+        return False, "YT2VM isn't running from its .py file"
+    if not os.access(target, os.W_OK) or not os.access(os.path.dirname(target), os.W_OK):
+        return False, f"no permission to write {target}"
+    return True, ""
+
+
+def update_check():
+    """Latest GitHub release. Returns {"tag", "version", "notes", "page", "newer"}; raises on network errors."""
+    api, raw = _update_urls()
+    req = urllib.request.Request(api, headers={"User-Agent": f"YT2VM/{version} updater",
+                                               "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        rel = json.loads(r.read(1024 * 1024).decode("utf-8"))
+    tag = str(rel.get("tag_name") or "").strip()
+    if not tag or rel.get("draft") or rel.get("prerelease"):
+        return {"tag": "", "version": version, "notes": "", "page": "", "newer": False}
+    ver = tag[1:] if tag[:1] in ("v", "V") else tag
+    return {"tag": tag, "version": ver, "notes": str(rel.get("body") or "").strip(),
+            "page": str(rel.get("html_url") or ""), "raw": raw.replace("{tag}", urllib.parse.quote(tag)),
+            "newer": _version_tuple(ver) > _version_tuple(version)}
+
+
+def update_download(info):
+    """Fetch yt2vm.py for a release and check it before anything is replaced. Returns the file's bytes."""
+    data = _market_fetch(info["raw"], limit=_UPDATE_MAX_BYTES, timeout=60)
+    try:
+        src = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("the downloaded file isn't text")
+    if "class ChatPlaysApp" not in src or "def update_check" not in src:
+        raise ValueError("the downloaded file isn't YT2VM")
+    try:
+        compile(src, "yt2vm.py", "exec")                        # syntax check only - nothing is run
+    except SyntaxError as e:
+        raise ValueError(f"the downloaded file has a syntax error on line {e.lineno}")
+    m = re.search(r'^version = "([^"]+)"', src, re.M)
+    if not m or _version_tuple(m.group(1)) != _version_tuple(info["version"]):
+        raise ValueError(f"release {info['tag']} contains yt2vm.py version {m.group(1) if m else '?'} - "
+                         "the release tag and the version in the file must match")
+    return data
+
+
+def update_install(data):
+    """Replace the running yt2vm.py with data. Keeps the old file as yt2vm.py.bak-<version>. Returns the backup path."""
+    ok, why = update_supported()
+    if not ok:
+        raise ValueError(why)
+    target = os.path.abspath(sys.argv[0])
+    backup = f"{target}.bak-{re.sub(r'[^0-9A-Za-z._-]', '_', version)}"
+    shutil.copy2(target, backup)
+    tmp = target + ".update"
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+    os.replace(tmp, target)
+    return backup
+
+
 class ChatPlaysApp:
     def __init__(self, root):
         self.running = True
@@ -7875,6 +7957,7 @@ class ChatPlaysApp:
                 _trace(_ex_where(), _ex)
             self._plugins_ready = True
             self.plugins.emit("ready")
+            self._update_schedule(first=True)
             try: self.root.after(600, self.show_welcome_guide)
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
@@ -8459,7 +8542,7 @@ class ChatPlaysApp:
             "b64_filter": True, "discord_enabled": False, "discord_mode": "crossplay",
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
-            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}
+            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "ask"
         }
         if os.path.exists(settings_file):
             try:
@@ -10673,6 +10756,7 @@ class ChatPlaysApp:
             ("Open the plugin market", "Plugins", lambda: self.tabview.select(self.tab_market)),
             ("Open the plugin docs", "Plugins", self.plugin_docs_open),
             ("Create a new plugin", "Plugins", self._plugin_new),
+            ("Check for updates", "App", self.update_check_now),
             ("Reload all plugins", "Plugins", lambda: self._run_bg("plugins-reload", self.plugins.reload_all)),
         ]
         for key, base in _STUDIO_BASE.items():
@@ -16096,6 +16180,164 @@ class ChatPlaysApp:
         with history_lock: web_chat_history.clear()
         self.log("[system]", "chat history cleared.", "sysmsg")
 
+    # -- updates -------------------------------------------------------------
+    def _update_mode(self):
+        mode = str(self.config.get("update_mode", "ask")).lower()
+        return mode if mode in ("ask", "auto", "off") else "ask"
+
+    def _update_schedule(self, first=False):
+        """Check on start (after the UI settles) and then every few hours. Only the first instance checks."""
+        if instance_id != 1 or not self.running:
+            return
+        if self._update_mode() != "off" and not first:
+            self._run_bg("update-check", self._update_check_work, False)
+        self.root.after(15000 if first else UPDATE_CHECK_HOURS * 3600 * 1000, self._update_schedule)
+
+    def update_check_now(self):
+        self._update_set_status("Checking for updates...")
+        self._run_bg("update-check", self._update_check_work, True)
+
+    def _update_set_status(self, text, fg="muted"):
+        self._update_status_text = (text, fg)
+        lbl = getattr(self, "update_status", None)
+        if lbl is not None:
+            self.ui(lambda: lbl.configure(text=text, fg=_studio_color(fg)))
+
+    def _update_check_work(self, manual):
+        ok, why = update_supported()
+        if not ok:
+            self._update_set_status(f"Updates unavailable: {why}.", "faint")
+            if manual:
+                self.toast(f"Can't update: {why}", "bad")
+            return
+        try:
+            info = update_check()
+        except Exception as e:
+            plog("UPDATE", f"check failed: {e}")
+            self._update_set_status("Couldn't check for updates - try again later.", "bad")
+            if manual:
+                self.toast("Couldn't reach GitHub to check for updates", "bad")
+            return
+        self._update_info = info if info["newer"] else None
+        self.ui(self._update_paint_buttons)
+        if not info["newer"]:
+            self._update_set_status(f"You're up to date (v{version}).", "ok")
+            if manual:
+                self.toast(f"YT2VM {version} is the latest version", "ok")
+            return
+        plog("UPDATE", f"{info['tag']} available (running {version})")
+        self._update_set_status(f"Version {info['version']} is available.", "warn")
+        mode = self._update_mode()
+        if mode == "auto" and not manual:
+            self._update_install_work(info, auto=True)
+        elif manual or getattr(self, "_update_prompted", "") != info["tag"]:
+            self._update_prompted = info["tag"]
+            self.ui(self._update_prompt, info)
+
+    def _update_prompt(self, info):
+        notes = info.get("notes") or "No release notes."
+        if len(notes) > 900:
+            notes = notes[:900].rstrip() + " ..."
+        if messagebox.askyesno("Update available",
+                               f"YT2VM {info['version']} is available (you have {version}).\n\n{notes}\n\n"
+                               "Update now? Your current version is kept as a backup, and nothing restarts until you say so.",
+                               parent=self.root):
+            self._run_bg("update-install", self._update_install_work, info, False)
+
+    def update_install_now(self):
+        info = getattr(self, "_update_info", None)
+        if info:
+            self._run_bg("update-install", self._update_install_work, info, False)
+
+    def _update_install_work(self, info, auto=False):
+        self._update_set_status(f"Downloading {info['version']}...")
+        try:
+            data = update_download(info)
+            backup = update_install(data)
+        except Exception as e:
+            log_crash(f"update to {info.get('tag')}", e)
+            self._update_set_status(f"Update failed: {e}", "bad")
+            self.toast(f"Update failed: {e}", "bad")
+            return
+        plog("UPDATE", f"installed {info['tag']} - old version kept as {backup}")
+        self._update_info = None
+        self._update_installed = info["version"]
+        self.ui(self._update_paint_buttons)
+        self._update_set_status(f"Version {info['version']} is installed - restart YT2VM to use it.", "ok")
+        if auto:
+            self.toast(f"YT2VM {info['version']} installed - restart when it suits you", "ok")
+            return
+        self.ui(self._update_ask_restart, info)
+
+    def _update_ask_restart(self, info):
+        if messagebox.askyesno("Update installed",
+                               f"YT2VM {info['version']} is installed.\n\nRestart now? If you're live, you can also "
+                               "restart later - the update is used next time YT2VM starts.", parent=self.root):
+            self._restart_app()
+
+    def _update_restore_backup(self):
+        target = os.path.abspath(sys.argv[0])
+        folder = os.path.dirname(target)
+        baks = sorted((f for f in os.listdir(folder) if f.startswith(os.path.basename(target) + ".bak-")),
+                      key=lambda f: os.path.getmtime(os.path.join(folder, f)), reverse=True)
+        if not baks:
+            messagebox.showinfo("Restore previous version", "There's no backup from an earlier update.", parent=self.root)
+            return
+        if not messagebox.askyesno("Restore previous version", f"Replace yt2vm.py with {baks[0]} and restart?\n\n"
+                                   "Turn updates to Off first if you don't want to be offered the newer version again.",
+                                   parent=self.root):
+            return
+        try:
+            shutil.copy2(target, target + ".bak-undone")
+            shutil.copy2(os.path.join(folder, baks[0]), target)
+        except Exception as e:
+            messagebox.showerror("Restore previous version", f"Restore failed: {e}", parent=self.root)
+            return
+        self._restart_app()
+
+    def _update_paint_buttons(self):
+        btn = getattr(self, "update_install_btn", None)
+        if btn is None:
+            return
+        info = getattr(self, "_update_info", None)
+        if info:
+            btn.configure(text=f"Install {info['version']}")
+            if not btn.winfo_manager():
+                btn.pack(side="left", padx=4, ipadx=8, after=self.update_check_btn)
+        elif btn.winfo_manager():
+            btn.pack_forget()
+
+    def _build_update_card(self, parent):
+        t = self._tok
+        o, c = self._st_card(parent, "Updates")
+        o.pack(fill="x", padx=26, pady=(0, 20))
+        self._st_label(c, f"Running YT2VM {version}. New versions come from the releases at github.com/{UPDATE_REPO}.",
+                       fg="muted", font=("ui", 9), anchor="w", justify="left", wraplength=760).pack(fill="x", padx=16)
+        text, fg = getattr(self, "_update_status_text", ("Not checked yet.", "faint"))
+        self.update_status = self._st_label(c, text, fg=fg, font=("ui", 10, "semi"), anchor="w", justify="left", wraplength=760)
+        self.update_status.pack(fill="x", padx=16, pady=(8, 0))
+        row = tk.Frame(c, bg=t["card"]); row._st = {"bg": "card"}
+        row.pack(fill="x", padx=12, pady=(10, 6))
+        self.update_check_btn = self._st_button(row, "Check now", self.update_check_now, "primary", 9)
+        self.update_check_btn.pack(side="left", padx=4, ipadx=8)
+        self.update_install_btn = self._st_button(row, "Install", self.update_install_now, "go", 9)
+        self._st_button(row, "Restore previous version", self._update_restore_backup, "neutral", 9).pack(side="right", padx=4, ipadx=8)
+        mrow = tk.Frame(c, bg=t["card"]); mrow._st = {"bg": "card"}
+        mrow.pack(fill="x", padx=16, pady=(4, 14))
+        self._st_label(mrow, "When a new version is out:", fg="muted", font=("ui", 9)).pack(side="left")
+        names = {"ask": "Ask me", "auto": "Install it, I restart later", "off": "Don't check"}
+        self.update_mode_cb = ttk.Combobox(mrow, values=list(names.values()), state="readonly", width=26, font=("Segoe UI", 9))
+        self.update_mode_cb.set(names[self._update_mode()])
+        self.update_mode_cb.pack(side="left", padx=8)
+
+        def pick(_e=None):
+            mode = {v: k for k, v in names.items()}[self.update_mode_cb.get()]
+            self.config["update_mode"] = mode
+            self.save_settings()
+            self.toast("Update setting saved", "ok")
+        self.update_mode_cb.bind("<<ComboboxSelected>>", pick)
+        self._update_paint_buttons()
+
     def build_system_tab(self):
         wrap = self.make_scrollable(self.tab_system)
         tk.Label(wrap, text="SYSTEM & DIAGNOSTICS", font=("Segoe UI", 14, "bold"), bg="#09090B", fg=self.accent_main).pack(anchor="w", padx=30, pady=(22, 12))
@@ -16111,6 +16353,7 @@ class ChatPlaysApp:
             ("Garbage Collect", "#27272A", lambda: __import__("gc").collect()),
             ("Restart App", "#8B5CF6", self._restart_app),
         ], cols=3).pack(fill="x", padx=26, pady=(0, 20))
+        self._build_update_card(wrap)
         self._sys_diag_tick()
 
     def _sys_diag_tick(self):

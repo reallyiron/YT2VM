@@ -55,6 +55,38 @@ These `.md` files are generated from the docs inside `yt2vm.py`. To change them,
 
 Plugins run with the same access to your PC as YT2VM, so only install ones you trust.
 
+# Updates
+
+YT2VM updates itself from the [releases on GitHub](https://github.com/reallyiron/YT2VM/releases). It checks about 15 seconds after starting and then every 6 hours. When a new version is out, it shows the release notes and asks before installing.
+
+Updating never interrupts a stream on its own:
+
+1. The app downloads the new `yt2vm.py` and checks it: it must be YT2VM, contain no syntax errors, and carry the same version as the release.
+2. It keeps your current file next to it as `yt2vm.py.bak-<old version>`.
+3. It replaces `yt2vm.py`, then asks whether to restart now. You can also restart later; the update is used the next time YT2VM starts.
+
+Under **Machine → System → Updates** you can:
+
+- check for updates now (also in the command palette, Ctrl K);
+- install an update that's waiting;
+- go back with **Restore previous version**;
+- choose what happens when a new version is out: **Ask me** (the default), **Install it, I restart later**, or **Don't check**.
+
+Settings, plugins and logs aren't touched by an update. Packaged `.exe` builds don't update themselves.
+
+## Releasing a new version (maintainers)
+
+1. In `yt2vm.py`, raise `version = "..."`, for example to `version = "1.0.1"`, and merge it to `main`.
+2. Publish a GitHub release whose tag is `v` plus that exact version, with the changes in the release notes:
+
+   ```bash
+   gh release create v1.0.1 --title "YT2VM 1.0.1" --notes "- What changed"
+   ```
+
+   You can also use **Releases → Draft a new release** on GitHub. Every copy of YT2VM is offered the update at its next check.
+
+The tag and the `version` in the file must match, or the app refuses the update. Drafts and pre-releases are never offered, so you can use a pre-release to test a version first.
+
 # FAQ
 
 ## Do I have to credit you?

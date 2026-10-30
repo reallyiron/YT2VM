@@ -8,6 +8,7 @@ Everything here works with nothing but `yt2vm.py`. The app creates the `plugins`
 - [Your first plugin](#your-first-plugin)
 - [plugin.json](#pluginjson)
 - [API reference](#api-reference)
+- [Building UI](#building-ui)
 - [Threads and the UI](#threads-and-the-ui)
 - [Releasing a plugin](#releasing-a-plugin)
 - [Security](#security)
@@ -98,9 +99,6 @@ Click **Reload all** on the Plugins page and type `!hi` in the Dashboard console
 Here is a bigger example that uses every part of the API:
 
 ```python
-import tkinter as tk
-
-
 def setup(api):
     # a chat command anyone can use
     @api.command("dance", help="Make the VM dance")
@@ -130,8 +128,12 @@ def setup(api):
         api.set("first_run", False)
 
     # a small panel on the Plugins page
-    def panel(parent):
-        tk.Label(parent, text="Hello from my plugin", bg=parent["bg"], fg="#D3D8DF").pack(anchor="w")
+    def panel(ui):
+        ui.label("Hello from my plugin")
+        row = ui.row()
+        row.button("Flash it", lambda: api.flash("Hello!", "good", 4), "primary")
+        row.toggle("Greet gg", api.get("greet", True), lambda on: api.set("greet", on))
+        row.stretch()
     api.add_panel(panel, "Status")
 
 
@@ -189,7 +191,7 @@ The market's starter plugins are short, working examples. Install them from the 
 | `version` | yes for the market | Version such as `1.2.0`. The market compares versions to offer updates. |
 | `author` | yes for the market | Shown in the GUI. |
 | `description` | yes for the market | One or two sentences, shown in the GUI. |
-| `api` | no | Plugin API version the plugin needs. Defaults to `1`. Set it to `2` if you use tabs/buttons (`add_tab`, `add_button`, `hide_tab`, `hide_button`). If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
+| `api` | no | Plugin API version the plugin needs. Set it to `3` if you draw panels or tabs (the PyQt6 UI helpers below), or `2` if you only use `add_button`, `hide_tab` and `hide_button`. Plugins without any UI work on every version. If it is higher than the app supports, the plugin doesn't load and shows an error telling the user to update YT2VM. |
 | `entry` | no | Python file to load. Defaults to `plugin.py`. Must be inside the plugin folder. |
 | `tags`, `commands`, `homepage` | no | Shown on the market card. |
 
@@ -210,13 +212,13 @@ The market's starter plugins are short, working examples. Install them from the 
 | `@api.command(name, help="", mod_only=False, owner_only=False)` | Adds `!name`. The handler receives a `ctx` (see below). Names are lowercase letters, digits and `_`, at most 32 characters, and can't replace a built-in command or one from another plugin. The command uses the user's configured prefix, so `!name` becomes `?name` if the prefix is `?`. |
 | `@api.on(event)` | Subscribes to an event (see below). Also works as `api.on(event, fn)`. |
 | `@api.every(seconds)` | Calls `fn()` every `seconds` (minimum 1). Also works as `api.every(seconds, fn)`. |
-| `api.add_panel(build_fn, title=None)` | `build_fn(parent)` is called on the UI thread whenever the Plugins page redraws. Put your Tk widgets inside `parent`. Use `parent["bg"]` as the background so the panel matches the theme. |
-| `api.add_tab(title, build_fn=None, group="TOOLS")` | **(API 2)** Adds a new sidebar tab. `build_fn(frame)` draws its contents (runs on the UI thread). The tab is removed automatically when the plugin unloads. Returns the tab's frame. |
-| `api.add_button(page, text, fn, variant="neutral")` | **(API 2)** Adds a button to a page. `page` is a frame (from `add_tab` or `api.page(title)`) or a tab title. `fn()` runs when clicked. Removed automatically on unload. `variant` is `neutral`, `go`, `primary` or `danger`. |
-| `api.hide_tab(title)` | **(API 2)** Hides any tab by its title (built-in or added). Restored automatically on unload. |
-| `api.hide_button(text, page=None)` | **(API 2)** Hides buttons whose text matches, on one page (frame or title) or everywhere. Restored automatically on unload. |
-| `api.remove_tab(title)` | **(API 2)** Removes a tab this plugin added. |
-| `api.pages()` / `api.page(title)` | **(API 2)** List all tab titles / get one tab's frame (or `None`) so you can add buttons to it. |
+| `api.add_panel(build_fn, title=None)` | `build_fn(ui)` is called on the UI thread whenever the Plugins page redraws. `ui` is a [PluginUI](#building-ui) for drawing controls on the plugin's card. |
+| `api.add_tab(title, build_fn=None, group="TOOLS")` | Adds a new sidebar tab. `build_fn(ui)` draws its contents (runs on the UI thread). The tab is removed automatically when the plugin unloads. Returns the tab's widget. |
+| `api.add_button(page, text, fn, variant="neutral")` | Adds a button to a page. `page` is a tab (from `add_tab` or `api.page(title)`), a `ui` object, or a tab title. `fn()` runs when clicked. Removed automatically on unload. `variant` is `neutral`, `go`, `primary`, `danger`, `warn`, `info` or `violet`. |
+| `api.hide_tab(title)` | Hides any tab by its title (built-in or added). Restored automatically on unload. |
+| `api.hide_button(text, page=None)` | Hides buttons whose text matches, on one page (tab or title) or everywhere. Restored automatically on unload. |
+| `api.remove_tab(title)` | Removes a tab this plugin added. |
+| `api.pages()` / `api.page(title)` | List all tab titles / get one tab's widget (or `None`) so you can add buttons to it. |
 
 Viewer commands go through the same protections as built-in ones before they reach your handler: blacklist, timed bans, cooldown, rate limit, chat pause and disabled commands. Built-in commands always take priority over plugin commands.
 
@@ -253,17 +255,80 @@ Viewer commands go through the same protections as built-in ones before they rea
 | `api.run(chain)` | Runs any command chain **as the console, with owner rights**. It is queued: the call returns at once and the commands run shortly after, as user `"[console]"`, so they also fire the `command` event. |
 | `api.get(key, default=None)` / `api.set(key, value)` | Per-plugin settings saved in `settings.json` under `plugin_settings.<id>`. Values must be JSON-serialisable. |
 | `api.settings` | A copy of all of this plugin's settings. |
-| `api.ui(fn, *args)` | Runs `fn` on the Tk UI thread. |
+| `api.ui(fn, *args)` | Runs `fn` on the UI thread. |
+| `api.qt` | The PyQt6 modules: `api.qt.QtWidgets`, `api.qt.QtCore` and `api.qt.QtGui`. See [Building UI](#building-ui). |
 | `api.id`, `api.manifest`, `api.path` | The plugin's id, its parsed `plugin.json`, and its folder. Keep your own files in `os.path.join(api.path, "data")`, which survives market updates. |
-| `api.api_version`, `api.app_version` | Plugin API version (currently `2`) and the YT2VM version string. |
+| `api.api_version`, `api.app_version` | Plugin API version (currently `3`) and the YT2VM version string. |
 | `api.app` | The `ChatPlaysApp` object itself. It is powerful but internal and can change between releases, so prefer the API above. |
+
+---
+
+## Building UI
+
+The app window is built with PyQt6. Panels and tabs receive a `ui` object with simple helpers, so most plugins never need to import Qt. Every helper returns the widget it made, and callbacks are wrapped so an exception is logged instead of crashing the app.
+
+| Helper | Description |
+|---|---|
+| `ui.label(text, muted=False, mono=False, bold=False, size=10, color=None)` | A text label. `color` is a role (`ok`, `bad`, `warn`, `info`, `violet`, `accent`, `muted`, `faint`, `hi`) or a hex colour. Change it later with `.setText(...)`. |
+| `ui.heading(text)` | A section heading. |
+| `ui.button(text, fn, variant="neutral", icon=None)` | A button. `variant` is `neutral`, `primary`, `go`, `danger`, `warn`, `soft`, `ghost`, `link`, `info` or `violet`. |
+| `ui.input(placeholder="", value="", on_enter=None, on_change=None, secret=False, mono=False)` | A one-line text box. Read it with `.get()` and change it with `.set(text)`. `on_change(text)` runs on every edit. |
+| `ui.toggle(text, value=False, on_change=None)` | An on/off switch. `.get()` / `.set(bool)`. `on_change(on)` runs when the user flips it. |
+| `ui.select(options, value=None, on_change=None, editable=False)` | A drop-down. `.get()` / `.set(text)`. `on_change(text)` runs when the user picks an option. |
+| `ui.number(value=0)` | A small number box. `.number(default)` returns it as a float. |
+| `ui.text(value="", height=120, readonly=False)` | A multi-line text box. `.get()` / `.set(text)`. |
+| `ui.log(height=140)` | A read-only log. Add lines with `.append_line(text, color=None)`. |
+| `ui.row()` | A horizontal row. Returns another `ui` whose helpers place widgets side by side. |
+| `ui.card(title=None, subtitle=None)` | A card with its own `ui` inside. |
+| `ui.separator()`, `ui.space(px)`, `ui.stretch()` | Layout helpers. `stretch()` pushes the rest of a row to the right. |
+| `ui.add(widget)` | Adds any Qt widget you built yourself. |
+| `ui.clear()` | Removes everything this `ui` holds, so you can redraw. |
+| `ui.after(ms, fn)` | Runs `fn` once on the UI thread after `ms` milliseconds. |
+| `ui.widget`, `ui.layout` | The underlying `QWidget` and its layout, for raw Qt. |
+
+```python
+def setup(api):
+    def tab(ui):
+        card = ui.card("Counter", "Counts how often !hi was used")
+        total = card.label(str(api.get("count", 0)), bold=True, size=18)
+        row = card.row()
+        row.button("Reset", lambda: (api.set("count", 0), total.setText("0")), "danger")
+        row.stretch()
+
+        def refresh():
+            total.setText(str(api.get("count", 0)))
+            ui.after(1000, refresh)
+        refresh()
+    api.add_tab("Counter", tab)
+```
+
+### Raw Qt
+
+`api.qt` gives you the PyQt6 modules if the helpers aren't enough. Create widgets on the UI thread (inside a build function, a widget callback or `api.ui(fn)`) and add them with `ui.add(widget)`:
+
+```python
+def setup(api):
+    QtWidgets = api.qt.QtWidgets
+
+    def panel(ui):
+        slider = QtWidgets.QSlider(api.qt.QtCore.Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        slider.setValue(api.get("volume", 50))
+        slider.valueChanged.connect(lambda v: api.set("volume", v))
+        ui.add(slider)
+    api.add_panel(panel, "Volume")
+```
+
+### Plugins made for the old window
+
+YT2VM used Tkinter before 1.2.0. Plugins whose panels or tabs create Tkinter widgets still load, and their commands, events and timers keep working, but their panels show a note asking for an update instead of drawing. Porting is usually a few lines: `tk.Label(parent, text=...).pack()` becomes `ui.label(...)`, `tk.Button(parent, text=..., command=fn).pack()` becomes `ui.button(..., fn)`, and `tk.Entry` becomes `ui.input(...)`. Set `"api": 3` in `plugin.json` once you have.
 
 ---
 
 ## Threads and the UI
 
 - Command handlers, event handlers and timers all run on one background thread named `plugins`, in order. A slow handler delays every other plugin, so do long work (network calls, big files) in your own `threading.Thread`. If a callback takes more than 2 seconds, a warning is written to the log.
-- **Never touch Tk widgets from a handler or timer.** Wrap UI updates in `api.ui(fn)`. Panel `build_fn`s already run on the UI thread, and so do callbacks from widgets such as button commands and `widget.after(...)`.
+- **Never touch widgets from a handler or timer.** Wrap UI updates in `api.ui(fn)`. Panel and tab `build_fn`s already run on the UI thread, and so do callbacks from widgets such as button clicks and `ui.after(ms, fn)`.
 - An exception in a callback is written to `crash_log.txt` and the console. It doesn't stop the plugin or the app.
 
 ---

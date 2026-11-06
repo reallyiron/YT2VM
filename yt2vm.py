@@ -6775,6 +6775,17 @@ def _fmt_bytes(n):
 
 def _guest_copy_error(text, dest=""):
     t = str(text or "").lower()
+    if any(k in t for k in ("is restricted and can't be used to logon", "is restricted and cannot be used to logon",
+                            "account restriction", "user account restriction", "limitblankpassworduse")):
+        return ("Windows in the VM blocks remote logins for users with no password. Give the VM user a password, "
+                "or inside the VM run (as admin): reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa /v LimitBlankPasswordUse "
+                "/t REG_DWORD /d 0 /f   then take a new snapshot")
+    if "password has expired" in t or "must change" in t:
+        return "the VM user's password has expired - log in inside the VM and set a new one"
+    if "account is disabled" in t or "account is currently disabled" in t:
+        return "that user account is disabled inside the VM"
+    if "locked out" in t:
+        return "that VM user is locked out after too many wrong passwords - wait or unlock it inside the VM"
     if any(k in t for k in ("authentication", "verr_authentication_failure", "logon failure", "invalid user name or password",
                             "the specified guest user must be logged in", "unknown user name or bad password")):
         return "wrong VM login - check the VM username and password under File drop on the Discord page"
@@ -16087,8 +16098,8 @@ class ChatPlaysApp(QtAppUI):
                 os.chmod(pwf, 0o600)
             except Exception:
                 pass
-            args = [exe, "guestcontrol", vm, "copyto", "--username", user, "--passwordfile", pwf,
-                    "--target-directory", dest, src]
+            cred = ["--passwordfile", pwf] if pw else ["--password", ""]
+            args = [exe, "guestcontrol", vm, "copyto", "--username", user] + cred + ["--target-directory", dest, src]
             plog("SENDFILE", f"VBoxManage guestcontrol {vm} copyto --username {user} --target-directory {dest} {name}")
             try:
                 r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)

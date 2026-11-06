@@ -49,6 +49,11 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Plugins
 - Plugin API 3: panels and tabs get a `ui` object with simple helpers (`ui.label`, `ui.button`, `ui.input`, `ui.toggle`, `ui.select`, `ui.row`, `ui.card` ...) and `api.qt` for raw PyQt6. Plugins whose panels use Tkinter keep their commands and timers, and their panel shows a note asking for an update.
 
+## Encoding filter
+- The base64 filter now catches every common encoding: base64/base64url, base32, base16 (hex), base58, base62, base36, base85/ascii85, binary, `\x` / `\u` / octal / percent / HTML escapes, char-code lists, split-up blobs, fullwidth and zero-width tricks, and decoder calls (certutil, FromBase64String, b32decode, xxd -r, atob, fromCharCode, ...).
+- It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.
+- A viewer whose command is blocked can't send commands anymore (`!unblock <user>` clears them). A plain chat message is hidden from overlays and chat, and deleted on Discord.
+
 ## Fixes
 - The ChangeVM whitelist and snapshots now load on start (they were read before settings loaded, so they reset on every launch).
 - "Admins only" on the Command Power page now actually limits the command to admins.

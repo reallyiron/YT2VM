@@ -54,6 +54,11 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.
 - A viewer whose command is blocked can't send commands anymore (`!unblock <user>` clears them). A plain chat message is hidden from overlays and chat, and deleted on Discord.
 
+## Overlays
+- The OG classic overlay is back at `/ogchat`: red vote counter on top (`!revert: 0/2`, or "No active votes"), viewers and likes, and the chat below with bold outlined names. Add `?transparent=1` for a see-through background in OBS.
+- Every chat overlay and the live chat in the app now show a YouTube or Discord icon next to each message, a crown next to the owner and a wrench next to mods.
+- The icons are the official YouTube and Discord logos from Simple Icons and Material Design Icons. They are built into `yt2vm.py` and also ship in `assets/icons`. Put your own `youtube.svg`, `discord.svg`, `owner.svg`, `mod.svg`, `eye.svg` or `likes.svg` in `assets/icons` (or an `icons` folder) next to `yt2vm.py` to replace them.
+
 ## Fixes
 - The ChangeVM whitelist and snapshots now load on start (they were read before settings loaded, so they reset on every launch).
 - "Admins only" on the Command Power page now actually limits the command to admins.

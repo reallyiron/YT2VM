@@ -190,6 +190,10 @@ try:
     from PyQt6.QtCore import (PYQT_VERSION_STR, QAbstractAnimation, QAbstractListModel, QBuffer, QByteArray, QEasingCurve, QEvent, QIODevice, QModelIndex, QObject, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, QT_VERSION_STR, QTimer, QVariantAnimation, Qt, pyqtSignal)
     from PyQt6.QtGui import (QColor, QFont, QFontDatabase, QFontMetrics, QIcon, QImage, QImageReader, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QShortcut, QTextCharFormat, QTextCursor, QTextLayout, QTextOption)
     from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QApplication, QBoxLayout, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFrame, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QListView, QListWidget, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QScrollBar, QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QTableWidget, QTextBrowser, QTextEdit, QToolTip, QTreeWidget, QVBoxLayout, QWidget)
+    try:
+        from PyQt6.QtSvg import QSvgRenderer
+    except Exception:
+        QSvgRenderer = None
 except Exception as _qt_err:
     print("=" * 60)
     print("  YT2VM needs PyQt6 for its window and it could not be loaded:")
@@ -4211,6 +4215,38 @@ class ChatModel(QAbstractListModel):
         self.endResetModel()
 
 
+_ICON_PIX = {}
+
+
+def _icon_pix(name, px, dpr=1.0):
+    key = (name, int(px), round(float(dpr), 2))
+    if key in _ICON_PIX:
+        return _ICON_PIX[key]
+    pm = None
+    try:
+        svg = overlay_icon_svg(name) if QSvgRenderer is not None else None
+        if svg:
+            rnd = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+            if rnd.isValid():
+                ds = rnd.defaultSize()
+                ratio = (ds.width() / ds.height()) if ds.height() > 0 else 1.0
+                hh = max(1, int(round(px * dpr)))
+                ww = max(1, int(round(px * dpr * ratio)))
+                img = QImage(ww, hh, QImage.Format.Format_ARGB32_Premultiplied)
+                img.fill(0)
+                ip = QPainter(img)
+                ip.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                ip.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                rnd.render(ip, QRectF(0, 0, ww, hh))
+                ip.end()
+                pm = QPixmap.fromImage(img)
+                pm.setDevicePixelRatio(dpr)
+    except Exception:
+        pm = None
+    _ICON_PIX[key] = pm
+    return pm
+
+
 class ChatDelegate(QStyledItemDelegate):
     PAD_X = 16
     PAD_Y = 6
@@ -4300,7 +4336,13 @@ class ChatDelegate(QStyledItemDelegate):
                 plat = (pre[:-4], col if t["dark"] else mix(col, "#000000", 0.25))
                 name = name[len(pre):]
                 break
+        dpr = p.device().devicePixelRatioF() if p.device() is not None else 1.0
+        isz = max(10, int(fm.height() * 0.78))
         if plat:
+            ic = _icon_pix("discord" if plat[0] == "Discord" else "youtube", isz, dpr)
+            if ic is not None:
+                p.drawPixmap(QPointF(x, y + (head_h - isz) / 2.0), ic)
+                x += ic.width() / max(1.0, ic.devicePixelRatio()) + 5
             p.setPen(qc(plat[1]))
             pw = fm.horizontalAdvance(plat[0])
             p.drawText(QRectF(x, y, pw + 2, head_h), int(Qt.AlignmentFlag.AlignVCenter), plat[0])
@@ -4318,9 +4360,13 @@ class ChatDelegate(QStyledItemDelegate):
         else:
             ncol = {"sys": t["ok"], "err": t["bad"], "mod": t["violet"]}.get(tag, t["hi"])
         p.setPen(qc(ncol))
-        avail = r.right() - x - self.PAD_X
-        p.drawText(QRectF(x, y, avail, head_h), int(Qt.AlignmentFlag.AlignVCenter),
-                   fm.elidedText(name, Qt.TextElideMode.ElideRight, int(max(10, avail))))
+        role = {"OWNER": "owner", "MOD": "mod"}.get(row.get("badge") or "")
+        ric = _icon_pix(role, isz, dpr) if role else None
+        avail = r.right() - x - self.PAD_X - ((isz + 6) if ric is not None else 0)
+        shown = fm.elidedText(name, Qt.TextElideMode.ElideRight, int(max(10, avail)))
+        p.drawText(QRectF(x, y, avail, head_h), int(Qt.AlignmentFlag.AlignVCenter), shown)
+        if ric is not None:
+            p.drawPixmap(QPointF(x + fm.horizontalAdvance(shown) + 6, y + (head_h - isz) / 2.0), ric)
         mcol = {"usr": t["text"], "cmd": mix(t["accent_text"], t["text"], 0.30), "sys": t["muted"],
                 "err": t["bad_soft"], "mod": t["text"]}.get(tag, t["text"])
         p.setPen(qc(mcol))
@@ -6656,6 +6702,114 @@ def discord_token_load():
     return str(doc.get("plain", ""))
 
 
+def _guest_login_file():
+    return os.path.splitext(settings_file)[0] + "_guest_login.json"
+
+
+def guest_password_save(pw):
+    import base64 as _b
+    pw = str(pw or "")
+    doc = {"v": 1}
+    if pw:
+        if platform.system() == "Windows":
+            try:
+                doc["dpapi"] = _b.b64encode(_dpapi(pw.encode("utf-8"), True)).decode("ascii")
+            except Exception as e:
+                plog("SENDFILE", f"DPAPI unavailable ({e}) - VM password stored without encryption")
+                doc["plain"] = pw
+        else:
+            doc["plain"] = pw
+    path = _guest_login_file()
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def guest_password_load():
+    import base64 as _b
+    try:
+        with open(_guest_login_file(), "r") as f:
+            doc = json.load(f)
+    except Exception:
+        return ""
+    if doc.get("dpapi"):
+        try:
+            return _dpapi(_b.b64decode(doc["dpapi"]), False).decode("utf-8")
+        except Exception as e:
+            plog("SENDFILE", f"saved VM password could not be decrypted ({e}) - enter it again")
+            return ""
+    return str(doc.get("plain", ""))
+
+
+_WIN_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+
+
+def safe_guest_filename(name):
+    n = unicodedata.normalize("NFC", str(name or ""))
+    n = n.replace("\\", "/").split("/")[-1]
+    n = re.sub(r'[\x00-\x1f\x7f<>:"|?*]', "_", n)
+    n = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", n)
+    n = n.strip().rstrip(". ")
+    if not n or n in (".", ".."):
+        n = "file"
+    stem, ext = os.path.splitext(n)
+    if stem.lower().split(".")[0] in _WIN_RESERVED:
+        stem = "_" + stem
+    ext = ext[:20]
+    stem = stem[:max(1, 120 - len(ext))]
+    return (stem + ext) or "file"
+
+
+def _fmt_bytes(n):
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+
+
+def _guest_copy_error(text, dest=""):
+    t = str(text or "").lower()
+    if any(k in t for k in ("is restricted and can't be used to logon", "is restricted and cannot be used to logon",
+                            "account restriction", "user account restriction", "limitblankpassworduse")):
+        return ("Windows in the VM blocks remote logins for users with no password. Give the VM user a password, "
+                "or inside the VM run (as admin): reg add HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa /v LimitBlankPasswordUse "
+                "/t REG_DWORD /d 0 /f   then take a new snapshot")
+    if "password has expired" in t or "must change" in t:
+        return "the VM user's password has expired - log in inside the VM and set a new one"
+    if "account is disabled" in t or "account is currently disabled" in t:
+        return "that user account is disabled inside the VM"
+    if "locked out" in t:
+        return "that VM user is locked out after too many wrong passwords - wait or unlock it inside the VM"
+    if any(k in t for k in ("authentication", "verr_authentication_failure", "logon failure", "invalid user name or password",
+                            "the specified guest user must be logged in", "unknown user name or bad password")):
+        return "wrong VM login - check the VM username and password under File drop on the Discord page"
+    if "vmware tools" in t:
+        return "VMware Tools aren't running in the VM - install them inside the VM"
+    if any(k in t for k in ("guest additions", "guest execution service", "guest control", "no guest session", "verr_not_supported",
+                            "is not ready", "service is not ready")):
+        return "VirtualBox Guest Additions aren't running in the VM - install them inside the VM"
+    if any(k in t for k in ("not running", "is not currently running", "machine is not running", "invalid machine state",
+                            "powered off", "not powered on")):
+        return "the VM isn't running"
+    if any(k in t for k in ("verr_path_not_found", "path not found", "cannot find the path", "directory not found",
+                            "the system cannot find the path")):
+        return f"the folder doesn't exist in the VM: {dest}"
+    if any(k in t for k in ("no such file", "verr_file_not_found", "cannot find the file")):
+        return "the file vanished on this PC before it was sent (antivirus may have removed it)"
+    if any(k in t for k in ("disk full", "verr_disk_full", "not enough space")):
+        return "the VM's disk is full"
+    if any(k in t for k in ("access denied", "verr_access_denied", "permission denied")):
+        return f"the VM user can't write to {dest}"
+    line = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    return line[:180] or "copy failed"
+
+
 def _dc_name(user):
     base = re.sub(r"[^a-z0-9_.]", "", str(getattr(user, "name", "") or "").lower())
     return "dc_" + (base or str(getattr(user, "id", "user")))
@@ -6678,6 +6832,10 @@ class DiscordBridge:
         self.mode = "crossplay"
         self.user_tag = ""
         self.guilds = []
+        self.chan_kind = {}
+        self._file_wait = {}
+        self._file_denied = {}
+        self._file_lock = None
         self.inbox = queue.Queue(maxsize=2000)
         self._pressed = collections.deque(maxlen=300)
         self._announce = collections.deque(maxlen=60)
@@ -6891,34 +7049,180 @@ class DiscordBridge:
             client.event(_rescan)
         return client
 
+    @staticmethod
+    def _kind_of(c):
+        discord = sys.modules.get("discord")
+        for attr, kind in (("StageChannel", "stage"), ("VoiceChannel", "voice"), ("TextChannel", "text")):
+            cls = getattr(discord, attr, None) if discord else None
+            if cls is not None and isinstance(c, cls):
+                return kind
+        t = str(getattr(c, "type", "")).lower()
+        for kind in ("stage", "voice", "text", "news"):
+            if kind in t:
+                return "text" if kind == "news" else kind
+        return ""
+
+    def _guild_chats(self, g):
+        try:
+            groups = g.by_category()
+        except Exception:
+            groups = [(None, list(getattr(g, "text_channels", [])) + list(getattr(g, "voice_channels", []))
+                       + list(getattr(g, "stage_channels", [])))]
+        out = []
+        for _cat, chans in groups:
+            for c in chans:
+                kind = self._kind_of(c)
+                if kind:
+                    out.append((c, kind))
+        return out
+
     def _scan(self, client):
         out = []
+        kinds = {}
         try:
             for g in sorted(client.guilds, key=lambda x: str(x.name).lower()):
                 me = getattr(g, "me", None)
                 chans = []
-                for c in getattr(g, "text_channels", []):
+                for c, kind in self._guild_chats(g):
                     ok = True
                     try:
                         if me is not None:
                             p = c.permissions_for(me)
                             ok = bool(p.view_channel and p.send_messages)
+                            if kind != "text":
+                                ok = ok and bool(p.read_message_history)
                     except Exception:
                         ok = True
+                    kinds[int(c.id)] = kind
                     chans.append((int(c.id), str(c.name), ok))
                 out.append((int(g.id), str(g.name), chans))
         except Exception as e:
             _trace(_ex_where(), e)
+        self.chan_kind = kinds
         self.guilds = out
         self.guilds_dirty = True
         self.dirty = True
+
+    def chan_label(self, cid, name):
+        kind = self.chan_kind.get(int(cid), "text")
+        if kind == "voice":
+            return f"VC: {name}"
+        if kind == "stage":
+            return f"Stage: {name}"
+        return f"#{name}"
 
     def channel_name(self, cid):
         for gid, gname, chans in self.guilds:
             for c, n, ok in chans:
                 if c == cid:
-                    return f"{gname} / #{n}"
+                    return f"{gname} / {self.chan_label(c, n)}"
         return ""
+
+    def _roles(self, author, guild):
+        owner_ids = set()
+        for tok in re.split(r"[\s,;]+", str(self.cfg("discord_owner_ids", "") or "")):
+            if tok.strip().isdigit():
+                owner_ids.add(int(tok.strip()))
+        is_owner = int(author.id) in owner_ids or (guild is not None and int(getattr(guild, "owner_id", 0) or 0) == int(author.id))
+        perms = getattr(author, "guild_permissions", None)
+        is_admin = bool(is_owner or (perms is not None and (perms.administrator or perms.manage_guild)))
+        is_mod = bool(is_admin or (perms is not None and perms.manage_messages))
+        if not is_admin:
+            try:
+                nm = _dc_name(author)
+                is_admin = bool(nm in admins or self.app._is_owner_name(nm, False))
+            except Exception:
+                pass
+        return is_owner, is_admin, is_mod
+
+    def _spawn(self, coro):
+        try:
+            return asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            pass
+        if self.loop is not None:
+            try:
+                return asyncio.run_coroutine_threadsafe(coro, self.loop)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        coro.close()
+        return None
+
+    async def _say(self, ch, text):
+        if ch is not None:
+            await self._send(ch, text)
+
+    def _file_drop(self, message):
+        pre = (self.app.command_prefix or "!").lower()
+        content = str(message.content or "").strip()
+        first = content.split()[0].lower() if content else ""
+        is_cmd = first in (pre + "sendfile", "!sendfile")
+        atts = list(getattr(message, "attachments", None) or [])
+        uid = int(message.author.id)
+        now = time.time()
+        for k in [k for k, v in self._file_wait.items() if v < now]:
+            self._file_wait.pop(k, None)
+        armed = uid in self._file_wait
+        if not is_cmd and not (armed and atts):
+            return False
+        ch = message.channel
+        who = str(getattr(message.author, "display_name", "") or _dc_name(message.author))
+        _own, is_admin, _mod = self._roles(message.author, message.guild)
+        if not is_admin:
+            if now - self._file_denied.get(uid, 0) > 15:
+                self._file_denied[uid] = now
+                self._spawn(self._say(ch, f"{who}: only admins and the owner can send files to the VM."))
+            self.log_line(f"{who} tried !sendfile without admin rights")
+            return True
+        if not self.cfg("sendfile_enabled", True):
+            self._spawn(self._say(ch, "Sending files to the VM is turned off on the Discord page."))
+            return True
+        if not atts:
+            self._file_wait[uid] = now + 120
+            self._spawn(self._say(ch, f"{who}: upload the file in the next 2 minutes and I'll put it on the VM desktop."))
+            return True
+        self._file_wait.pop(uid, None)
+        self.log_line(f"{who} sent {len(atts)} file(s) with !sendfile")
+        self._spawn(self._sendfile(ch, atts, who))
+        return True
+
+    async def _sendfile(self, ch, atts, who):
+        if self._file_lock is None:
+            self._file_lock = asyncio.Lock()
+        try:
+            cap_mb = max(1, min(500, int(self.cfg("sendfile_max_mb", 50) or 50)))
+        except Exception:
+            cap_mb = 50
+        cap = cap_mb * 1024 * 1024
+        if len(atts) > 5:
+            await self._say(ch, f"Only the first 5 of {len(atts)} files are sent.")
+            atts = atts[:5]
+        async with self._file_lock:
+            for att in atts:
+                name = safe_guest_filename(getattr(att, "filename", "") or "file")
+                size = int(getattr(att, "size", 0) or 0)
+                if size > cap:
+                    await self._say(ch, f"`{name}` is {_fmt_bytes(size)}, over the {cap_mb} MB limit. Not sent.")
+                    continue
+                try:
+                    data = await att.read()
+                except Exception as e:
+                    await self._say(ch, f"Couldn't download `{name}` from Discord: {type(e).__name__}.")
+                    continue
+                if len(data) > cap:
+                    await self._say(ch, f"`{name}` is over the {cap_mb} MB limit. Not sent.")
+                    continue
+                loop = asyncio.get_running_loop()
+                try:
+                    ok, msg = await loop.run_in_executor(None, self.app.send_file_to_vm, data, name, who)
+                except Exception as e:
+                    ok, msg = False, f"{type(e).__name__}: {e}"
+                if ok:
+                    self.stats["files"] = self.stats.get("files", 0) + 1
+                    await self._say(ch, f"Put `{name}` ({_fmt_bytes(len(data))}) on the VM desktop for {who}.")
+                else:
+                    self.stats["errors"] += 1
+                    await self._say(ch, f"Couldn't send `{name}` to the VM: {msg}")
 
     def _on_message(self, client, message):
         author = message.author
@@ -6926,6 +7230,8 @@ class DiscordBridge:
             return
         play = self._id("discord_channel_id")
         if not play or int(message.channel.id) != play:
+            return
+        if self._file_drop(message):
             return
         content = str(message.content or "")
         try:
@@ -6942,14 +7248,7 @@ class DiscordBridge:
         self._empty_seen = 0
         name = _dc_name(author)
         display = str(getattr(author, "display_name", "") or getattr(author, "name", name))
-        guild = message.guild
-        owner_ids = set()
-        for tok in re.split(r"[\s,;]+", str(self.cfg("discord_owner_ids", "") or "")):
-            if tok.strip().isdigit():
-                owner_ids.add(int(tok.strip()))
-        is_owner = int(author.id) in owner_ids or (guild is not None and int(getattr(guild, "owner_id", 0) or 0) == int(author.id))
-        perms = getattr(author, "guild_permissions", None)
-        is_mod = bool(is_owner or (perms is not None and (perms.administrator or perms.manage_messages or perms.manage_guild)))
+        is_owner, _is_admin, is_mod = self._roles(author, message.guild)
         self.stats["in"] += 1
         self._msgs[int(message.id)] = message
         while len(self._msgs) > 300:
@@ -7361,6 +7660,7 @@ current_vote_info = {"active": False, "text": ""}
 current_viewers = "0"
 current_likes = "0"
 overlay_chat_visible = True
+overlay_scale = 1.4
 split_overlay_mode = False
 
 def handle_exception(exc_type, exc_value, exc_traceback):
@@ -7404,6 +7704,54 @@ _SRC_LABELS = {"discord": "Discord", "youtube": "YouTube"}
 
 def source_label(src):
     return _SRC_LABELS.get(str(src or "").strip().lower(), "")
+
+
+_OVERLAY_ICONS = {
+    'youtube': ('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="180" viewBox="0 0 256 180"><path fill="red" d="M250.346 28.075A32.18 32.18 0 0 0 227.69 5.418C207.824 0 127.87 0 127.87 0S47.912.164 28.046 5.582A32.18 32.18 0 0 0 5.39 28.24c-6.009 35.298-8.34 89.084.165 122.97a32.18 32.18 0 0 0 22.656 22.657c19.866 5.418 99.822 5.418 99.822 5.418s79.955 0 99.82-5.418a32.18 32.18 0 0 0 22.657-22.657c6.338-35.348 8.291-89.1-.164-123.134"/><path fill="#fff" d="m102.421 128.06l66.328-38.418l-66.328-38.418z"/></svg>', None),
+    'discord': ('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="199" viewBox="0 0 256 199"><path fill="#5865f2" d="M216.856 16.597A208.5 208.5 0 0 0 164.042 0c-2.275 4.113-4.933 9.645-6.766 14.046q-29.538-4.442-58.533 0c-1.832-4.4-4.55-9.933-6.846-14.046a207.8 207.8 0 0 0-52.855 16.638C5.618 67.147-3.443 116.4 1.087 164.956c22.169 16.555 43.653 26.612 64.775 33.193A161 161 0 0 0 79.735 175.3a136.4 136.4 0 0 1-21.846-10.632a109 109 0 0 0 5.356-4.237c42.122 19.702 87.89 19.702 129.51 0a132 132 0 0 0 5.355 4.237a136 136 0 0 1-21.886 10.653c4.006 8.02 8.638 15.67 13.873 22.848c21.142-6.58 42.646-16.637 64.815-33.213c5.316-56.288-9.08-105.09-38.056-148.36M85.474 135.095c-12.645 0-23.015-11.805-23.015-26.18s10.149-26.2 23.015-26.2s23.236 11.804 23.015 26.2c.02 14.375-10.148 26.18-23.015 26.18m85.051 0c-12.645 0-23.014-11.805-23.014-26.18s10.148-26.2 23.014-26.2c12.867 0 23.236 11.804 23.015 26.2c0 14.375-10.148 26.18-23.015 26.18"/></svg>', None),
+    'mod': ('<svg xmlns="http://www.w3.org/2000/svg" id="mdi-wrench" viewBox="0 0 24 24"><path d="M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z" /></svg>', '#5E84F1'),
+    'owner': ('<svg xmlns="http://www.w3.org/2000/svg" id="mdi-crown" viewBox="0 0 24 24"><path d="M5 16L3 5L8.5 10L12 4L15.5 10L21 5L19 16H5M19 19C19 19.6 18.6 20 18 20H6C5.4 20 5 19.6 5 19V18H19V19Z" /></svg>', '#FFD700'),
+    'eye': ('<svg xmlns="http://www.w3.org/2000/svg" id="mdi-eye" viewBox="0 0 24 24"><path d="M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5Z" /></svg>', '#1E90FF'),
+    'likes': ('<svg xmlns="http://www.w3.org/2000/svg" id="mdi-thumb-up" viewBox="0 0 24 24"><path d="M23,10C23,8.89 22.1,8 21,8H14.68L15.64,3.43C15.66,3.33 15.67,3.22 15.67,3.11C15.67,2.7 15.5,2.32 15.23,2.05L14.17,1L7.59,7.58C7.22,7.95 7,8.45 7,9V19A2,2 0 0,0 9,21H18C18.83,21 19.54,20.5 19.84,19.78L22.86,12.73C22.95,12.5 23,12.26 23,12V10M1,21H5V9H1V21Z" /></svg>', '#2FD12F'),
+}
+
+
+def overlay_icon_svg(name, color=None):
+    name = str(name or "").lower().strip()
+    if name not in _OVERLAY_ICONS:
+        return None
+    svg, default = _OVERLAY_ICONS[name]
+    for folder in (os.path.join(_appdir(), "assets", "icons"), os.path.join(_appdir(), "icons")):
+        fp = os.path.join(folder, name + ".svg")
+        try:
+            if os.path.isfile(fp) and os.path.getsize(fp) < 200000:
+                with open(fp, "r", encoding="utf-8") as f:
+                    svg = f.read()
+                break
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+    col = color or default
+    if col and re.fullmatch(r"#?[0-9A-Fa-f]{3,8}", col):
+        col = col if col.startswith("#") else "#" + col
+        m = re.search(r"<svg\b[^>]*>", svg)
+        if m:
+            tag = re.sub(r'\sfill="[^"]*"', "", m.group(0))
+            svg = svg[:m.start()] + tag.replace("<svg", f'<svg fill="{col}"', 1) + svg[m.end():]
+    return svg
+
+
+_OV_ICON_CSS = (".pi{height:1.15em;width:auto;vertical-align:-0.2em;margin-right:6px}"
+                ".ri{height:0.95em;width:0.95em;vertical-align:-0.12em;margin-left:5px;filter:drop-shadow(0 0 1px #000)}")
+_OV_ICON_JS = ("function PI(i){if(!i||!i.src)return '';var k=i.src==='Discord'?'discord':'youtube';"
+               "return '<img class=\"pi\" src=\"/icons/'+k+'.svg\" alt=\"'+i.src+'\">';}"
+               "function RI(i){if(!i)return '';if(i.is_owner)return '<img class=\"ri\" src=\"/icons/owner.svg\" alt=\"owner\">';"
+               "if(i.is_admin)return '<img class=\"ri\" src=\"/icons/mod.svg\" alt=\"mod\">';return '';}")
+_OV_SCALE_JS = ("(function(){var q=new URLSearchParams(location.search),fixed=parseFloat(q.get('scale')||q.get('zoom')||''),cur=0;"
+                "function ap(v){v=parseFloat(v);if(!(v>=0.5&&v<=4)||v===cur)return;cur=v;document.documentElement.style.zoom=v;}"
+                "if(fixed>0){ap(fixed);return;}"
+                "function pull(){fetch('/overlay_cfg?t='+Date.now()).then(function(r){return r.json();}).then(function(d){if(d&&d.scale)ap(d.scale);}).catch(function(){});}"
+                "pull();setInterval(pull,2000);})();")
+_OV_ICON_JS = _OV_ICON_JS + _OV_SCALE_JS
 
 
 def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None):
@@ -7478,17 +7826,30 @@ if flask_available:
     def add_cors_headers(response):
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
-    html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;box-sizing:border-box;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}.plat{font-weight:700}.plat.dc{color:#8C94FF;text-shadow:0 0 3px #5865F2}.plat.yt{color:#FF5C5C;text-shadow:0 0 3px #FF0000}</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else if(i.src){u='<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||u);}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/ogchat"><div class="title">OG Classic Chat (/ogchat)</div><div class="desc">The original: red vote text, viewers and likes on top, chat below.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
+    html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;box-sizing:border-box;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}.plat{font-weight:700}.plat.dc{color:#8C94FF;text-shadow:0 0 3px #5865F2}.plat.yt{color:#FF5C5C;text-shadow:0 0 3px #FF0000}""" + _OV_ICON_CSS + """</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else if(i.src){u=PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||u)+RI(i);}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;u+=RI(i);}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
-    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}.plat{font-weight:800}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?('<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)):'@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}.plat{font-weight:900}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block cmd-border';div.innerHTML=`<div class="badge cmd">SYS</div><div class="msg-content"><span class="username cmd">system</span> <span class="message">connected</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?('<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)):'@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
-    html_debugchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:900;text-shadow:1px 1px 0 rgba(0,0,0,0.8);margin-right:5px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:600;text-shadow:1px 1px 0 rgba(0,0,0,0.8);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}.plat{font-weight:900}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}</style></head><body><div class="chat-box" id="chat"></div><script>let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?('<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)):'@'+cleanU;if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('[info]')){badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}.plat{font-weight:800}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}""" + _OV_ICON_CSS + """</style></head><body><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?(PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)+RI(i)):'@'+cleanU+RI(i);if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_template_oldnew = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:700;text-shadow:1px 1px 0 rgba(0,0,0,0.9);margin-right:6px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:700;text-shadow:1px 1px 0 rgba(0,0,0,0.9);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}.plat{font-weight:900}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}""" + _OV_ICON_CSS + """</style></head><body><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block cmd-border';div.innerHTML=`<div class="badge cmd">SYS</div><div class="msg-content"><span class="username cmd">system</span> <span class="message">connected</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[debug]')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?(PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)+RI(i)):'@'+cleanU+RI(i);if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
+    html_debugchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:15px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}.msg-block{background-color:rgba(0,0,0,0.85);padding:6px 10px;display:flex;align-items:baseline;font-size:16px;border-radius:6px;box-shadow:2px 2px 4px rgba(0,0,0,0.5);animation:slideIn 0.2s ease-out forwards;margin-bottom:2px;max-width:95%;word-wrap:break-word}.msg-block.cmd-border{border-left:5px solid #00e5ff}.msg-block.chat-border{border-left:5px solid #00e676}.msg-block.vote-border{border-left:5px solid orange}.msg-block.err-border{border-left:5px solid #f33}.badge{padding:2px 6px;font-weight:800;color:#111;font-size:11px;border-radius:3px;margin-right:8px;flex-shrink:0;align-self:flex-start;margin-top:3px}.badge.cmd{background-color:#00e5ff}.badge.chat{background-color:#00e676}.badge.vote{background-color:orange}.badge.err{background-color:#f33;color:#fff}.msg-content{display:block;word-break:break-word}.username{font-weight:700;text-shadow:1px 1px 0 rgba(0,0,0,0.9);margin-right:6px}.username.cmd{color:#00e5ff}.username.chat{color:#00e676}.username.vote{color:orange}.username.err{color:#f33}.message{color:#fff;font-weight:700;text-shadow:1px 1px 0 rgba(0,0,0,0.9);line-height:1.4}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}.plat{font-weight:900}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}""" + _OV_ICON_CSS + """</style></head><body><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?(PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)+RI(i)):'@'+cleanU+RI(i);if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('[info]')){badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>20)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
     html_stats = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace}.stats-widget{background:rgba(20,20,25,0.85);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:20px 30px;display:inline-block;box-shadow:0 10px 25px rgba(0,0,0,0.5)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase;letter-spacing:1px}.stat-value{color:#fff;font-weight:bold;font-size:24px;text-shadow:0 0 10px rgba(255,255,255,0.2)}.stat-row.cmds .stat-value{color:#00E5FF;text-shadow:0 0 10px rgba(0,229,255,0.3)}.stat-row.views .stat-value{color:#3B82F6;text-shadow:0 0 10px rgba(59,130,246,0.3)}.stat-row.likes .stat-value{color:#10B981;text-shadow:0 0 10px rgba(16,185,129,0.3)}.stat-row.errs .stat-value{color:#EF4444;text-shadow:0 0 10px rgba(239,68,68,0.3)}.version-tag{font-size:12px;color:#52525b;text-align:right;margin-top:15px;font-weight:bold;border-top:1px solid #3f3f46;padding-top:10px}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">UPTIME</span><span class="stat-value" id="uptime">0d 0h 0m 0s</span></div><div class="stat-row views"><span class="stat-label">VIEWERS</span><span class="stat-value" id="viewers">0</span></div><div class="stat-row likes"><span class="stat-label">LIKES</span><span class="stat-label" id="likes">0</span></div><div class="stat-row cmds"><span class="stat-label">CMDS EXECUTED</span><span class="stat-value" id="cmds">0</span></div><div class="stat-row errs"><span class="stat-label">FAILED CMDS</span><span class="stat-value" id="failed">0</span></div><div class="version-tag">{{ version }}</div></div><script>setInterval(function(){fetch('/stats_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('uptime').innerText=data.uptime;document.getElementById('cmds').innerText=data.commands;document.getElementById('failed').innerText=data.failed;if(document.getElementById('viewers'))document.getElementById('viewers').innerText=data.viewers||"0";if(document.getElementById('likes'))document.getElementById('likes').innerText=data.likes||"0";}).catch(e=>{});},1000);</script></body></html>"""
     html_ultradebug = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:#09090b!important;margin:0;padding:20px;overflow:hidden;font-family:'Fira Code',Consolas,monospace;color:#00FF41}.stats-widget{background:rgba(20,20,25,0.95);border:1px solid #00FF41;border-radius:12px;padding:20px 30px;box-shadow:0 0 15px rgba(0,255,65,0.2)}.stat-row{display:flex;align-items:center;justify-content:space-between;margin:12px 0;gap:40px;border-bottom:1px solid #18181b;padding-bottom:8px}.stat-label{color:#a1a1aa;font-weight:bold;font-size:16px;text-transform:uppercase}.stat-value{color:#00FF41;font-weight:bold;font-size:24px;text-shadow:0 0 8px rgba(0,255,65,0.5)}</style></head><body><div class="stats-widget"><div class="stat-row"><span class="stat-label">QUEUE SIZE</span><span class="stat-value" id="qsize">0</span></div><div class="stat-row"><span class="stat-label">COM LOCKED</span><span class="stat-value" id="comstate">FALSE</span></div><div class="stat-row"><span class="stat-label">ACTIVE THREADS</span><span class="stat-value" id="threads">0</span></div><div class="stat-row"><span class="stat-label">LAST REBUILD</span><span class="stat-value" id="rebuild">0s ago</span></div><div class="stat-row"><span class="stat-label">FAILED ACTIONS</span><span class="stat-value" style="color:#FF3333" id="failed">0</span></div></div><script>setInterval(function(){fetch('/debug_data?t='+Date.now()).then(r=>r.json()).then(data=>{document.getElementById('qsize').innerText=data.qsize;document.getElementById('comstate').innerText=data.comstate;document.getElementById('threads').innerText=data.threads;document.getElementById('rebuild').innerText=data.rebuild;document.getElementById('failed').innerText=data.failed;}).catch(e=>{});},500);</script></body></html>"""
 
+    html_ogchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>OG Chat</title><link rel="icon" href="/favicon.ico"><style>@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Anton&family=Open+Sans:wght@500;600&display=swap');html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}body.clear{background:rgba(0,0,0,0)!important}body{display:flex;flex-direction:column;color:#fff;font-family:'Segoe UI','Open Sans',Arial,sans-serif}.top{flex:0 0 36%;position:relative;min-height:110px}#vote{position:absolute;top:4%;left:0;right:0;text-align:center;font-family:Impact,'Anton','Arial Narrow Bold',sans-serif;font-size:clamp(16px,5.6vw,40px);color:#ff0000;line-height:1.05;letter-spacing:.3px;text-shadow:0 0 2px #000,2px 2px 0 #000;padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#vote.on{animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}.stats{position:absolute;bottom:6%;left:0;right:0;display:flex;justify-content:space-around;align-items:center;padding:0 8%}.stat{display:flex;align-items:center;gap:7px;font-family:'Archivo Black','Arial Black',Arial,sans-serif;font-size:clamp(12px,3.6vw,22px);text-shadow:0 0 2px #000,1px 1px 0 #000}.stat img{height:1.25em;width:1.25em;filter:drop-shadow(0 0 1px #000)}.sep{flex:0 0 1px;background:rgba(189,189,189,.38);margin:0 0 4px}#chat{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;padding:0 8px 6px}.line{font-size:clamp(11px,3.15vw,17px);line-height:1.32;word-wrap:break-word;overflow-wrap:anywhere;animation:in .22s ease-out both;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000}@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}.at{font-family:'Segoe UI','Open Sans',Arial,sans-serif;font-weight:600}.nm{font-family:'Archivo Black','Arial Black',Arial,sans-serif;font-weight:900;letter-spacing:.2px}.nm.mod{color:#6f8ff5}.nm.own{color:#ffd23f}.nm.sys{color:#ff4040}.nm.con{color:#00e5ff}.col{font-family:'Archivo Black','Arial Black',Arial,sans-serif;margin:0 6px 0 2px}.msg{font-weight:600}.pi{height:1.15em;width:auto;vertical-align:-0.2em;margin-right:6px}.ri{height:0.95em;width:0.95em;vertical-align:-0.12em;margin-left:5px;filter:drop-shadow(0 0 1px #000)}</style></head><body><div class="top"><div id="vote">No active votes</div><div class="stats"><div class="stat"><img src="/icons/eye.svg" alt="viewers"><span id="viewers">0</span></div><div class="stat"><img src="/icons/likes.svg" alt="likes"><span id="likes">0</span></div></div></div><div class="sep"></div><div id="chat"></div><script>""" + _OV_SCALE_JS + """var Q=new URLSearchParams(location.search);if(Q.get('transparent')==='1'||Q.get('bg')==='clear')document.body.classList.add('clear');var SHOWSYS=Q.get('system')==='1';var MAX=parseInt(Q.get('max')||'40',10);function PI(i){if(!i||!i.src)return '';var k=i.src==='Discord'?'discord':'youtube';return '<img class="pi" src="/icons/'+k+'.svg" alt="'+i.src+'">';}function RI(i){if(!i)return '';if(i.is_owner)return '<img class="ri" src="/icons/owner.svg" alt="owner">';if(i.is_admin)return '<img class="ri" src="/icons/mod.svg" alt="mod">';return '';}var lastId=-1,busy=false,busy2=false;function row(i){var u=i.u||'';var m=i.m||'';var cls='nm',name;if(u==='[system]'||u==='system'){if(!SHOWSYS)return null;cls+=' sys';name='system';}else if(u==='[console]'){cls+=' con';name='console';}else if(u==='[announcement]'){cls+=' con';name='announcement';}else{name=(i.name||u).replace(/^@+/,'');if(i.is_owner)cls+=' own';else if(i.is_admin)cls+=' mod';}var d=document.createElement('div');d.className='line';d.innerHTML=PI(i)+'<span class="at">@</span><span class="'+cls+'">'+name+'</span>'+RI(i)+'<span class="col">:</span><span class="msg">'+m+'</span>';return d;}setInterval(function(){if(busy)return;busy=true;fetch('/history?t='+Date.now()).then(function(r){return r.json();}).then(function(data){try{if(!Array.isArray(data))return;var c=document.getElementById('chat');var f=document.createDocumentFragment(),n=0;data.forEach(function(i){if(i.id>lastId){lastId=i.id;try{var d=row(i);if(d){f.appendChild(d);n++;}}catch(e){}}});if(n){c.appendChild(f);while(c.children.length>MAX)c.removeChild(c.firstChild);}}finally{busy=false;}}).catch(function(){busy=false;});},1000);setInterval(function(){if(busy2)return;busy2=true;fetch('/status_update?t='+Date.now()).then(function(r){return r.json();}).then(function(d){try{var v=document.getElementById('vote');if(d.vote&&d.vote.active){v.textContent=(d.vote.text||'').replace('[vote] ','');v.classList.add('on');}else{v.textContent='No active votes';v.classList.remove('on');}document.getElementById('viewers').textContent=d.viewers||'0';document.getElementById('likes').textContent=d.likes||'0';document.getElementById('chat').style.visibility=(d.chat_visible===false)?'hidden':'visible';}finally{busy2=false;}}).catch(function(){busy2=false;});},1500);</script></body></html>"""
+
     @obs_web_overlay_app.route('/')
     def index_page(): return render_template_string(html_index)
+    @obs_web_overlay_app.route('/ogchat')
+    def ogchat_overlay():
+        from flask import Response
+        return Response(html_ogchat, mimetype="text/html", headers={"Cache-Control": "no-cache"})
+    @obs_web_overlay_app.route('/icons/<name>.svg')
+    def overlay_icon_route(name):
+        from flask import Response, request, abort
+        svg = overlay_icon_svg(name, request.args.get("c"))
+        if svg is None:
+            abort(404)
+        return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "max-age=3600"})
     @obs_web_overlay_app.route('/favicon.ico')
     def favicon_route():
         from flask import Response
@@ -7535,6 +7896,8 @@ if flask_available:
     @obs_web_overlay_app.route('/history')
     def get_history():
         with history_lock: return jsonify(list(web_chat_history))
+    @obs_web_overlay_app.route('/overlay_cfg')
+    def get_overlay_cfg(): return jsonify({"scale": overlay_scale})
     @obs_web_overlay_app.route('/status_update')
     def get_status_update(): return jsonify({"status": current_status, "vote": current_vote_info, "viewers": current_viewers, "likes": current_likes, "chat_visible": overlay_chat_visible, "split_mode": split_overlay_mode})
 
@@ -7542,7 +7905,7 @@ if flask_available:
     FLASH_BANNER_APP = """<style>#ytpFlash{position:fixed;left:50%;top:20px;transform:translateX(-50%) translateY(-160%);z-index:2147483646;font-family:'Segoe UI',system-ui,sans-serif;font-weight:700;font-size:15px;color:#fff;padding:11px 20px;border-radius:13px;background:rgba(15,15,22,.92);border:1px solid rgba(0,229,255,.45);box-shadow:0 12px 40px rgba(0,0,0,.5);opacity:0;transition:transform .4s cubic-bezier(.2,.9,.3,1.3),opacity .4s;max-width:80vw;text-align:center}#ytpFlash.show{transform:translateX(-50%) translateY(0);opacity:1}#ytpFlash.good{border-color:rgba(16,185,129,.6)}#ytpFlash.warn{border-color:rgba(245,158,11,.6)}#ytpFlash.err{border-color:rgba(239,68,68,.6)}</style><div id=ytpFlash></div><script>(function(){var el=document.getElementById('ytpFlash'),last=-1,h=null;function p(){fetch('/flash.json?_='+Date.now()).then(function(r){return r.json();}).then(function(d){if(d&&d.n!==last&&d.text){last=d.n;el.textContent=d.text;el.className=d.kind||'info';void el.offsetWidth;el.classList.add('show');if(h)clearTimeout(h);h=setTimeout(function(){el.classList.remove('show');},(d.dur||6)*1000);}else if(d){last=Math.max(last,d.n||0);}}).catch(function(){}).finally(function(){setTimeout(p,1000);});}p();})();</script>"""
     @obs_web_overlay_app.route('/flash.json')
     def get_flash_json(): return jsonify(app_flash)
-    for _tn in ("html_template", "html_template_2", "html_template_new", "html_template_oldnew", "html_debugchat", "html_stats", "html_ultradebug"):
+    for _tn in ("html_ogchat", "html_template", "html_template_2", "html_template_new", "html_template_oldnew", "html_debugchat", "html_stats", "html_ultradebug"):
         _tv = globals().get(_tn)
         if isinstance(_tv, str) and "</body>" in _tv and "ytpFlash" not in _tv:
             globals()[_tn] = _tv.replace("</body>", FLASH_BANNER_APP + "</body>", 1)
@@ -10443,6 +10806,10 @@ class QtAppUI:
             self.recent_bot_messages = collections.deque(maxlen=50)
             self.config = self.load_settings()
             self.changevm_whitelist = list(self.config.get("changevm_whitelist", []))
+            try:
+                globals()["overlay_scale"] = max(0.5, min(4.0, float(self.config.get("overlay_scale", 1.4))))
+            except Exception:
+                globals()["overlay_scale"] = 1.4
             self.changevm_snapshots = dict(self.config.get("changevm_snapshots", {}))
             self.command_power = dict(self.config.get("command_power", {}))
             self._cmd_power_last_use = {}
@@ -12179,7 +12546,7 @@ class QtAppUI:
     def build_overlays_tab(self):
         sc = self.make_scrollable(self.tab_overlays)
         c = Card("OBS overlays", f"Local server on port {flask_port}. Add these as Browser Sources in OBS.")
-        overlays = [("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
+        overlays = [("OG Classic", "/ogchat"), ("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
                     ("Big Stats", "/obs2"), ("Live Stats", "/stats"), ("Ultra Debug", "/ultradebug"),
                     ("Debug Chat", "/debugchat"), ("Index", "/")]
         c.add(self._grid_buttons(None, [(lbl, "#8B5CF6", lambda p=path: self._open_local(p)) for lbl, path in overlays], cols=4))
@@ -12190,7 +12557,17 @@ class QtAppUI:
             ("Toggle split mode", "#27272A", self.toggle_split_overlay),
             ("Copy Glass URL", "#10B981", lambda: self._copy(f"http://localhost:{flask_port}/obsnew")),
             ("Copy Stats URL", "#10B981", lambda: self._copy(f"http://localhost:{flask_port}/stats")),
+            ("Copy OG Chat URL", "#10B981", lambda: self._copy(f"http://localhost:{flask_port}/ogchat")),
+            ("Copy Classic Dark URL", "#10B981", lambda: self._copy(f"http://localhost:{flask_port}/oldobsnew")),
         ], cols=2))
+        sizes = ((1.0, "Small"), (1.4, "Normal"), (1.8, "Big"), (2.3, "Huge"))
+        cur = min(sizes, key=lambda o: abs(o[0] - float(overlay_scale)))[0]
+        self._ov_size_seg = Segmented(sizes, cur)
+        self._ov_size_seg.changed.connect(lambda v: self.set_overlay_scale(v))
+        fg = FormGrid(label_w=110)
+        fg.field("Chat size", row_widget(self._ov_size_seg, "stretch"),
+                 hint="Changes the text size on every chat overlay live, no OBS refresh needed. Add ?scale=1.6 to one overlay's URL to pin its size.")
+        k.add(fg)
         sc.add(k)
         sc.add("stretch")
 
@@ -12730,7 +13107,7 @@ class QtAppUI:
         sc.add(mode)
         self._paint_discord_mode(animate=False)
 
-        ch = Card("Server & channels", "Pick these after the bot is online. The command channel is where viewers type; the log channel is optional.")
+        ch = Card("Server & channels", "Pick these after the bot is online. The command channel is where viewers type: a text channel, or the chat inside a voice channel (VC:), the bot reads it without joining the call. The log channel is optional.")
         ch.add_action(Button("Refresh", self._discord_rescan, "neutral", "sm", icon="refresh"))
         fg = FormGrid(label_w=170)
         self._discord_combos = {}
@@ -12752,6 +13129,32 @@ class QtAppUI:
         ch.add(self._discord_screens_var)
         ch.add(self._discord_logall_var)
         sc.add(ch)
+
+        fd = Card("File drop (!sendfile)", "Admins and the owner type !sendfile with a file attached (or upload it right after) and the bot "
+                  "copies it onto the VM desktop. The file is never opened on this PC: it goes to a temp folder, is copied "
+                  "into the VM with VirtualBox Guest Additions or VMware Tools, and is deleted right away.")
+        fd.add_action(Button("Send test file", self._test_sendfile, "go", "sm", icon="send"))
+        self._sf_enable = Toggle("Let admins and the owner send files to the VM", bool(self.config.get("sendfile_enabled", True)))
+        self._sf_enable.clicked.connect(lambda *_: self._save_discord_toggle("sendfile_enabled", self._sf_enable))
+        fd.add(self._sf_enable)
+        fg2 = FormGrid(label_w=170)
+        self._sf_user = LineEdit(str(self.config.get("guest_user", "")), "Windows user inside the VM", mono=True, on_enter=self._save_sendfile_settings)
+        self._sf_user.editingFinished.connect(self._save_sendfile_settings)
+        self._sf_pass = LineEdit("", "saved - type to change" if guest_password_load() else "password of that user", mono=True, secret=True,
+                                 on_enter=self._save_sendfile_settings)
+        self._sf_dir = LineEdit(str(self.config.get("sendfile_dir", "")), "C:\\Users\\{user}\\Desktop", mono=True, on_enter=self._save_sendfile_settings)
+        self._sf_dir.editingFinished.connect(self._save_sendfile_settings)
+        fg2.field("VM username", self._sf_user)
+        fg2.field("VM password", row_widget(self._sf_pass, Button("Save", self._save_sendfile_settings, "primary", "sm")),
+                  hint="Used only to copy files into the VM. Stored encrypted for your Windows account.")
+        fg2.field("Put files in", self._sf_dir, hint="Folder inside the VM. Leave empty for that user's Desktop.")
+        cur_mb = int(self.config.get("sendfile_max_mb", 50) or 50)
+        mbs = ((10, "10 MB"), (25, "25 MB"), (50, "50 MB"), (100, "100 MB"))
+        self._sf_size = Segmented(mbs, min(mbs, key=lambda o: abs(o[0] - cur_mb))[0])
+        self._sf_size.changed.connect(lambda v: (self.config.__setitem__("sendfile_max_mb", int(v)), self.save_settings()))
+        fg2.field("Max file size", row_widget(self._sf_size, "stretch"))
+        fd.add(fg2)
+        sc.add(fd)
 
         sec = Card("Encoding filter", "Blocks base64, base32, base16/hex, base58, base62, base36, base85/ascii85, binary, escape sequences, "
                                       "char codes and decoder tricks on YouTube and Discord. Only the console, the owner, admins and mods get through. "
@@ -13668,6 +14071,7 @@ class QtAppUI:
                 ("code", "  !whois <user>            ban status and strike count"),
                 ("code", "  !strikes <user>          clear their strikes"),
                 ("code", "  !slowmode <sec>          set the viewer cooldown"),
+                ("code", "  !sendfile + attachment   Discord admins/owner: file to the VM desktop"),
                 ("code", "  !lockdown / !unlock      mods-only chat toggle"),
                 ("h2", "Stream"),
                 ("code", "  !flash <msg>             flash a message on the overlays"),
@@ -14111,6 +14515,7 @@ class ChatPlaysApp(QtAppUI):
         ("!lock / !unlock", "lock commands to mods only / re-open to everyone"),
         ("!purge", "clear the command queue"),
         ("!slowmode <sec>", "set the viewer cooldown"),
+        ("!sendfile + file", "Discord, admins and owner only: put the attached file on the VM desktop"),
         ("!whois @user / !strikes @user", "show / clear a user's status"),
         ("!clearvotes", "clear the active votes"),
         ("!revertnow / !restartnow / !snapshotnow", "run VM maintenance right now"),
@@ -14441,7 +14846,8 @@ class ChatPlaysApp(QtAppUI):
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
             "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "ask",
-            "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {}
+            "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
+            "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50
         }
         if os.path.exists(settings_file):
             try:
@@ -14895,6 +15301,17 @@ class ChatPlaysApp(QtAppUI):
     def toggle_overlay_chat(self):
         global overlay_chat_visible
         overlay_chat_visible = not overlay_chat_visible
+
+    def set_overlay_scale(self, v):
+        global overlay_scale
+        try:
+            v = max(0.5, min(4.0, float(v)))
+        except Exception:
+            return
+        overlay_scale = v
+        self.config["overlay_scale"] = v
+        self.save_settings()
+        self.toast(f"Overlay chat size {int(round(v * 100))}%", "ok")
 
     def toggle_split_overlay(self):
         global split_overlay_mode
@@ -15560,7 +15977,7 @@ class ChatPlaysApp(QtAppUI):
                 break
         cvals, cmap = [], {}
         for cid, cname, ok in chans:
-            label = f"#{cname}" + ("" if ok else "  (no access)")
+            label = (br.chan_label(cid, cname) if br else f"#{cname}") + ("" if ok else "  (no access)")
             cvals.append(label)
             cmap[label] = cid
         self._discord_cmap = cmap
@@ -15614,6 +16031,112 @@ class ChatPlaysApp(QtAppUI):
             return int(str(self.config.get(key, "") or "0").strip() or 0)
         except Exception:
             return 0
+
+    _sendfile_lock = threading.Lock()
+
+    def sendfile_dest(self):
+        user = str(self.config.get("guest_user", "") or "").strip()
+        d = str(self.config.get("sendfile_dir", "") or "").strip() or "C:\\Users\\{user}\\Desktop"
+        return d.replace("{user}", user).rstrip("\\/") or "C:\\"
+
+    def send_file_to_vm(self, data, name, who="console"):
+        name = safe_guest_filename(name)
+        user = str(self.config.get("guest_user", "") or "").strip()
+        pw = guest_password_load()
+        if not user:
+            return False, "no VM login saved - set the VM username and password under File drop on the Discord page"
+        dest = self.sendfile_dest()
+        import tempfile
+        with self._sendfile_lock:
+            tmpdir = tempfile.mkdtemp(prefix="yt2vm_drop_")
+            try:
+                src = os.path.join(tmpdir, name)
+                with open(src, "wb") as f:
+                    f.write(data)
+                if platform.system() == "Windows":
+                    try:
+                        with open(src + ":Zone.Identifier", "w") as zf:
+                            zf.write("[ZoneTransfer]\nZoneId=3\n")
+                    except Exception:
+                        pass
+                ok, err = self._copy_to_guest(src, dest, name, user, pw, len(data))
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        if ok:
+            plog("SENDFILE", f"{name} ({_fmt_bytes(len(data))}) from {who} -> {dest}")
+            self.log("[system]", f"file sent to the VM desktop: {name} ({_fmt_bytes(len(data))}) from {who}", "sysmsg")
+            return True, ""
+        msg = _guest_copy_error(err, dest)
+        plog("SENDFILE", f"{name} from {who} failed: {msg} | raw: {str(err)[:200]!r}")
+        console_log("ERROR", f"!sendfile {name}: {msg}")
+        return False, msg
+
+    def _copy_to_guest(self, src, dest, name, user, pw, size):
+        timeout = int(min(900, 90 + size / (1024 * 1024) * 3))
+        if str(self.config.get("backend", "virtualbox")).lower() == "vmware":
+            vm = self._vmware()
+            if not vm.available():
+                return False, "vmrun not found"
+            if not vm.vmx:
+                return False, "no .vmx picked on the VM Config page"
+            r = vm._vmrun("-gu", user, "-gp", pw, "CopyFileFromHostToGuest", vm.vmx, src, dest + "\\" + name, timeout=timeout)
+            if r is None:
+                return False, "vmrun timed out"
+            return r.returncode == 0, ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        exe, how = resolve_vbox_path(vbox_manage_cmd)
+        if how == "not found":
+            return False, "VBoxManage not found"
+        vm = vm_name or str(self.config.get("vm_name", "") or "")
+        if not vm:
+            return False, "no VM picked on the VM Config page"
+        import tempfile
+        fd, pwf = tempfile.mkstemp(prefix="yt2vm_gp_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(pw)
+            try:
+                os.chmod(pwf, 0o600)
+            except Exception:
+                pass
+            cred = ["--passwordfile", pwf] if pw else ["--password", ""]
+            args = [exe, "guestcontrol", vm, "copyto", "--username", user] + cred + ["--target-directory", dest, src]
+            plog("SENDFILE", f"VBoxManage guestcontrol {vm} copyto --username {user} --target-directory {dest} {name}")
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return False, f"timed out after {timeout}s"
+            except Exception as e:
+                return False, f"{type(e).__name__}: {e}"
+            return r.returncode == 0, ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        finally:
+            try:
+                os.remove(pwf)
+            except Exception:
+                pass
+
+    def _save_sendfile_settings(self, *_):
+        try:
+            self.config["guest_user"] = self._sf_user.get().strip()
+            self.config["sendfile_dir"] = self._sf_dir.get().strip()
+            self.save_settings()
+            pw = self._sf_pass.get()
+            if pw:
+                guest_password_save(pw)
+                self._sf_pass.set("")
+                self._sf_pass.setPlaceholderText("saved - type to change")
+            self.toast("File drop settings saved", "ok")
+        except Exception as e:
+            log_crash("save sendfile settings", e)
+
+    def _test_sendfile(self):
+        self._save_sendfile_settings()
+        self.toast("Sending a test file to the VM...", "info")
+
+        def work():
+            body = f"YT2VM file drop test\r\nSent {time.strftime('%Y-%m-%d %H:%M:%S')}\r\n".encode("utf-8")
+            ok, msg = self.send_file_to_vm(body, "yt2vm_test.txt", "console")
+            self.ui(lambda: self.toast("Test file is on the VM desktop" if ok else f"Test failed: {msg}", "ok" if ok else "bad"))
+        self._run_bg("sendfile test", work)
 
     def _toggle_b64_ui(self):
         self.config["b64_filter"] = bool(self._b64_var.get())

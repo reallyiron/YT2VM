@@ -49,10 +49,23 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Plugins
 - Plugin API 3: panels and tabs get a `ui` object with simple helpers (`ui.label`, `ui.button`, `ui.input`, `ui.toggle`, `ui.select`, `ui.row`, `ui.card` ...) and `api.qt` for raw PyQt6. Plugins whose panels use Tkinter keep their commands and timers, and their panel shows a note asking for an update.
 
-## Encoding filter
+## Discord
+- The command channel and log channel can now be a voice channel's chat (`VC:`) or a stage channel's chat (`Stage:`), not just text channels. The bot reads and posts in that chat without joining the call. Pick it from the same dropdown on the Discord page; the bot needs View Channel, Send Messages and Read Message History there.
+
+## File drop
+- `!sendfile` on Discord: admins and the owner attach a file (or type `!sendfile` and upload it within 2 minutes) and the bot puts it on the VM desktop. Everyone else gets told no.
+- The file is never opened on the host: it lands in a temp folder under a cleaned-up name, is copied into the VM with VirtualBox Guest Additions (`guestcontrol copyto`) or VMware Tools (`CopyFileFromHostToGuest`), and is deleted right after.
+- Set the VM's Windows username and password under **Discord → File drop** (the password is stored encrypted with Windows DPAPI and passed to VirtualBox through a temp file, never on the command line or in logs). Size limit 10-100 MB, up to 5 files per message. **Send test file** checks the setup.
+
 - The base64 filter now catches every common encoding: base64/base64url, base32, base16 (hex), base58, base62, base36, base85/ascii85, binary, `\x` / `\u` / octal / percent / HTML escapes, char-code lists, split-up blobs, fullwidth and zero-width tricks, and decoder calls (certutil, FromBase64String, b32decode, xxd -r, atob, fromCharCode, ...).
 - It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.
 - A viewer whose command is blocked can't send commands anymore (`!unblock <user>` clears them). A plain chat message is hidden from overlays and chat, and deleted on Discord.
+
+## Overlays
+- The OG classic overlay is back at `/ogchat`: red vote counter on top (`!revert: 0/2`, or "No active votes"), viewers and likes, and the chat below with bold outlined names. Add `?transparent=1` for a see-through background in OBS.
+- Chat overlays are bigger by default, with a Chat size switch (Small / Normal / Big / Huge) on the Overlays page that resizes every chat overlay live in OBS. Add `?scale=1.6` to one overlay's URL to pin its size.
+- Every chat overlay and the live chat in the app now show a YouTube or Discord icon next to each message, a crown next to the owner and a wrench next to mods.
+- The YouTube and Discord icons are the official full-colour logos (from SVG Logos), the crown, wrench, eye and thumbs-up come from Material Design Icons. They are built into `yt2vm.py` and also ship in `assets/icons`. Put your own `youtube.svg`, `discord.svg`, `owner.svg`, `mod.svg`, `eye.svg` or `likes.svg` in `assets/icons` (or an `icons` folder) next to `yt2vm.py` to replace them.
 
 ## Fixes
 - The ChangeVM whitelist and snapshots now load on start (they were read before settings loaded, so they reset on every launch).

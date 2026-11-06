@@ -27,6 +27,7 @@ import math
 import asyncio
 import hashlib
 import html
+import unicodedata
 import base64
 import urllib.request, urllib.error, urllib.parse
 from ctypes import wintypes
@@ -6412,44 +6413,176 @@ help lock screen screenshot""".split())
 _TEXT_CMDS = frozenset("say announce flash shout alert pin warn title".split())
 
 
-_B64_ALPHA_RUN = re.compile(r"[A-Za-z0-9+/]{64,}={0,2}")
-_B64_PS_HOST = re.compile(r"\b(powershell|pwsh)(\.exe)?\b")
-_B64_PS_ENC = re.compile(r"(?:^|\s)[-/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|"
+_ENC_ZW = re.compile("[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ]")
+_ENC_URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
+_ENC_PS_HOST = re.compile(r"\b(powershell|pwsh)(\.exe)?\b")
+_ENC_PS_ENC = re.compile(r"(?:^|\s)[-/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|"
                          r"encodedcomma|encodedcomman|encodedcommand|encodedarguments|ea)\s+[a-z0-9+/]{8,}={0,2}")
-_B64_RULES = (
-    (re.compile(r"frombase64"), "FromBase64String decode"),
-    (re.compile(r"b64decode|a2b_base64|decodebytes|decodestring|standard_b64decode|urlsafe_b64decode"), "python base64 decode"),
-    (re.compile(r"import\W{0,4}base64|from\W{0,4}base64\W{0,4}import|__import__\W{0,4}base64"), "python base64 import"),
-    (re.compile(r"codecs\W{0,4}decode.{0,40}base64|['\"]base64['\"]\W{0,4}\)\W{0,4}decode"), "python codecs base64"),
-    (re.compile(r"certutil(?:\.exe)?\W{0,4}[-/](?:decode|decodehex|urlcache)"), "certutil -decode"),
-    (re.compile(r"\bbase64\s+(?:-d|--decode|-D|-di)\b"), "base64 --decode"),
-    (re.compile(r"openssl\s+(?:enc\s+)?(?:-a\s+)?(?:-d\s+)?base64|openssl\s+enc\s+-d\s+-base64"), "openssl base64"),
+_ENC_DECODERS = (
+    (re.compile(r"frombase64|fromhexstring|frombase32"), "FromBase64 / FromHex decode"),
+    (re.compile(r"(?:b64|b32|b32hex|b16|b85|a85|z85|b58|b91|b62|b36|b45)decode|urlsafe_b64decode|standard_b64decode|b58decode_check"),
+     "base-N decode call"),
+    (re.compile(r"a2b_(?:base64|hex|uu|qp|hqx|base32)|unhexlify|decodebytes|decodestring|bytes\W{0,3}fromhex|bytearray\W{0,3}fromhex|\.fromhex\W{0,3}\("),
+     "binascii / fromhex decode"),
+    (re.compile(r"import\W{1,4}(?:base64|base58|base91|base45|base62|base36|binascii)\b|from\W{1,4}(?:base64|base58|base91|base45|binascii|codecs)\W{1,4}import|__import__\W{0,4}['\"]?(?:base64|binascii|codecs|zlib|marshal)"),
+     "decoder import"),
+    (re.compile(r"codecs\W{0,4}(?:decode|getdecoder|lookup)|['\"](?:base_?64|base_?32|hex|hex_codec|rot_?13|uu|uu_codec|zlib|bz2|quopri|base64_codec)['\"]\W{0,6}\)\W{0,4}\.?decode|\.decode\W{0,3}['\"](?:base_?64|hex|rot_?13|uu|zlib|bz2|quopri)['\"]"),
+     "codecs decode"),
+    (re.compile(r"(?:zlib|gzip|lzma|bz2)\W{0,3}decompress|marshal\W{0,3}loads|pickle\W{0,3}loads"), "compressed / marshalled payload"),
+    (re.compile(r"certutil(?:\.exe)?\W{0,4}[-/](?:decode|decodehex|urlcache|encode)"), "certutil decode"),
+    (re.compile(r"\b(?:base64|base32|basenc|base58|base91|base45)\b\W{0,4}(?:-[a-z]*d[a-z]*\b|--decode|--base\w*)"), "base-N --decode"),
+    (re.compile(r"\bxxd\b[^|&;]{0,20}-r|\buudecode\b|\bbasenc\b"), "xxd / uudecode / basenc"),
+    (re.compile(r"openssl\s+(?:enc\s+)?(?:-a\s+)?(?:-d\s+)?(?:-?base64|-a\b)|openssl\s+enc\s+-d"), "openssl decode"),
     (re.compile(r"data:[a-z0-9.+-]+/[a-z0-9.+-]+;base64,"), "base64 data URI"),
-    (re.compile(r"\batob\s*\("), "javascript atob"),
-    (re.compile(r"convert\W{0,4}::\W{0,4}from"), "[Convert]:: decode"),
+    (re.compile(r"\batob\s*\(|buffer\W{0,3}from\W.{0,200}['\"](?:base64|base64url|hex|latin1|binary)['\"]|fromcharcode|\bunescape\s*\(|decodeuricomponent\s*\(\s*['\"]%"),
+     "javascript decode"),
+    (re.compile(r"convert\W{0,4}::\W{0,4}from|text\W{0,3}encoding\W{0,4}::|\.getstring\s*\(|\[char\[\]\]|-bxor\b|\[byte\[\]\]\s*\(?\s*0x"),
+     "PowerShell decode"),
+    (re.compile(r"(?:\[char\]\s*\(?\s*(?:0x)?[0-9a-f]{1,3}\s*\)?\W{0,6}){3,}|(?:char\(\s*\d{2,3}\s*\)\W{0,4}){4,}|(?:chr\(\s*\d{2,3}\s*\)\W{0,4}){4,}"),
+     "char-code payload"),
+    (re.compile(r"(?:^|\s)begin\s+[0-7]{3,4}\s+\S+"), "uuencode block"),
+    (re.compile(r"<~[\s\S]{8,}?~>"), "ascii85 block"),
 )
+_ENC_SEQS = (
+    (re.compile(r"(?:\\x[0-9a-f]{2}[\s,;]*){6,}"), "\\x hex escapes"),
+    (re.compile(r"(?:\\u\{?[0-9a-f]{4,6}\}?[\s,;]*){4,}"), "\\u unicode escapes"),
+    (re.compile(r"(?:\\[0-7]{3}[\s,;]*){6,}"), "octal escapes"),
+    (re.compile(r"(?:%[0-9a-f]{2}){8,}"), "percent-encoded bytes"),
+    (re.compile(r"(?:&#x?[0-9a-f]{2,6};){6,}"), "html character codes"),
+    (re.compile(r"(?:\b0x[0-9a-f]{1,4}\b[\s,;]*){6,}"), "0x byte list"),
+    (re.compile(r"(?:\b(?:3[2-9]|[4-9]\d|1[01]\d|12[0-6])\b\s*[,;]\s*){9,}\b\d{2,3}\b"), "decimal char codes"),
+    (re.compile(r"(?:\b[01]{8}\b[\s,]*){6,}|\b[01]{48,}\b"), "binary (base2)"),
+    (re.compile(r"(?:\b[0-7]{3}\b[\s,]+){9,}\b[0-7]{3}\b"), "octal bytes"),
+)
+_ENC_HEXPAIRS = re.compile(r"(?:\b[0-9a-f]{2}\b[\s:,.-]+){11,}\b[0-9a-f]{2}\b")
+_ENC_TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{16,}")
+_ENC_PRINT_TOKEN = re.compile(r"[\x21-\x7e]{20,}")
+_ENC_SPLIT = re.compile(r"(?:[A-Za-z0-9+/_-]{3,}={0,2}(?:\s+|$)){3,}")
 
 
-def _b64_scan(text):
+_ENC_WORD = re.compile(r"[A-Z]?[a-z]+\d{0,4}|[A-Z]{2,}\d{0,4}|\d+|[a-z]{0,12}(?:[A-Z][a-z]{2,})+[A-Z]?\d{0,4}")
+
+
+def _enc_wordy(t, digits=False):
+    if not re.fullmatch(r"[A-Za-z]+\d{0,4}", t):
+        if not digits or not re.fullmatch(r"[A-Za-z0-9]+", t) or sum(c.isdigit() for c in t) > 0.3 * len(t):
+            return False
+    letters = re.sub(r"\d", "", t)
+    runs = re.findall(r"[a-z]+", letters)
+    if not runs:
+        return False
+    ups = sum(c.isupper() for c in letters)
+    return ups <= 0.5 * len(letters) and sum(map(len, runs)) / len(runs) >= 2.5 and sum(1 for r in runs if len(r) == 1) <= 1
+
+
+def _enc_shape(t):
+    up = lo = dg = sw = 0
+    prev = None
+    for c in t:
+        k = 1 if c.isupper() else (2 if c.islower() else (3 if c.isdigit() else 4))
+        if k == 1: up += 1
+        elif k == 2: lo += 1
+        elif k == 3: dg += 1
+        if prev is not None and k != prev:
+            sw += 1
+        prev = k
+    return up, lo, dg, sw / max(1, len(t) - 1), len(set(t))
+
+
+def _enc_blob(tok, short=32):
+    t = tok.rstrip("=")
+    n = len(t)
+    if n < min(short, 24):
+        return None
+    parts = t.split("-")
+    if len(parts) >= 4 and all(4 <= len(g) <= 12 for g in parts):
+        return None
+    if _enc_wordy(t):
+        return None
+    segs = [g for g in re.split(r"[_/+.-]", t) if g]
+    if segs and all(len(g) <= 6 or _ENC_WORD.fullmatch(g) or _enc_wordy(g, len(segs) > 1) for g in segs):
+        return None
+    up, lo, dg, flip, uniq = _enc_shape(t.replace("_", "").replace("-", ""))
+    need = min(16, max(10, int(n * 0.55)))
+    if n >= short and re.fullmatch(r"[0-9a-f]+|[0-9A-F]+", t) and dg >= 4 and up + lo >= 2:
+        return f"{n}-character hex (base16) blob"
+    if re.fullmatch(r"[A-Z2-7]+|[a-z2-7]+", t) and sum(c in "234567" for c in t) >= 3 and uniq >= min(10, need) and (n >= max(short, 24) or tok.endswith("=")):
+        return f"{n}-character base32 blob"
+    if n >= short and re.fullmatch(r"[A-Za-z0-9+/_-]+", t) and uniq >= need and ((up >= 3 and lo >= 3 and flip >= 0.3) or (dg >= 3 and up + lo >= 8 and flip >= 0.4)):
+        return f"{n}-character base64 / base58 / base62 blob"
+    if n >= short and re.fullmatch(r"[a-z0-9]+|[A-Z0-9]+", t) and dg >= 4 and up + lo >= 8 and uniq >= min(14, need) and flip >= 0.33:
+        return f"{n}-character base36 blob"
+    return None
+
+
+def _enc_b85(tok, short=40):
+    if len(tok) < short:
+        return None
+    if len(tok) < 40 and re.search(r"[a-z]{6,}|[A-Z]{6,}", tok):
+        return None
+    up, lo, dg, flip, uniq = _enc_shape(tok)
+    punct = {c for c in tok if not c.isalnum()}
+    if len(tok) >= 40:
+        ok = uniq >= 24 and up >= 3 and lo >= 3 and dg >= 3 and len(punct) >= 4 and flip >= 0.45
+    else:
+        ok = uniq >= max(12, int(len(tok) * 0.6)) and up >= 2 and lo >= 2 and dg >= 1 and len(punct) >= 3 and flip >= 0.55
+    if ok:
+        return f"{len(tok)}-character base85 blob"
+    return None
+
+
+def _enc_scan(text, chat=False):
+    """Why text looks like an encoded payload (base64/32/16/58/62/85/36/2, escapes, char codes, decoders), or None."""
     raw = str(text or "")
     if len(raw) < 8:
         return None
-    norm = raw.replace("^", "").replace("`", "")
+    try:
+        norm = unicodedata.normalize("NFKC", raw)
+    except Exception:
+        norm = raw
+    norm = _ENC_ZW.sub("", norm).replace("^", "").replace("`", "")
     low = norm.lower()
-    squash = re.sub(r"[\s'\"+(),&{}\[\]$;]", "", low)
-    if _B64_PS_HOST.search(low) or _B64_PS_HOST.search(squash):
-        if _B64_PS_ENC.search(" " + re.sub(r"['\"]", "", low)):
+    squash = re.sub(r"['\"+(),&{}\[\]$;|]", "", re.sub(r"\s*([.+(),'\"&|;\[\]{}$:=])\s*", r"\1", low))
+    if _ENC_PS_HOST.search(low) or _ENC_PS_HOST.search(squash):
+        if _ENC_PS_ENC.search(" " + re.sub(r"['\"]", "", low)):
             return "PowerShell -EncodedCommand"
-    for rx, why in _B64_RULES:
+    for rx, why in _ENC_DECODERS:
         if rx.search(low) or rx.search(squash):
             return why
-    for m in _B64_ALPHA_RUN.finditer(norm):
-        run = m.group(0).rstrip("=")
-        kinds = sum(1 for test in (str.isupper, str.islower, str.isdigit) if any(test(c) for c in run))
-        uniq = len(set(run))
-        if len(run) >= 64 and kinds >= 2 and uniq >= 18:
-            return f"{len(run)}-character base64 blob"
+    body = _ENC_URL.sub(" ", norm) if chat else norm
+    blow = body.lower()
+    for rx, why in _ENC_SEQS:
+        if rx.search(blow):
+            return why
+    m = _ENC_HEXPAIRS.search(blow)
+    if m and sum(ch.isdigit() for ch in m.group(0)) >= 6 and re.search(r"[a-f]", m.group(0)):
+        return "spaced hex bytes"
+    cmd = not chat and norm.lstrip().startswith(("!", "/", "."))
+    short = 16 if cmd else 32
+    for part, lim in ((_ENC_URL.sub(" ", body), short), (" ".join(_ENC_URL.findall(body)), 32)):
+        for m in _ENC_TOKEN.finditer(part):
+            why = _enc_blob(m.group(0), lim)
+            if why:
+                return why
+    for m in _ENC_PRINT_TOKEN.finditer(_ENC_URL.sub(" ", norm)):
+        tok = m.group(0)
+        if cmd and tok.startswith("!") and tok[1:].isalnum():
+            continue
+        why = _enc_b85(tok, 20 if cmd else 40)
+        if why:
+            return why
+    for m in _ENC_SPLIT.finditer(body):
+        toks = m.group(0).split()
+        odd = [tk for tk in toks if re.search(r"\d", tk) and re.search(r"[A-Za-z]", tk) or re.search(r"[a-z][A-Z]|[+/]|=$", tk)]
+        if len(odd) * 10 >= len(toks) * 6:
+            joined = "".join(toks)
+            why = _enc_blob(joined, max(short, 24))
+            if why:
+                return why.replace("blob", "blob split with spaces")
     return None
+
+
+_b64_scan = _enc_scan
 
 
 def _token_file():
@@ -6822,8 +6955,8 @@ class DiscordBridge:
         while len(self._msgs) > 300:
             self._msgs.popitem(last=False)
         shown = content
-        if self.cfg("b64_filter", True) and _b64_scan(content):
-            shown = f"[blocked by base64 filter - {len(content)} chars hidden]"
+        if self.cfg("b64_filter", True) and not is_mod and _enc_scan(content, chat=not content.startswith(self.app.command_prefix or "!")):
+            shown = f"[blocked by the encoding filter - {len(content)} chars hidden]"
         self.log_line(f"{display} ({name}){' [owner]' if is_owner else (' [mod]' if is_mod else '')}: {shown}")
         try:
             self.inbox.put_nowait((name, content, is_mod, is_owner, int(message.id), display))
@@ -6968,11 +7101,12 @@ class DiscordBridge:
         except Exception as _ex:
             _trace(_ex_where(), _ex)
 
-    def on_blocked(self, user, why, ref=None):
+    def on_blocked(self, user, why, ref=None, listed=True):
         self.stats["blocked"] += 1
-        self.announce(f"Blocked {user}: base64 filter ({why}). That account can't send commands anymore.")
-        self.log_line(f"[!] base64 filter blocked {user}: {why}")
-        self.event(f"base64 filter blocked {user} ({why})")
+        if listed:
+            self.announce(f"Blocked {user}: encoding filter ({why}). That account can't send commands anymore.")
+        self.log_line(f"[!] encoding filter blocked {user}: {why}")
+        self.event(f"encoding filter blocked {user} ({why})")
         if ref:
             self.delete_message(ref)
 
@@ -12318,8 +12452,8 @@ class QtAppUI:
             ("MOD", "!clearvotes / !title <text>", "clear votes / set title"),
             ("OWNER", "!replay", "replay chat with original timing"),
             ("OWNER", "!pausechat / !enablechat", "freeze / open chat"),
-            ("OWNER", "!tob64 / !eb64", "turn the base64 filter off / on"),
-            ("MOD", "!unblock <user>", "clear a base64-blocked sender"),
+            ("OWNER", "!tob64 / !eb64", "turn the encoding filter off / on"),
+            ("MOD", "!unblock <user>", "clear a sender blocked by the encoding filter"),
         ]
         self._render_help()
         self._repaint_hooks.append(self._render_help)
@@ -12619,12 +12753,13 @@ class QtAppUI:
         ch.add(self._discord_logall_var)
         sc.add(ch)
 
-        sec = Card("Base64 filter", "Blocks PowerShell / cmd / Python base64 payloads on both YouTube and Discord, and stops that sender "
-                                    "from issuing any more commands. Chat toggles: !tob64 turns it off, !eb64 turns it back on. "
-                                    "!unblock <user> clears one sender.")
+        sec = Card("Encoding filter", "Blocks base64, base32, base16/hex, base58, base62, base36, base85/ascii85, binary, escape sequences, "
+                                      "char codes and decoder tricks on YouTube and Discord. Only the console, the owner, admins and mods get through. "
+                                      "A viewer whose command is blocked can't send commands anymore; a plain chat message is just hidden "
+                                      "(and deleted on Discord). !tob64 turns it off, !eb64 turns it back on, !unblock <user> clears one sender.")
         self._b64_pill = Pill("ON", "ok")
         sec.add_action(self._b64_pill)
-        self._b64_var = Toggle("Block base64 command payloads", self._b64_filter_on())
+        self._b64_var = Toggle("Block encoded payloads from viewers", self._b64_filter_on())
         self._b64_var.clicked.connect(lambda *_: self._toggle_b64_ui())
         sec.add(self._b64_var)
         self._b64_block_lbl = L("", "muted", ("ui", 9))
@@ -13775,16 +13910,25 @@ class ChatPlaysApp(QtAppUI):
     def _b64_filter_on(self):
         return bool(self.config.get("b64_filter", True))
 
-    def _display_text(self, message):
-        if self._b64_filter_on() and _b64_scan(message):
-            return "[blocked by base64 filter]"
+    def _display_text(self, message, trusted=False):
+        if trusted or not self._b64_filter_on():
+            return message
+        msg = str(message or "")
+        if _enc_scan(msg, chat=not msg.startswith(self.command_prefix or "!")):
+            return "[blocked by the encoding filter]"
         return message
+
+    def _enc_trusted(self, clean_user, is_mod=False, is_owner=False):
+        return bool(is_mod or self._is_owner_name(clean_user, is_owner) or clean_user in admins)
 
     def _ingest_chat(self, user, message, is_mod=False, is_owner=False, source="discord", ref=None, display=None):
         if not self.listening_to_chat:
             return None
         shown = display or user
-        text = self._display_text(message)
+        clean_user = str(user).replace("@", "").lower().strip()
+        trusted = self._enc_trusted(clean_user, is_mod, is_owner)
+        text = self._display_text(message, trusted)
+        hidden = text is not message
         add_to_history(shown, text, "user", is_mod, is_owner, src=source)
         if not str(shown).startswith("["):
             self._chat_pane_msg(f"{shown}", text, is_mod, is_owner, src=source)
@@ -13794,11 +13938,14 @@ class ChatPlaysApp(QtAppUI):
             _trace(_ex_where(), _ex)
         console_log("CHAT", f"[{source}] [{shown}]{' (owner)' if is_owner else (' (mod)' if is_mod else '')}: {text}")
         append_to_all_msgs_log(f"[{source}] {shown}", text)
-        self._plugin_chat(shown, message, is_mod, is_owner, source)
-        clean_user = str(user).replace("@", "").lower().strip()
         if str(message).startswith(self.command_prefix):
-            if self._guard_payload(clean_user, message, is_owner, source=source, ref=ref):
+            if self._guard_payload(clean_user, message, is_owner, source=source, ref=ref, is_mod=is_mod):
                 return "blocked"
+        elif hidden:
+            self._hide_payload(clean_user, message, source=source, ref=ref)
+            return "blocked"
+        self._plugin_chat(shown, message, is_mod, is_owner, source)
+        if str(message).startswith(self.command_prefix):
             self._tls.src = (source, ref)
             try:
                 self.parse_command(message, user, is_mod, is_owner)
@@ -13813,26 +13960,33 @@ class ChatPlaysApp(QtAppUI):
         return bool(is_owner or clean_user in owners or clean_user == "reallyiron"
                     or clean_user in ("[console]", "[system]"))
 
-    def _guard_payload(self, clean_user, message, is_owner, source="youtube", ref=None):
+    def _guard_payload(self, clean_user, message, is_owner, source="youtube", ref=None, is_mod=False):
         if not self._b64_filter_on():
             return False
-        why = _b64_scan(message)
+        why = _enc_scan(message)
         if not why:
             return False
-        trusted = self._is_owner_name(clean_user, is_owner)
-        plog("SECURITY", f"base64 filter blocked {source}:{clean_user} - {why}" + (" (owner - not added to the block list)" if trusted else ""))
-        if trusted:
-            self.log("[system]", f"[warn] base64 filter blocked a command from {clean_user} ({why}). !tob64 turns the filter off.", "sysmsg")
-        else:
-            if clean_user not in self.b64_offenders:
-                self.b64_offenders.add(clean_user)
-                self._save_offenders()
-            self.log("[system]", f"[error] base64 blocked from {clean_user} ({why}). they can no longer send commands.", "err")
-            br = getattr(self, "discord", None)
-            if source == "discord" and br is not None:
-                br.on_blocked(clean_user, why, ref=ref)
+        if self._enc_trusted(clean_user, is_mod, is_owner):
+            plog("SECURITY", f"encoding filter: {source}:{clean_user} is console/owner/admin/mod - allowed ({why})")
+            return False
+        plog("SECURITY", f"encoding filter blocked {source}:{clean_user} - {why}")
+        if clean_user not in self.b64_offenders:
+            self.b64_offenders.add(clean_user)
+            self._save_offenders()
+        self.log("[system]", f"[error] encoding filter blocked a command from {clean_user} ({why}). they can no longer send commands.", "err")
+        br = getattr(self, "discord", None)
+        if source == "discord" and br is not None:
+            br.on_blocked(clean_user, why, ref=ref)
         self.ui(self._sync_security_marks)
         return True
+
+    def _hide_payload(self, clean_user, message, source="youtube", ref=None):
+        why = _enc_scan(message, chat=True) or "encoded text"
+        plog("SECURITY", f"encoding filter hid a chat message from {source}:{clean_user} - {why}")
+        self.log("[system]", f"[warn] encoding filter hid a message from {clean_user} ({why}).", "sysmsg")
+        br = getattr(self, "discord", None)
+        if source == "discord" and br is not None:
+            br.on_blocked(clean_user, why, ref=ref, listed=False)
 
     def _offenders_file(self):
         return os.path.splitext(settings_file)[0] + "_blocked.json"
@@ -13965,8 +14119,8 @@ class ChatPlaysApp(QtAppUI):
         ("!protect", "toggle blocking dangerous VM commands"),
     ]
     _HELP_OWNER = [
-        ("!tob64 / !eb64", "turn the base64 filter off / on"),
-        ("!unblock @user", "remove a user from the base64 block list"),
+        ("!tob64 / !eb64", "turn the encoding filter off / on"),
+        ("!unblock @user", "remove a user from the encoding filter block list"),
         ("!pausechat / !enablechat", "owner-only chat pause"),
         ("!plugins ...", "manage plugins (list / reload / enable / disable)"),
     ]
@@ -14991,7 +15145,7 @@ class ChatPlaysApp(QtAppUI):
             ("Connect chat", "Use the stream link on the Dashboard", self.go_live),
             ("Pause or resume chat commands", "Chat", self.toggle_pause_chat),
             ("Enable or stop the Discord bot", "Discord", self.toggle_crossplay),
-            ("Toggle the base64 filter", "Security", self._palette_toggle_b64),
+            ("Toggle the encoding filter", "Security", self._palette_toggle_b64),
             ("Start VM", "Machine", lambda: self._vm_action("startvm")),
             ("Shut down VM", "Machine", lambda: self._vm_action("shutdown")),
             ("Restart VM", "Machine", lambda: self._vm_action("restartvm")),
@@ -15280,7 +15434,7 @@ class ChatPlaysApp(QtAppUI):
         add(bool(self._did("discord_channel_id")), "command channel",
             (self.discord.channel_name(self._did("discord_channel_id")) or str(self._did("discord_channel_id"))) if self._did("discord_channel_id") else "not picked")
         add(bool(discord_token_load()), "saved token", "present" if discord_token_load() else "none - paste it on the Discord page")
-        add(self._b64_filter_on(), "base64 filter", ("on" + (f", {len(self.b64_offenders)} blocked" if self.b64_offenders else "")) if self._b64_filter_on() else "OFF")
+        add(self._b64_filter_on(), "encoding filter", ("on" + (f", {len(self.b64_offenders)} blocked" if self.b64_offenders else "")) if self._b64_filter_on() else "OFF")
         L.append("")
         L.append("--- virtualbox ---")
         path, how = resolve_vbox_path(self.config.get("vbox_path", ""))
@@ -15465,13 +15619,13 @@ class ChatPlaysApp(QtAppUI):
         self.config["b64_filter"] = bool(self._b64_var.get())
         self.save_settings()
         self._sync_security_marks()
-        self.toast("Base64 filter " + ("on." if self._b64_var.get() else "off."), "ok" if self._b64_var.get() else "warn")
+        self.toast("Encoding filter " + ("on." if self._b64_var.get() else "off."), "ok" if self._b64_var.get() else "warn")
 
     def _palette_toggle_b64(self):
         self.config["b64_filter"] = not self._b64_filter_on()
         self.save_settings()
         self._sync_security_marks()
-        self.toast("Base64 filter " + ("on." if self._b64_filter_on() else "off."), "ok" if self._b64_filter_on() else "warn")
+        self.toast("Encoding filter " + ("on." if self._b64_filter_on() else "off."), "ok" if self._b64_filter_on() else "warn")
 
     def _clear_offenders(self):
         n = len(self.b64_offenders)
@@ -15810,17 +15964,17 @@ class ChatPlaysApp(QtAppUI):
 
         if cmd in ("!tob64", "!eb64"):
             if not is_owner:
-                self.log("[system]", f"[warn] {user}: only the owner can switch the base64 filter.", "sysmsg")
+                self.log("[system]", f"[warn] {user}: only the owner can switch the encoding filter.", "sysmsg")
                 return True
             want_off = cmd == "!tob64"
             self.config["b64_filter"] = not want_off
             self.save_settings()
             if want_off:
-                flash("base64 filter OFF", "err", 5)
-                self.log("[system]", f"[warn] base64 filter turned OFF by {user}. !eb64 turns it back on.", "sysmsg")
+                flash("encoding filter OFF", "err", 5)
+                self.log("[system]", f"[warn] encoding filter turned OFF by {user}. !eb64 turns it back on.", "sysmsg")
             else:
-                flash("base64 filter ON", "good", 5)
-                self.log("[system]", f"base64 filter turned ON by {user}.", "sysmsg")
+                flash("encoding filter ON", "good", 5)
+                self.log("[system]", f"encoding filter turned ON by {user}.", "sysmsg")
             self.ui(self._sync_security_marks)
             return True
         if cmd in ("!unblock", "!unb64"):
@@ -15828,10 +15982,10 @@ class ChatPlaysApp(QtAppUI):
                 self.b64_offenders.discard(target)
                 self._save_offenders()
                 flash(f"{target} un-blocked", "good", 5)
-                self.log("[system]", f"{target} removed from the base64 block list by {user}.", "sysmsg")
+                self.log("[system]", f"{target} removed from the encoding filter block list by {user}.", "sysmsg")
                 self.ui(self._sync_security_marks)
             elif target:
-                self.log("[system]", f"{target} is not on the base64 block list.", "sysmsg")
+                self.log("[system]", f"{target} is not on the encoding filter block list.", "sysmsg")
             return True
         if cmd == "!ban":
             if target:
@@ -16113,8 +16267,8 @@ class ChatPlaysApp(QtAppUI):
         if not msg.startswith(self.command_prefix): return
         clean_user = user.replace("@", "").lower().strip()
         if clean_user in self.blacklisted_users: return
-        if clean_user in getattr(self, "b64_offenders", set()) and not self._is_owner_name(clean_user, is_owner):
-            plog("SECURITY", f"ignored command from base64-blocked user {clean_user}")
+        if clean_user in getattr(self, "b64_offenders", set()) and not self._enc_trusted(clean_user, is_mod, is_owner):
+            plog("SECURITY", f"ignored command from encoding-filter-blocked user {clean_user}")
             return
         _tb = self.timed_bans.get(clean_user)
         if _tb is not None:
@@ -16122,7 +16276,7 @@ class ChatPlaysApp(QtAppUI):
             self.timed_bans.pop(clean_user, None)
         _src, _ref = getattr(self._tls, "src", None) or ("youtube", None)
         if _src != "discord":
-            if self._guard_payload(clean_user, msg, is_owner, source=_src, ref=_ref):
+            if self._guard_payload(clean_user, msg, is_owner, source=_src, ref=_ref, is_mod=is_mod):
                 return
         for t in self.blocked_terms:
             if t in msg.lower():
@@ -16484,7 +16638,8 @@ class ChatPlaysApp(QtAppUI):
                                     is_owner = c.author.isChatOwner or clean_name in owners or clean_name == "reallyiron"
                                     is_mod = is_owner or c.author.isChatModerator or clean_name in admins
                                 yt_cmds_off = self._discord_exclusive()
-                                _shown = self._display_text(c.message)
+                                _shown = self._display_text(c.message, self._enc_trusted(clean_name, is_mod, is_owner))
+                                _hid = _shown is not c.message
                                 _yt_src = None if str(c.author.name).startswith("[") else "youtube"
                                 add_to_history(c.author.name, _shown, "user", is_mod, is_owner, src=_yt_src)
                                 if _yt_src:
@@ -16504,7 +16659,11 @@ class ChatPlaysApp(QtAppUI):
                                         self.trigger_command(("!startvm", "", c.author.name))
                                     else: self.process_vote(c.author.name, f"{self.command_prefix}forcefixvm", 2)
                                     continue
-                                self._plugin_chat(c.author.name, c.message, is_mod, is_owner, "youtube")
+                                if _hid and not c.message.startswith(self.command_prefix):
+                                    self._hide_payload(clean_name, c.message, source="youtube")
+                                    continue
+                                if not _hid:
+                                    self._plugin_chat(c.author.name, c.message, is_mod, is_owner, "youtube")
                                 if self.listening_to_chat and not yt_cmds_off:
                                     try: self.parse_command(c.message, c.author.name, is_mod, is_owner)
                                     except Exception as parse_ex:

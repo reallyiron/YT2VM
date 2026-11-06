@@ -6724,6 +6724,7 @@ class DiscordBridge:
         self.mode = "crossplay"
         self.user_tag = ""
         self.guilds = []
+        self.chan_kind = {}
         self.inbox = queue.Queue(maxsize=2000)
         self._pressed = collections.deque(maxlen=300)
         self._announce = collections.deque(maxlen=60)
@@ -6937,33 +6938,73 @@ class DiscordBridge:
             client.event(_rescan)
         return client
 
+    @staticmethod
+    def _kind_of(c):
+        discord = sys.modules.get("discord")
+        for attr, kind in (("StageChannel", "stage"), ("VoiceChannel", "voice"), ("TextChannel", "text")):
+            cls = getattr(discord, attr, None) if discord else None
+            if cls is not None and isinstance(c, cls):
+                return kind
+        t = str(getattr(c, "type", "")).lower()
+        for kind in ("stage", "voice", "text", "news"):
+            if kind in t:
+                return "text" if kind == "news" else kind
+        return ""
+
+    def _guild_chats(self, g):
+        try:
+            groups = g.by_category()
+        except Exception:
+            groups = [(None, list(getattr(g, "text_channels", [])) + list(getattr(g, "voice_channels", []))
+                       + list(getattr(g, "stage_channels", [])))]
+        out = []
+        for _cat, chans in groups:
+            for c in chans:
+                kind = self._kind_of(c)
+                if kind:
+                    out.append((c, kind))
+        return out
+
     def _scan(self, client):
         out = []
+        kinds = {}
         try:
             for g in sorted(client.guilds, key=lambda x: str(x.name).lower()):
                 me = getattr(g, "me", None)
                 chans = []
-                for c in getattr(g, "text_channels", []):
+                for c, kind in self._guild_chats(g):
                     ok = True
                     try:
                         if me is not None:
                             p = c.permissions_for(me)
                             ok = bool(p.view_channel and p.send_messages)
+                            if kind != "text":
+                                ok = ok and bool(p.read_message_history)
                     except Exception:
                         ok = True
+                    kinds[int(c.id)] = kind
                     chans.append((int(c.id), str(c.name), ok))
                 out.append((int(g.id), str(g.name), chans))
         except Exception as e:
             _trace(_ex_where(), e)
+        self.chan_kind = kinds
         self.guilds = out
         self.guilds_dirty = True
         self.dirty = True
+
+    def chan_label(self, cid, name):
+        kind = self.chan_kind.get(int(cid), "text")
+        if kind == "voice":
+            return f"VC: {name}"
+        if kind == "stage":
+            return f"Stage: {name}"
+        return f"#{name}"
 
     def channel_name(self, cid):
         for gid, gname, chans in self.guilds:
             for c, n, ok in chans:
                 if c == cid:
-                    return f"{gname} / #{n}"
+                    return f"{gname} / {self.chan_label(c, n)}"
         return ""
 
     def _on_message(self, client, message):
@@ -12854,7 +12895,7 @@ class QtAppUI:
         sc.add(mode)
         self._paint_discord_mode(animate=False)
 
-        ch = Card("Server & channels", "Pick these after the bot is online. The command channel is where viewers type; the log channel is optional.")
+        ch = Card("Server & channels", "Pick these after the bot is online. The command channel is where viewers type: a text channel, or the chat inside a voice channel (VC:), the bot reads it without joining the call. The log channel is optional.")
         ch.add_action(Button("Refresh", self._discord_rescan, "neutral", "sm", icon="refresh"))
         fg = FormGrid(label_w=170)
         self._discord_combos = {}
@@ -15695,7 +15736,7 @@ class ChatPlaysApp(QtAppUI):
                 break
         cvals, cmap = [], {}
         for cid, cname, ok in chans:
-            label = f"#{cname}" + ("" if ok else "  (no access)")
+            label = (br.chan_label(cid, cname) if br else f"#{cname}") + ("" if ok else "  (no access)")
             cvals.append(label)
             cmap[label] = cid
         self._discord_cmap = cmap

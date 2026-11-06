@@ -49,6 +49,9 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Plugins
 - Plugin API 3: panels and tabs get a `ui` object with simple helpers (`ui.label`, `ui.button`, `ui.input`, `ui.toggle`, `ui.select`, `ui.row`, `ui.card` ...) and `api.qt` for raw PyQt6. Plugins whose panels use Tkinter keep their commands and timers, and their panel shows a note asking for an update.
 
+## Discord
+- The command channel and log channel can now be a voice channel's chat (`VC:`) or a stage channel's chat (`Stage:`), not just text channels. The bot reads and posts in that chat without joining the call. Pick it from the same dropdown on the Discord page; the bot needs View Channel, Send Messages and Read Message History there.
+
 ## Encoding filter
 - The base64 filter now catches every common encoding: base64/base64url, base32, base16 (hex), base58, base62, base36, base85/ascii85, binary, `\x` / `\u` / octal / percent / HTML escapes, char-code lists, split-up blobs, fullwidth and zero-width tricks, and decoder calls (certutil, FromBase64String, b32decode, xxd -r, atob, fromCharCode, ...).
 - It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.

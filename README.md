@@ -52,7 +52,11 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Discord
 - The command channel and log channel can now be a voice channel's chat (`VC:`) or a stage channel's chat (`Stage:`), not just text channels. The bot reads and posts in that chat without joining the call. Pick it from the same dropdown on the Discord page; the bot needs View Channel, Send Messages and Read Message History there.
 
-## Encoding filter
+## File drop
+- `!sendfile` on Discord: admins and the owner attach a file (or type `!sendfile` and upload it within 2 minutes) and the bot puts it on the VM desktop. Everyone else gets told no.
+- The file is never opened on the host: it lands in a temp folder under a cleaned-up name, is copied into the VM with VirtualBox Guest Additions (`guestcontrol copyto`) or VMware Tools (`CopyFileFromHostToGuest`), and is deleted right after.
+- Set the VM's Windows username and password under **Discord → File drop** (the password is stored encrypted with Windows DPAPI and passed to VirtualBox through a temp file, never on the command line or in logs). Size limit 10-100 MB, up to 5 files per message. **Send test file** checks the setup.
+
 - The base64 filter now catches every common encoding: base64/base64url, base32, base16 (hex), base58, base62, base36, base85/ascii85, binary, `\x` / `\u` / octal / percent / HTML escapes, char-code lists, split-up blobs, fullwidth and zero-width tricks, and decoder calls (certutil, FromBase64String, b32decode, xxd -r, atob, fromCharCode, ...).
 - It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.
 - A viewer whose command is blocked can't send commands anymore (`!unblock <user>` clears them). A plain chat message is hidden from overlays and chat, and deleted on Discord.

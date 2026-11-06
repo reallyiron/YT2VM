@@ -6702,6 +6702,103 @@ def discord_token_load():
     return str(doc.get("plain", ""))
 
 
+def _guest_login_file():
+    return os.path.splitext(settings_file)[0] + "_guest_login.json"
+
+
+def guest_password_save(pw):
+    import base64 as _b
+    pw = str(pw or "")
+    doc = {"v": 1}
+    if pw:
+        if platform.system() == "Windows":
+            try:
+                doc["dpapi"] = _b.b64encode(_dpapi(pw.encode("utf-8"), True)).decode("ascii")
+            except Exception as e:
+                plog("SENDFILE", f"DPAPI unavailable ({e}) - VM password stored without encryption")
+                doc["plain"] = pw
+        else:
+            doc["plain"] = pw
+    path = _guest_login_file()
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def guest_password_load():
+    import base64 as _b
+    try:
+        with open(_guest_login_file(), "r") as f:
+            doc = json.load(f)
+    except Exception:
+        return ""
+    if doc.get("dpapi"):
+        try:
+            return _dpapi(_b.b64decode(doc["dpapi"]), False).decode("utf-8")
+        except Exception as e:
+            plog("SENDFILE", f"saved VM password could not be decrypted ({e}) - enter it again")
+            return ""
+    return str(doc.get("plain", ""))
+
+
+_WIN_RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+
+
+def safe_guest_filename(name):
+    n = unicodedata.normalize("NFC", str(name or ""))
+    n = n.replace("\\", "/").split("/")[-1]
+    n = re.sub(r'[\x00-\x1f\x7f<>:"|?*]', "_", n)
+    n = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]", "", n)
+    n = n.strip().rstrip(". ")
+    if not n or n in (".", ".."):
+        n = "file"
+    stem, ext = os.path.splitext(n)
+    if stem.lower().split(".")[0] in _WIN_RESERVED:
+        stem = "_" + stem
+    ext = ext[:20]
+    stem = stem[:max(1, 120 - len(ext))]
+    return (stem + ext) or "file"
+
+
+def _fmt_bytes(n):
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+
+
+def _guest_copy_error(text, dest=""):
+    t = str(text or "").lower()
+    if any(k in t for k in ("authentication", "verr_authentication_failure", "logon failure", "invalid user name or password",
+                            "the specified guest user must be logged in", "unknown user name or bad password")):
+        return "wrong VM login - check the VM username and password under File drop on the Discord page"
+    if "vmware tools" in t:
+        return "VMware Tools aren't running in the VM - install them inside the VM"
+    if any(k in t for k in ("guest additions", "guest execution service", "guest control", "no guest session", "verr_not_supported",
+                            "is not ready", "service is not ready")):
+        return "VirtualBox Guest Additions aren't running in the VM - install them inside the VM"
+    if any(k in t for k in ("not running", "is not currently running", "machine is not running", "invalid machine state",
+                            "powered off", "not powered on")):
+        return "the VM isn't running"
+    if any(k in t for k in ("verr_path_not_found", "path not found", "cannot find the path", "directory not found",
+                            "the system cannot find the path")):
+        return f"the folder doesn't exist in the VM: {dest}"
+    if any(k in t for k in ("no such file", "verr_file_not_found", "cannot find the file")):
+        return "the file vanished on this PC before it was sent (antivirus may have removed it)"
+    if any(k in t for k in ("disk full", "verr_disk_full", "not enough space")):
+        return "the VM's disk is full"
+    if any(k in t for k in ("access denied", "verr_access_denied", "permission denied")):
+        return f"the VM user can't write to {dest}"
+    line = next((ln.strip() for ln in str(text or "").splitlines() if ln.strip()), "")
+    return line[:180] or "copy failed"
+
+
 def _dc_name(user):
     base = re.sub(r"[^a-z0-9_.]", "", str(getattr(user, "name", "") or "").lower())
     return "dc_" + (base or str(getattr(user, "id", "user")))
@@ -6725,6 +6822,9 @@ class DiscordBridge:
         self.user_tag = ""
         self.guilds = []
         self.chan_kind = {}
+        self._file_wait = {}
+        self._file_denied = {}
+        self._file_lock = None
         self.inbox = queue.Queue(maxsize=2000)
         self._pressed = collections.deque(maxlen=300)
         self._announce = collections.deque(maxlen=60)
@@ -7007,12 +7107,120 @@ class DiscordBridge:
                     return f"{gname} / {self.chan_label(c, n)}"
         return ""
 
+    def _roles(self, author, guild):
+        owner_ids = set()
+        for tok in re.split(r"[\s,;]+", str(self.cfg("discord_owner_ids", "") or "")):
+            if tok.strip().isdigit():
+                owner_ids.add(int(tok.strip()))
+        is_owner = int(author.id) in owner_ids or (guild is not None and int(getattr(guild, "owner_id", 0) or 0) == int(author.id))
+        perms = getattr(author, "guild_permissions", None)
+        is_admin = bool(is_owner or (perms is not None and (perms.administrator or perms.manage_guild)))
+        is_mod = bool(is_admin or (perms is not None and perms.manage_messages))
+        if not is_admin:
+            try:
+                nm = _dc_name(author)
+                is_admin = bool(nm in admins or self.app._is_owner_name(nm, False))
+            except Exception:
+                pass
+        return is_owner, is_admin, is_mod
+
+    def _spawn(self, coro):
+        try:
+            return asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            pass
+        if self.loop is not None:
+            try:
+                return asyncio.run_coroutine_threadsafe(coro, self.loop)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        coro.close()
+        return None
+
+    async def _say(self, ch, text):
+        if ch is not None:
+            await self._send(ch, text)
+
+    def _file_drop(self, message):
+        pre = (self.app.command_prefix or "!").lower()
+        content = str(message.content or "").strip()
+        first = content.split()[0].lower() if content else ""
+        is_cmd = first in (pre + "sendfile", "!sendfile")
+        atts = list(getattr(message, "attachments", None) or [])
+        uid = int(message.author.id)
+        now = time.time()
+        for k in [k for k, v in self._file_wait.items() if v < now]:
+            self._file_wait.pop(k, None)
+        armed = uid in self._file_wait
+        if not is_cmd and not (armed and atts):
+            return False
+        ch = message.channel
+        who = str(getattr(message.author, "display_name", "") or _dc_name(message.author))
+        _own, is_admin, _mod = self._roles(message.author, message.guild)
+        if not is_admin:
+            if now - self._file_denied.get(uid, 0) > 15:
+                self._file_denied[uid] = now
+                self._spawn(self._say(ch, f"{who}: only admins and the owner can send files to the VM."))
+            self.log_line(f"{who} tried !sendfile without admin rights")
+            return True
+        if not self.cfg("sendfile_enabled", True):
+            self._spawn(self._say(ch, "Sending files to the VM is turned off on the Discord page."))
+            return True
+        if not atts:
+            self._file_wait[uid] = now + 120
+            self._spawn(self._say(ch, f"{who}: upload the file in the next 2 minutes and I'll put it on the VM desktop."))
+            return True
+        self._file_wait.pop(uid, None)
+        self.log_line(f"{who} sent {len(atts)} file(s) with !sendfile")
+        self._spawn(self._sendfile(ch, atts, who))
+        return True
+
+    async def _sendfile(self, ch, atts, who):
+        if self._file_lock is None:
+            self._file_lock = asyncio.Lock()
+        try:
+            cap_mb = max(1, min(500, int(self.cfg("sendfile_max_mb", 50) or 50)))
+        except Exception:
+            cap_mb = 50
+        cap = cap_mb * 1024 * 1024
+        if len(atts) > 5:
+            await self._say(ch, f"Only the first 5 of {len(atts)} files are sent.")
+            atts = atts[:5]
+        async with self._file_lock:
+            for att in atts:
+                name = safe_guest_filename(getattr(att, "filename", "") or "file")
+                size = int(getattr(att, "size", 0) or 0)
+                if size > cap:
+                    await self._say(ch, f"`{name}` is {_fmt_bytes(size)}, over the {cap_mb} MB limit. Not sent.")
+                    continue
+                try:
+                    data = await att.read()
+                except Exception as e:
+                    await self._say(ch, f"Couldn't download `{name}` from Discord: {type(e).__name__}.")
+                    continue
+                if len(data) > cap:
+                    await self._say(ch, f"`{name}` is over the {cap_mb} MB limit. Not sent.")
+                    continue
+                loop = asyncio.get_running_loop()
+                try:
+                    ok, msg = await loop.run_in_executor(None, self.app.send_file_to_vm, data, name, who)
+                except Exception as e:
+                    ok, msg = False, f"{type(e).__name__}: {e}"
+                if ok:
+                    self.stats["files"] = self.stats.get("files", 0) + 1
+                    await self._say(ch, f"Put `{name}` ({_fmt_bytes(len(data))}) on the VM desktop for {who}.")
+                else:
+                    self.stats["errors"] += 1
+                    await self._say(ch, f"Couldn't send `{name}` to the VM: {msg}")
+
     def _on_message(self, client, message):
         author = message.author
         if getattr(author, "bot", False) or (client.user is not None and author.id == client.user.id):
             return
         play = self._id("discord_channel_id")
         if not play or int(message.channel.id) != play:
+            return
+        if self._file_drop(message):
             return
         content = str(message.content or "")
         try:
@@ -7029,14 +7237,7 @@ class DiscordBridge:
         self._empty_seen = 0
         name = _dc_name(author)
         display = str(getattr(author, "display_name", "") or getattr(author, "name", name))
-        guild = message.guild
-        owner_ids = set()
-        for tok in re.split(r"[\s,;]+", str(self.cfg("discord_owner_ids", "") or "")):
-            if tok.strip().isdigit():
-                owner_ids.add(int(tok.strip()))
-        is_owner = int(author.id) in owner_ids or (guild is not None and int(getattr(guild, "owner_id", 0) or 0) == int(author.id))
-        perms = getattr(author, "guild_permissions", None)
-        is_mod = bool(is_owner or (perms is not None and (perms.administrator or perms.manage_messages or perms.manage_guild)))
+        is_owner, _is_admin, is_mod = self._roles(author, message.guild)
         self.stats["in"] += 1
         self._msgs[int(message.id)] = message
         while len(self._msgs) > 300:
@@ -12918,6 +13119,32 @@ class QtAppUI:
         ch.add(self._discord_logall_var)
         sc.add(ch)
 
+        fd = Card("File drop (!sendfile)", "Admins and the owner type !sendfile with a file attached (or upload it right after) and the bot "
+                  "copies it onto the VM desktop. The file is never opened on this PC: it goes to a temp folder, is copied "
+                  "into the VM with VirtualBox Guest Additions or VMware Tools, and is deleted right away.")
+        fd.add_action(Button("Send test file", self._test_sendfile, "go", "sm", icon="send"))
+        self._sf_enable = Toggle("Let admins and the owner send files to the VM", bool(self.config.get("sendfile_enabled", True)))
+        self._sf_enable.clicked.connect(lambda *_: self._save_discord_toggle("sendfile_enabled", self._sf_enable))
+        fd.add(self._sf_enable)
+        fg2 = FormGrid(label_w=170)
+        self._sf_user = LineEdit(str(self.config.get("guest_user", "")), "Windows user inside the VM", mono=True, on_enter=self._save_sendfile_settings)
+        self._sf_user.editingFinished.connect(self._save_sendfile_settings)
+        self._sf_pass = LineEdit("", "saved - type to change" if guest_password_load() else "password of that user", mono=True, secret=True,
+                                 on_enter=self._save_sendfile_settings)
+        self._sf_dir = LineEdit(str(self.config.get("sendfile_dir", "")), "C:\\Users\\{user}\\Desktop", mono=True, on_enter=self._save_sendfile_settings)
+        self._sf_dir.editingFinished.connect(self._save_sendfile_settings)
+        fg2.field("VM username", self._sf_user)
+        fg2.field("VM password", row_widget(self._sf_pass, Button("Save", self._save_sendfile_settings, "primary", "sm")),
+                  hint="Used only to copy files into the VM. Stored encrypted for your Windows account.")
+        fg2.field("Put files in", self._sf_dir, hint="Folder inside the VM. Leave empty for that user's Desktop.")
+        cur_mb = int(self.config.get("sendfile_max_mb", 50) or 50)
+        mbs = ((10, "10 MB"), (25, "25 MB"), (50, "50 MB"), (100, "100 MB"))
+        self._sf_size = Segmented(mbs, min(mbs, key=lambda o: abs(o[0] - cur_mb))[0])
+        self._sf_size.changed.connect(lambda v: (self.config.__setitem__("sendfile_max_mb", int(v)), self.save_settings()))
+        fg2.field("Max file size", row_widget(self._sf_size, "stretch"))
+        fd.add(fg2)
+        sc.add(fd)
+
         sec = Card("Encoding filter", "Blocks base64, base32, base16/hex, base58, base62, base36, base85/ascii85, binary, escape sequences, "
                                       "char codes and decoder tricks on YouTube and Discord. Only the console, the owner, admins and mods get through. "
                                       "A viewer whose command is blocked can't send commands anymore; a plain chat message is just hidden "
@@ -13833,6 +14060,7 @@ class QtAppUI:
                 ("code", "  !whois <user>            ban status and strike count"),
                 ("code", "  !strikes <user>          clear their strikes"),
                 ("code", "  !slowmode <sec>          set the viewer cooldown"),
+                ("code", "  !sendfile + attachment   Discord admins/owner: file to the VM desktop"),
                 ("code", "  !lockdown / !unlock      mods-only chat toggle"),
                 ("h2", "Stream"),
                 ("code", "  !flash <msg>             flash a message on the overlays"),
@@ -14276,6 +14504,7 @@ class ChatPlaysApp(QtAppUI):
         ("!lock / !unlock", "lock commands to mods only / re-open to everyone"),
         ("!purge", "clear the command queue"),
         ("!slowmode <sec>", "set the viewer cooldown"),
+        ("!sendfile + file", "Discord, admins and owner only: put the attached file on the VM desktop"),
         ("!whois @user / !strikes @user", "show / clear a user's status"),
         ("!clearvotes", "clear the active votes"),
         ("!revertnow / !restartnow / !snapshotnow", "run VM maintenance right now"),
@@ -14606,7 +14835,8 @@ class ChatPlaysApp(QtAppUI):
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
             "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "ask",
-            "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {}
+            "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
+            "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50
         }
         if os.path.exists(settings_file):
             try:
@@ -15790,6 +16020,112 @@ class ChatPlaysApp(QtAppUI):
             return int(str(self.config.get(key, "") or "0").strip() or 0)
         except Exception:
             return 0
+
+    _sendfile_lock = threading.Lock()
+
+    def sendfile_dest(self):
+        user = str(self.config.get("guest_user", "") or "").strip()
+        d = str(self.config.get("sendfile_dir", "") or "").strip() or "C:\\Users\\{user}\\Desktop"
+        return d.replace("{user}", user).rstrip("\\/") or "C:\\"
+
+    def send_file_to_vm(self, data, name, who="console"):
+        name = safe_guest_filename(name)
+        user = str(self.config.get("guest_user", "") or "").strip()
+        pw = guest_password_load()
+        if not user:
+            return False, "no VM login saved - set the VM username and password under File drop on the Discord page"
+        dest = self.sendfile_dest()
+        import tempfile
+        with self._sendfile_lock:
+            tmpdir = tempfile.mkdtemp(prefix="yt2vm_drop_")
+            try:
+                src = os.path.join(tmpdir, name)
+                with open(src, "wb") as f:
+                    f.write(data)
+                if platform.system() == "Windows":
+                    try:
+                        with open(src + ":Zone.Identifier", "w") as zf:
+                            zf.write("[ZoneTransfer]\nZoneId=3\n")
+                    except Exception:
+                        pass
+                ok, err = self._copy_to_guest(src, dest, name, user, pw, len(data))
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        if ok:
+            plog("SENDFILE", f"{name} ({_fmt_bytes(len(data))}) from {who} -> {dest}")
+            self.log("[system]", f"file sent to the VM desktop: {name} ({_fmt_bytes(len(data))}) from {who}", "sysmsg")
+            return True, ""
+        msg = _guest_copy_error(err, dest)
+        plog("SENDFILE", f"{name} from {who} failed: {msg} | raw: {str(err)[:200]!r}")
+        console_log("ERROR", f"!sendfile {name}: {msg}")
+        return False, msg
+
+    def _copy_to_guest(self, src, dest, name, user, pw, size):
+        timeout = int(min(900, 90 + size / (1024 * 1024) * 3))
+        if str(self.config.get("backend", "virtualbox")).lower() == "vmware":
+            vm = self._vmware()
+            if not vm.available():
+                return False, "vmrun not found"
+            if not vm.vmx:
+                return False, "no .vmx picked on the VM Config page"
+            r = vm._vmrun("-gu", user, "-gp", pw, "CopyFileFromHostToGuest", vm.vmx, src, dest + "\\" + name, timeout=timeout)
+            if r is None:
+                return False, "vmrun timed out"
+            return r.returncode == 0, ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        exe, how = resolve_vbox_path(vbox_manage_cmd)
+        if how == "not found":
+            return False, "VBoxManage not found"
+        vm = vm_name or str(self.config.get("vm_name", "") or "")
+        if not vm:
+            return False, "no VM picked on the VM Config page"
+        import tempfile
+        fd, pwf = tempfile.mkstemp(prefix="yt2vm_gp_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(pw)
+            try:
+                os.chmod(pwf, 0o600)
+            except Exception:
+                pass
+            args = [exe, "guestcontrol", vm, "copyto", "--username", user, "--passwordfile", pwf,
+                    "--target-directory", dest, src]
+            plog("SENDFILE", f"VBoxManage guestcontrol {vm} copyto --username {user} --target-directory {dest} {name}")
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return False, f"timed out after {timeout}s"
+            except Exception as e:
+                return False, f"{type(e).__name__}: {e}"
+            return r.returncode == 0, ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        finally:
+            try:
+                os.remove(pwf)
+            except Exception:
+                pass
+
+    def _save_sendfile_settings(self, *_):
+        try:
+            self.config["guest_user"] = self._sf_user.get().strip()
+            self.config["sendfile_dir"] = self._sf_dir.get().strip()
+            self.save_settings()
+            pw = self._sf_pass.get()
+            if pw:
+                guest_password_save(pw)
+                self._sf_pass.set("")
+                self._sf_pass.setPlaceholderText("saved - type to change")
+            self.toast("File drop settings saved", "ok")
+        except Exception as e:
+            log_crash("save sendfile settings", e)
+
+    def _test_sendfile(self):
+        self._save_sendfile_settings()
+        self.toast("Sending a test file to the VM...", "info")
+
+        def work():
+            body = f"YT2VM file drop test\r\nSent {time.strftime('%Y-%m-%d %H:%M:%S')}\r\n".encode("utf-8")
+            ok, msg = self.send_file_to_vm(body, "yt2vm_test.txt", "console")
+            self.ui(lambda: self.toast("Test file is on the VM desktop" if ok else f"Test failed: {msg}", "ok" if ok else "bad"))
+        self._run_bg("sendfile test", work)
 
     def _toggle_b64_ui(self):
         self.config["b64_filter"] = bool(self._b64_var.get())

@@ -38,6 +38,24 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - ChangeVM control: whitelist which VMs `!changevm` can switch to, and pick the snapshot each whitelisted VM reverts to (ChangeVM tab).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 1.4.0
+
+## Automatic updates
+- YT2VM follows `yt2vm.py` on the main branch of this repo. Every time it starts (and every 6 hours) it downloads that file and compares its hash with the one you're running.
+- When it changed and the version is the same or higher, YT2VM updates by itself: an **Updating To Version x.y** screen with a progress bar, then it restarts. The old file is kept as `yt2vm.py.bak-<version>`, and the new file must compile and be YT2VM before anything is replaced.
+- A lower version on GitHub is never installed over a newer copy, and Windows line endings don't count as a change.
+- After the check you get *Checked for updates: you are up to date!* (or what it found) at the top.
+- Machine → System → Updates: Update automatically (default), Ask me first, or Don't check, plus Check now and Restore previous version.
+
+## What's new
+- Help → **What's new** lists every version's added, changed, fixed and removed items.
+
+## OS voting by name
+- OS Voting → **How chat votes**: *Command + name* (`!os win7`), *Name as command* (`!win7`, `!winxp`, `!win10`), or both.
+- Short names default to `win7` / `winxp` / `win10` when the VM name starts with Windows. Names that clash with a built-in command (like `!w` or `!c`) can't be used.
+
+**Updating from 1.3.0 or older:** download `yt2vm.py` once by hand. From 1.4.0 on, YT2VM updates itself from the main branch.
+
 # Release Notes — 1.3.0
 
 ## New window
@@ -66,10 +84,12 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - A passing vote no longer wipes every other running vote.
 - Chat now gets told when a vote is full, paused, on cooldown or runs out of time, instead of silence.
 
+## File drop
 - `!sendfile` on Discord: admins and the owner attach a file (or type `!sendfile` and upload it within 2 minutes) and the bot puts it on the VM desktop. Everyone else gets told no.
 - The file is never opened on the host: it lands in a temp folder under a cleaned-up name, is copied into the VM with VirtualBox Guest Additions (`guestcontrol copyto`) or VMware Tools (`CopyFileFromHostToGuest`), and is deleted right after.
 - Set the VM's Windows username and password under **Discord → File drop** (the password is stored encrypted with Windows DPAPI and passed to VirtualBox through a temp file, never on the command line or in logs). Size limit 10-100 MB, up to 5 files per message. **Send test file** checks the setup.
 
+## Encoding filter
 - The base64 filter now catches every common encoding: base64/base64url, base32, base16 (hex), base58, base62, base36, base85/ascii85, binary, `\x` / `\u` / octal / percent / HTML escapes, char-code lists, split-up blobs, fullwidth and zero-width tricks, and decoder calls (certutil, FromBase64String, b32decode, xxd -r, atob, fromCharCode, ...).
 - It covers YouTube and Discord, commands and plain chat. Only the console, the owner, admins and mods get through.
 - A viewer whose command is blocked can't send commands anymore (`!unblock <user>` clears them). A plain chat message is hidden from overlays and chat, and deleted on Discord.
@@ -163,35 +183,32 @@ Covered commands include: `!revert`, `!startvm`, `!shutdown`, `!restartvm`, `!sw
 
 # Updates
 
-YT2VM updates itself from the [releases on GitHub](https://github.com/reallyiron/YT2VM/releases). It checks about 15 seconds after starting and then every 6 hours. When a new version is out, it shows the release notes and asks before installing.
+YT2VM updates itself from [`yt2vm.py` on the main branch](https://github.com/reallyiron/YT2VM/blob/main/yt2vm.py). It checks right after starting and then every 6 hours, and tells you at the top: *Checked for updates: you are up to date!*
 
-Updating never interrupts a stream on its own:
+When the file on GitHub has a different hash and the same or a higher version:
 
-1. The app downloads the new `yt2vm.py` and checks it: it must be YT2VM, contain no syntax errors, and carry the same version as the release.
-2. It keeps your current file next to it as `yt2vm.py.bak-<old version>`.
-3. It replaces `yt2vm.py`, then asks whether to restart now. You can also restart later; the update is used the next time YT2VM starts.
+1. An **Updating To Version x.y** screen with a progress bar appears.
+2. The app checks the new `yt2vm.py`: it must be YT2VM and contain no syntax errors.
+3. It keeps your current file next to it as `yt2vm.py.bak-<old version>`.
+4. It replaces `yt2vm.py` and restarts by itself. If the VM is busy switching or reverting, it waits for that first.
+
+A lower version on GitHub is never installed over a newer copy.
 
 Under **Machine → System → Updates** you can:
 
 - check for updates now (also in the command palette, Ctrl K);
-- install an update that's waiting;
+- see **What's new** (also on the Help page);
 - go back with **Restore previous version**;
-- choose what happens when a new version is out: **Ask me** (the default), **Install it, I restart later**, or **Don't check**.
+- choose what happens when `yt2vm.py` changes on GitHub: **Update automatically** (the default), **Ask me first**, or **Don't check**.
 
 Settings, plugins and logs aren't touched by an update. Packaged `.exe` builds don't update themselves.
 
 ## Releasing a new version (maintainers)
 
-1. In `yt2vm.py`, raise `version = "..."`, for example to `version = "1.2.0"`, and merge it to `main`.
-2. Publish a GitHub release whose tag is `v` plus that exact version, with the changes in the release notes:
+1. In `yt2vm.py`, raise `version = "..."` by 0.1 (for example `1.4.0` to `1.5.0`) and add the version to `CHANGELOG` with what was added, changed, fixed and removed.
+2. Merge it to `main`. Every copy of YT2VM installs it the next time it starts.
 
-   ```bash
-   gh release create v1.2.0 --title "YT2VM 1.2.0" --notes "- What changed"
-   ```
-
-   You can also use **Releases → Draft a new release** on GitHub. Every copy of YT2VM is offered the update at its next check.
-
-The tag and the `version` in the file must match, or the app refuses the update. Drafts and pre-releases are never offered, so you can use a pre-release to test a version first.
+Pushing a file with the same version also updates everyone, so always raise the version: the What's new page and the update screen show it.
 
 # FAQ
 

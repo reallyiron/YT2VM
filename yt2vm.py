@@ -5458,7 +5458,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.3.0"
+version = "1.4.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -10697,20 +10697,84 @@ If your plugin is rejected, fix the problem, raise the version and submit again.
 # ---------------------------------------------------------------------------
 # updater
 # ---------------------------------------------------------------------------
-# Updates come only from GitHub Releases: publishing a release tagged v<version> makes every copy of
-# YT2VM offer that version. The new yt2vm.py is fetched from the tag, checked (it must compile, be
-# this app, and carry the same version as the tag), the old file is kept as yt2vm.py.bak-<old>, and
-# nothing restarts until the user says so. YT2VM_UPDATE_API / YT2VM_UPDATE_RAW override the URLs for testing.
+# YT2VM follows yt2vm.py on the main branch of github.com/reallyiron/YT2VM. On start (and every few hours) it
+# downloads that file and compares its hash with the running file. A different file with the same or a higher
+# version is installed: it must compile and be this app, the old file is kept as yt2vm.py.bak-<old>, and the
+# app restarts itself. A lower version on GitHub is never installed over a newer local copy.
+# YT2VM_UPDATE_RAW overrides the URL for testing.
 
 UPDATE_REPO = "reallyiron/YT2VM"
+UPDATE_BRANCH = "main"
 UPDATE_CHECK_HOURS = 6
 _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 
+CHANGELOG = (
+    {"version": "1.4.0", "date": "2026-11-07",
+     "added": [
+         "Automatic updates from GitHub: on every start YT2VM compares itself with yt2vm.py on the main branch and, when it changed, installs it with an 'Updating To Version' screen and restarts by itself.",
+         "Start-up check message: 'Checked for updates: you are up to date!' (or what was found).",
+         "What's new: the Help page shows every version's added, changed, fixed and removed items.",
+         "OS voting by name: each votable VM's short name can be its own command (!win7, !winxp, !win10). Pick 'Command + name', 'Name as command' or both on the OS Voting page.",
+         "Short names now default to win7 / winxp / win10 style when the VM name starts with Windows.",
+     ],
+     "changed": [
+         "Updates follow the main branch instead of GitHub Releases, so a release no longer has to be published by hand.",
+         "Update settings: Update automatically (new default), Ask me first, or Don't check.",
+     ],
+     "fixed": [
+         "Names that clash with a built-in command (like !w or !c) can't be used as an OS vote command.",
+     ],
+     "removed": [
+         "The 'Install it, I restart later' update option. Automatic updates restart right away.",
+     ]},
+    {"version": "1.3.0", "date": "2026-11-07",
+     "added": [
+         "PyQt6 window with a new logo and icon, rebuilt pages, command palette (Ctrl+K) and keyboard shortcuts.",
+         "Plugin API 3 with ui helpers and api.qt.",
+         "Encoding filter that catches base64/32/16/58/62/36/85, binary, escapes, char codes and decoder calls on YouTube and Discord.",
+         "OG classic overlay at /ogchat, /clock overlay, live Chat size switch for every chat overlay.",
+         "YouTube and Discord logos on every chat line, crown for the owner and wrench for mods.",
+         "Discord voice and stage channel chats as command and log channels, without joining the call.",
+         "!sendfile on Discord: admins and the owner drop files onto the VM desktop.",
+         "OS voting for a named OS with votes needed, vote time, cooldown, votable VM list and live vote panel.",
+         "Votes needed and vote time for !revert, !restartvm and !forcefixvm.",
+     ],
+     "changed": [
+         "Chat overlays are bigger by default and the platform icons are the official full-colour logos.",
+     ],
+     "fixed": [
+         "Switching VMs ignored the whitelist and chosen snapshot, left the old VM running, and did nothing on VMware.",
+         "A passing vote wiped every other running vote; chat now hears about full, paused, cooldown and expired votes.",
+         "Normal Python one-liners (ctypes, tkinter, GDI) were blocked as base85.",
+         "The ChangeVM whitelist and snapshots reset on every launch.",
+         "'Admins only' on the Command Power page didn't limit commands to admins.",
+         "Clearer !sendfile errors, including Windows blocking users without a password.",
+     ],
+     "removed": []},
+    {"version": "1.2.0", "date": "2026-10",
+     "added": [
+         "Plugins, the Plugin Docs page and the Plugin Market.",
+         "Update checks from GitHub Releases.",
+         "!help, !ban, !unban, !lock, !unlock and !s / !screenshot.",
+     ],
+     "changed": [
+         "Clearer Discord messages; VM maintenance is announced with a screenshot.",
+         "!wait accepts units like 2s, 500ms or 2m.",
+     ],
+     "fixed": [
+         "Keyboard layouts for Danish, Turkish, Norwegian and UK, and dead keys.",
+     ],
+     "removed": []},
+)
+
 
 def _update_urls():
-    api = os.environ.get("YT2VM_UPDATE_API") or f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
-    raw = os.environ.get("YT2VM_UPDATE_RAW") or f"https://raw.githubusercontent.com/{UPDATE_REPO}/{{tag}}/yt2vm.py"
-    return api, raw
+    raw = os.environ.get("YT2VM_UPDATE_RAW") or f"https://raw.githubusercontent.com/{UPDATE_REPO}/{UPDATE_BRANCH}/yt2vm.py"
+    return f"https://github.com/{UPDATE_REPO}/blob/{UPDATE_BRANCH}/yt2vm.py", raw
+
+
+def _src_hash(data):
+    return hashlib.sha256(bytes(data).replace(b"\r\n", b"\n")).hexdigest()
 
 
 def update_supported():
@@ -10726,24 +10790,30 @@ def update_supported():
 
 
 def update_check():
-    """Latest GitHub release. Returns {"tag", "version", "notes", "page", "newer"}; raises on network errors."""
-    api, raw = _update_urls()
-    req = urllib.request.Request(api, headers={"User-Agent": f"YT2VM/{version} updater",
-                                               "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        rel = json.loads(r.read(1024 * 1024).decode("utf-8"))
-    tag = str(rel.get("tag_name") or "").strip()
-    if not tag or rel.get("draft") or rel.get("prerelease"):
-        return {"tag": "", "version": version, "notes": "", "page": "", "newer": False}
-    ver = tag[1:] if tag[:1] in ("v", "V") else tag
-    return {"tag": tag, "version": ver, "notes": str(rel.get("body") or "").strip(),
-            "page": str(rel.get("html_url") or ""), "raw": raw.replace("{tag}", urllib.parse.quote(tag)),
-            "newer": _version_tuple(ver) > _version_tuple(version)}
+    """Compare the running yt2vm.py with the one on GitHub. Raises on network errors."""
+    page, raw = _update_urls()
+    sep = "&" if "?" in raw else "?"
+    data = _market_fetch(f"{raw}{sep}t={int(time.time())}", limit=_UPDATE_MAX_BYTES, timeout=40)
+    with open(os.path.abspath(sys.argv[0]), "rb") as fh:
+        local = fh.read()
+    try:
+        m = re.search(r'^version = "([^"]+)"', data.decode("utf-8", "replace"), re.M)
+    except Exception:
+        m = None
+    rver = m.group(1) if m else "?"
+    rh, lh = _src_hash(data), _src_hash(local)
+    same = rh == lh
+    newer = not same and m is not None and _version_tuple(rver) >= _version_tuple(version)
+    ahead = not same and m is not None and _version_tuple(rver) < _version_tuple(version)
+    return {"tag": f"v{rver}", "version": rver, "hash": rh[:12], "same": same, "newer": newer, "ahead": ahead,
+            "data": data, "raw": raw, "page": page, "notes": ""}
 
 
 def update_download(info):
-    """Fetch yt2vm.py for a release and check it before anything is replaced. Returns the file's bytes."""
-    data = _market_fetch(info["raw"], limit=_UPDATE_MAX_BYTES, timeout=60)
+    """Check the file fetched by update_check before anything is replaced. Returns its bytes."""
+    data = info.get("data")
+    if data is None:
+        data = _market_fetch(info["raw"], limit=_UPDATE_MAX_BYTES, timeout=60)
     try:
         src = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -10751,13 +10821,12 @@ def update_download(info):
     if "class ChatPlaysApp" not in src or "def update_check" not in src:
         raise ValueError("the downloaded file isn't YT2VM")
     try:
-        compile(src, "yt2vm.py", "exec")                        # syntax check only - nothing is run
+        compile(src, "yt2vm.py", "exec")
     except SyntaxError as e:
         raise ValueError(f"the downloaded file has a syntax error on line {e.lineno}")
     m = re.search(r'^version = "([^"]+)"', src, re.M)
     if not m or _version_tuple(m.group(1)) != _version_tuple(info["version"]):
-        raise ValueError(f"release {info['tag']} contains yt2vm.py version {m.group(1) if m else '?'} - "
-                         "the release tag and the version in the file must match")
+        raise ValueError("the downloaded file has no readable version number")
     return data
 
 
@@ -10774,6 +10843,66 @@ def update_install(data):
         fh.write(data)
     os.replace(tmp, target)
     return backup
+
+
+class UpdateBar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(12)
+        self.setMinimumWidth(380)
+        self._v = 0.0
+        self._fail = False
+        self._ph = 0.0
+        self._anim = QVariantAnimation(self)
+        self._anim.valueChanged.connect(self._set)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(30)
+
+    def _set(self, v):
+        self._v = float(v)
+        self.update()
+
+    def _tick(self):
+        self._ph = (self._ph + 0.012) % 1.0
+        self.update()
+
+    def set_value(self, v, fail=False):
+        self._fail = bool(fail)
+        self._anim.stop()
+        self._anim.setDuration(450)
+        self._anim.setStartValue(float(self._v))
+        self._anim.setEndValue(max(0.0, min(1.0, float(v))))
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.start()
+
+    def paintEvent(self, ev):
+        t = T()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rad = r.height() / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qc(t["line"]))
+        p.drawRoundedRect(r, rad, rad)
+        w = r.width() * self._v
+        if w > 1:
+            fr = QRectF(r.left(), r.top(), max(r.height(), w), r.height())
+            col = t["bad"] if self._fail else t["accent"]
+            g = QLinearGradient(fr.topLeft(), fr.topRight())
+            g.setColorAt(0.0, qc(col, 0.75))
+            g.setColorAt(1.0, qc(col))
+            p.setBrush(g)
+            p.drawRoundedRect(fr, rad, rad)
+            if not self._fail and self._v < 1.0:
+                x = fr.left() + fr.width() * self._ph
+                sh = QLinearGradient(QPointF(x - 40, 0), QPointF(x + 40, 0))
+                sh.setColorAt(0.0, qc("#ffffff", 0.0))
+                sh.setColorAt(0.5, qc("#ffffff", 0.28))
+                sh.setColorAt(1.0, qc("#ffffff", 0.0))
+                p.setBrush(sh)
+                p.drawRoundedRect(fr, rad, rad)
+        p.end()
 
 
 class QtAppUI:
@@ -12241,6 +12370,25 @@ class QtAppUI:
         if toast:
             self.toast(toast, "ok")
 
+    def _osv_clashes(self, aliases=None):
+        taken = self._builtin_cmd_names() - {self._vm_slug(a) for a in (aliases or ())}
+        bad = []
+        for n, a in self.votable_vms() if aliases is None else aliases.items():
+            if a in taken:
+                bad.append(f"{n} ({self.command_prefix}{a})")
+        return bad
+
+    def _osv_set_style(self, v):
+        self._osv_set("osvote_style", str(v))
+        if v != "cmd":
+            bad = self._osv_clashes()
+            if bad:
+                self.toast("These names are already commands, give them another name: " + ", ".join(bad), "warn")
+                return
+        ex = ", ".join(self._os_word(a) for n, a in self.votable_vms()[:3]) or "pick votable VMs below"
+        self.toast(f"Chat votes like: {ex}", "ok")
+        self._refresh_osvote()
+
     def _osv_set_cmd(self):
         raw = self._osv_cmd.get().strip().lstrip("!").lower()
         clean = re.sub(r"[^a-z0-9_]", "", raw)
@@ -12264,8 +12412,13 @@ class QtAppUI:
         fg = FormGrid(label_w=170)
         self._osv_cmd = LineEdit(self.osvote_cmd_name(), "changevm", mono=True, width=200, on_enter=self._osv_set_cmd)
         self._osv_cmd.editingFinished.connect(self._osv_set_cmd)
+        stl = (("cmd", "Command + name"), ("direct", "Name as command"), ("both", "Both"))
+        self._osv_style = Segmented(stl, self._osvote_style())
+        self._osv_style.changed.connect(self._osv_set_style)
+        fg.field("How chat votes", row_widget(self._osv_style, "stretch"),
+                 hint="Command + name: !os win7.   Name as command: !win7, !winxp, !win10 - each votable VM's name below is its own command.")
         fg.field("Vote command", row_widget(L(self.command_prefix, "muted", ("mono", 11, "semi")), self._osv_cmd, "stretch", spacing=4),
-                 hint="Viewers type this plus the OS, like !os win7. !changevm always works too.")
+                 hint="Used with Command + name, like !os win7. Mods can always force a switch with !changevm <name>.")
         fg.field("Votes needed", row_widget(self._spin(self._cfg_int("osvote_needed", 3, 1, 200), 1, 200,
                                                        lambda v: self._osv_set("osvote_needed", v)), "stretch"),
                  hint="How many different viewers must vote for the same OS.")
@@ -12330,7 +12483,6 @@ class QtAppUI:
             return
         wl = set(self.changevm_whitelist)
         aliases = dict(self.config.get("changevm_aliases", {}) or {})
-        cmdn = self.command_prefix + self.osvote_cmd_name()
         for name in names:
             cur = name == vm_name
             row = Card(pad=10, tint="accent" if cur else None)
@@ -12343,8 +12495,8 @@ class QtAppUI:
             hl.addWidget(tg, 1)
             if cur:
                 hl.addWidget(Pill("CURRENT", "accent"))
-            al = LineEdit(aliases.get(name, ""), self._vm_slug(name), mono=True, width=130)
-            al.setToolTip(f"Viewers type {cmdn} <this>")
+            al = LineEdit(aliases.get(name, ""), self._default_alias(name), mono=True, width=130)
+            al.setToolTip(f"Viewers type {self._os_word(aliases.get(name) or self._default_alias(name))}")
             hl.addWidget(L("name", "faint", ("ui", 9)))
             hl.addWidget(al)
             snap = self.changevm_snapshots.get(name, "")
@@ -12395,12 +12547,15 @@ class QtAppUI:
             v = cb.get().strip()
             if v:
                 snaps[n] = v
-            key = a or self._vm_slug(n)
+            key = a or self._default_alias(n)
             if tg.get():
                 if key in seen:
                     self.toast(f"{n} and {seen[key]} both use the name '{key}' - give one a different name", "bad")
                     return
                 seen[key] = n
+                if self._osvote_style() != "cmd" and key in self._builtin_cmd_names():
+                    self.toast(f"{self.command_prefix}{key} is already a command - give {n} another name", "bad")
+                    return
         self.changevm_whitelist = wl
         self.changevm_snapshots = snaps
         self.config["changevm_whitelist"] = wl
@@ -12463,7 +12618,7 @@ class QtAppUI:
                 cool = self._cfg_int("osvote_cooldown", 300, 0, 7200)
                 left = int(getattr(self, "_os_last_switch", 0) + cool - now)
                 lines.append(f"No OS vote running. Next vote opens in {left // 60}m {left % 60:02d}s." if left > 0
-                             else f"No OS vote running. Chat can start one with {self.command_prefix}{self.osvote_cmd_name()} <os>.")
+                             else "No OS vote running. Chat can start one with " + (self._osvote_options_text(self.votable_vms()) or "- pick votable VMs below") + ".")
         txt = "\n".join(lines)
         if lbl.text() != txt:
             lbl.setText(txt)
@@ -12871,16 +13026,17 @@ class QtAppUI:
         self._sys_diag_tick()
 
     def _build_update_card(self, parent):
-        c = Card("Updates", f"Running YT2VM {version}. New versions come from the releases at github.com/{UPDATE_REPO}.")
+        c = Card("Updates", f"Running YT2VM {version}. YT2VM follows yt2vm.py on the {UPDATE_BRANCH} branch of github.com/{UPDATE_REPO} "
+                 "and checks it every time it starts.")
         text, fg = getattr(self, "_update_status_text", ("Not checked yet.", "faint"))
         self.update_status = L(text, fg if fg in _ROLE_KEYS else "muted", ("ui", 10, "semi"), wrap=True)
         c.add(self.update_status)
         self.update_check_btn = Button("Check now", self.update_check_now, "primary", "sm", icon="refresh")
         self.update_install_btn = Button("Install", self.update_install_now, "go", "sm", icon="download")
         self.update_install_btn.hide()
-        c.add(row_widget(self.update_check_btn, self.update_install_btn, "stretch",
-                         Button("Restore previous version", self._update_restore_backup, "neutral", "sm", icon="undo")))
-        names = {"ask": "Ask me", "auto": "Install it, I restart later", "off": "Don't check"}
+        c.add(row_widget(self.update_check_btn, self.update_install_btn, Button("What's new", self.show_changelog, "neutral", "sm", icon="book"),
+                         "stretch", Button("Restore previous version", self._update_restore_backup, "neutral", "sm", icon="undo")))
+        names = {"auto": "Update automatically", "ask": "Ask me first", "off": "Don't check"}
         self.update_mode_cb = Combo(list(names.values()), names[self._update_mode()], width=260)
 
         def pick(_e=None):
@@ -12889,7 +13045,7 @@ class QtAppUI:
             self.save_settings()
             self.toast("Update setting saved", "ok")
         self.update_mode_cb.textActivated.connect(lambda *_: pick())
-        c.add(row_widget(L("When a new version is out:", "muted", ("ui", 9.5)), self.update_mode_cb, "stretch"))
+        c.add(row_widget(L("When yt2vm.py changes on GitHub:", "muted", ("ui", 9.5)), self.update_mode_cb, "stretch"))
         if hasattr(parent, "add"):
             parent.add(c)
         self._update_paint_buttons()
@@ -13031,7 +13187,8 @@ class QtAppUI:
         lay.setSpacing(12)
         self.help_filter = LineEdit("", "Filter commands...", mono=True)
         self.help_filter.textChanged.connect(lambda *_: self._render_help())
-        lay.addWidget(row_widget(self.help_filter, Button("Open user guide", lambda: self.show_welcome_guide(force=True), "primary", "md", icon="book")))
+        lay.addWidget(row_widget(self.help_filter, Button("What's new", self.show_changelog, "go", "md", icon="spark"),
+                                 Button("Open user guide", lambda: self.show_welcome_guide(force=True), "primary", "md", icon="book")))
         card = Card(pad=0)
         self.help_text = TkText(mono=True, size=10, max_lines=4000)
         self.help_text.setProperty("flat", True)
@@ -15097,10 +15254,10 @@ class ChatPlaysApp(QtAppUI):
             "b64_filter": True, "discord_enabled": False, "discord_mode": "crossplay",
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
-            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "ask",
+            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "auto",
             "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
             "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50,
-            "osvote_cmd": "changevm", "osvote_needed": 3, "osvote_time": 90, "osvote_cooldown": 300, "changevm_aliases": {},
+            "osvote_cmd": "changevm", "osvote_style": "cmd", "osvote_needed": 3, "osvote_time": 90, "osvote_cooldown": 300, "changevm_aliases": {},
             "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60
         }
         if os.path.exists(settings_file):
@@ -17051,7 +17208,10 @@ class ChatPlaysApp(QtAppUI):
         known = set(_KNOWN_CMDS)
         pm = getattr(self, "plugins", None)
         if pm is not None: known.update(pm.command_names())
-        known.add(self.osvote_cmd_name())
+        if self._osvote_style() != "direct":
+            known.add(self.osvote_cmd_name())
+        if self._osvote_style() != "cmd":
+            known.update(self._osvote_direct_aliases())
         for k in self.custom_commands:
             if str(k).startswith(p):
                 known.add(str(k)[len(p):].lower())
@@ -17142,8 +17302,14 @@ class ChatPlaysApp(QtAppUI):
             cmd = "!" + raw_cmd[len(self.command_prefix):]
             aliases = {"!c": "!combo", "!k": "!key", "!t": "!type", "!m": "!move", "!d": "!drag", "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick", "!s": "!screenshot", "!screen": "!screenshot"}
             if cmd in aliases: cmd = aliases[cmd]
-            if cmd == "!" + self.osvote_cmd_name(): cmd = "!changevm"
-            arg = parts[1].strip() if len(parts) > 1 else ""
+            _osdirect = ""
+            _ostyle = self._osvote_style()
+            if _ostyle != "direct" and cmd == "!" + self.osvote_cmd_name():
+                cmd = "!changevm"
+            elif _ostyle != "cmd" and cmd != "!changevm" and cmd[1:] in self._osvote_direct_aliases():
+                _osdirect = cmd[1:]
+                cmd = "!changevm"
+            arg = _osdirect or (parts[1].strip() if len(parts) > 1 else "")
             total_commands_executed += 1
             if clean_user in owners or clean_user == "reallyiron": is_owner = True
             is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in admins
@@ -17155,7 +17321,7 @@ class ChatPlaysApp(QtAppUI):
                 if not _cp_ok:
                     plog("CHAIN", f"{clean_user}: {cmd} blocked ({_cp_why})")
                     continue
-            if is_admin and self._handle_mod_command(cmd, arg, user, is_owner):
+            if is_admin and not _osdirect and self._handle_mod_command(cmd, arg, user, is_owner):
                 continue
 
             music_votes = {
@@ -17238,8 +17404,8 @@ class ChatPlaysApp(QtAppUI):
                     if _why.startswith("cooldown") or _why.startswith("spam"):
                         break
                     continue
-            if cmd == "!changevm" and not is_admin:
-                self.os_vote(user, arg)
+            if cmd == "!changevm" and (not is_admin or _osdirect):
+                self.os_vote(user, arg, direct=bool(_osdirect))
                 continue
             if cmd in ["!votestop", "!clear", "!changevm", "!switchsnapshot", "!swichsnapshot", "!say", "!fixvm", "!forcefixvm", "!shutdown", "!remake2", "!makesnapshot", "!fixscript"]:
                 if cmd == "!say" and not self.say_admin_only:
@@ -19204,11 +19370,45 @@ class ChatPlaysApp(QtAppUI):
     def _vm_slug(name):
         return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
 
+    @classmethod
+    def _default_alias(cls, name):
+        return re.sub(r"^(?:microsoft)?windows", "win", cls._vm_slug(name)) or cls._vm_slug(name)
+
+    def _osvote_style(self):
+        st = str(self.config.get("osvote_style", "cmd") or "cmd").lower()
+        return st if st in ("cmd", "direct", "both") else "cmd"
+
+    def _builtin_cmd_names(self):
+        names = set(_KNOWN_CMDS) | {"c", "k", "t", "m", "d", "w", "kd", "ku", "lc", "rc", "s", "screen", "changevm", self.osvote_cmd_name()}
+        pm = getattr(self, "plugins", None)
+        if pm is not None:
+            try:
+                names.update(pm.command_names())
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        p = self.command_prefix or "!"
+        for k in getattr(self, "custom_commands", {}) or {}:
+            if str(k).startswith(p):
+                names.add(str(k)[len(p):].lower())
+        return names
+
+    def _osvote_direct_aliases(self):
+        taken = self._builtin_cmd_names()
+        return {a: n for n, a in self.votable_vms() if a and a not in taken}
+
     def votable_vms(self):
+        if not self.changevm_whitelist:
+            return []
         names = self._vm_list()
         wl = [n for n in self.changevm_whitelist if (n in names or not names)]
         aliases = dict(self.config.get("changevm_aliases", {}) or {})
-        return [(n, (self._vm_slug(aliases.get(n, "")) or self._vm_slug(n))) for n in wl]
+        return [(n, (self._vm_slug(aliases.get(n, "")) or self._default_alias(n))) for n in wl]
+
+    def _os_word(self, alias):
+        p = self.command_prefix or "!"
+        if self._osvote_style() != "cmd" and alias in self._osvote_direct_aliases():
+            return f"{p}{alias}"
+        return f"{p}{self.osvote_cmd_name()} {alias}"
 
     def resolve_vm(self, text, opts):
         q = self._vm_slug(text)
@@ -19224,11 +19424,9 @@ class ChatPlaysApp(QtAppUI):
         return hits[0] if len(hits) == 1 else None
 
     def _osvote_options_text(self, opts):
-        cmdn = self.command_prefix + self.osvote_cmd_name()
-        return ", ".join(f"{cmdn} {a}" for n, a in opts if n != vm_name)
+        return ", ".join(self._os_word(a) for n, a in opts if n != vm_name)
 
-    def os_vote(self, user, arg):
-        cmdn = self.command_prefix + self.osvote_cmd_name()
+    def os_vote(self, user, arg, direct=False):
         if not (getattr(self, "osvoting_enabled", False) and self.changevm_enabled):
             self._vote_say("OS voting is off right now.", "os-off", 20)
             return
@@ -19245,6 +19443,9 @@ class ChatPlaysApp(QtAppUI):
         if not others:
             self._vote_say("there's no other OS to vote for right now.", "os-none", 20)
             return
+        if self._osvote_style() == "direct" and not direct:
+            self._vote_say(f"vote by typing the OS: {self._osvote_options_text(opts)}", "os-help", 10)
+            return
         if not arg.strip():
             if len(others) == 1:
                 pick = others[0]
@@ -19260,7 +19461,7 @@ class ChatPlaysApp(QtAppUI):
                 self._vote_say(f"we're already on {pick[0]}. Options: {self._osvote_options_text(opts)}", "os-cur", 8)
                 return
         name, alias = pick
-        key = f"{cmdn} {alias}"
+        key = self._os_word(alias)
         need = self._cfg_int("osvote_needed", 3, 1, 200)
         dur = self._cfg_int("osvote_time", 90, 15, 1800)
         now = time.time()
@@ -19711,87 +19912,200 @@ class ChatPlaysApp(QtAppUI):
 
     # -- updates -------------------------------------------------------------
     def _update_mode(self):
-        mode = str(self.config.get("update_mode", "ask")).lower()
-        return mode if mode in ("ask", "auto", "off") else "ask"
+        mode = str(self.config.get("update_mode", "auto")).lower()
+        return mode if mode in ("ask", "auto", "off") else "auto"
 
     def _update_schedule(self, first=False):
-        """Check on start (after the UI settles) and then every few hours. Only the first instance checks."""
+        """Check right after start, then every few hours. Only the first instance checks."""
         if instance_id != 1 or not self.running:
             return
-        if self._update_mode() != "off" and not first:
+        if first:
+            if not self.config.get("update_auto_v2"):
+                self.config["update_auto_v2"] = True
+                if self.config.get("update_mode") != "off":
+                    self.config["update_mode"] = "auto"
+                self.save_settings()
+            self._whats_new_note()
+            if self._update_mode() != "off":
+                self.root.after(2500, lambda: self._run_bg("update-check", self._update_check_work, False, True))
+            else:
+                self._update_set_status("Update checks are off.", "faint")
+        elif self._update_mode() != "off":
             self._run_bg("update-check", self._update_check_work, False)
-        self.root.after(15000 if first else UPDATE_CHECK_HOURS * 3600 * 1000, self._update_schedule)
+        self.root.after(UPDATE_CHECK_HOURS * 3600 * 1000, self._update_schedule)
+
+    def _whats_new_note(self):
+        seen = str(self.config.get("last_seen_version", "") or "")
+        if seen == version:
+            return
+        self.config["last_seen_version"] = version
+        self.save_settings()
+        if seen:
+            self.root.after(1500, lambda: self.toast(f"Updated to YT2VM {version} - see Help > What's new", "ok"))
 
     def update_check_now(self):
         self._update_set_status("Checking for updates...")
         self._run_bg("update-check", self._update_check_work, True)
 
-
-    def _update_check_work(self, manual):
+    def _update_check_work(self, manual, startup=False):
+        loud = manual or startup
         ok, why = update_supported()
         if not ok:
             self._update_set_status(f"Updates unavailable: {why}.", "faint")
-            if manual:
-                self.toast(f"Can't update: {why}", "bad")
+            if loud:
+                self.toast(f"Checked for updates: can't update this copy ({why})", "warn")
             return
+        self._update_set_status("Checking for updates...")
         try:
             info = update_check()
         except Exception as e:
             plog("UPDATE", f"check failed: {e}")
             self._update_set_status("Couldn't check for updates - try again later.", "bad")
-            if manual:
-                self.toast("Couldn't reach GitHub to check for updates", "bad")
+            if loud:
+                self.toast("Checked for updates: couldn't reach GitHub", "bad")
             return
-        self._update_info = info if info["newer"] else None
-        self.ui(self._update_paint_buttons)
+        self._update_last_check = time.time()
+        stamp = time.strftime("%H:%M")
+        if info["same"]:
+            self._update_info = None
+            self.ui(self._update_paint_buttons)
+            self._update_set_status(f"You're up to date (v{version}, checked {stamp}).", "ok")
+            if loud:
+                self.toast("Checked for updates: you are up to date!", "ok")
+            return
+        if info["ahead"]:
+            self._update_info = None
+            self.ui(self._update_paint_buttons)
+            self._update_set_status(f"This copy (v{version}) is newer than GitHub (v{info['version']}), checked {stamp}.", "info")
+            if loud:
+                self.toast(f"Checked for updates: you are ahead of GitHub (v{version}, GitHub has v{info['version']})", "info")
+            return
         if not info["newer"]:
-            self._update_set_status(f"You're up to date (v{version}).", "ok")
-            if manual:
-                self.toast(f"YT2VM {version} is the latest version", "ok")
+            self._update_set_status(f"GitHub's yt2vm.py has no version number, skipped (checked {stamp}).", "warn")
+            if loud:
+                self.toast("Checked for updates: GitHub's file looks wrong, skipped it", "warn")
             return
-        plog("UPDATE", f"{info['tag']} available (running {version})")
-        self._update_set_status(f"Version {info['version']} is available.", "warn")
+        plog("UPDATE", f"GitHub has v{info['version']} ({info['hash']}), running v{version}")
+        self._update_info = info
+        self.ui(self._update_paint_buttons)
+        self._update_set_status(f"Version {info['version']} is on GitHub.", "warn")
         mode = self._update_mode()
-        if mode == "auto" and not manual:
-            self._update_install_work(info, auto=True)
-        elif manual or getattr(self, "_update_prompted", "") != info["tag"]:
-            self._update_prompted = info["tag"]
+        if mode == "auto" or manual:
+            self.ui(self._update_auto_run, info)
+        elif getattr(self, "_update_prompted", "") != info["hash"]:
+            self._update_prompted = info["hash"]
             self.ui(self._update_prompt, info)
 
     def _update_prompt(self, info):
-        notes = info.get("notes") or "No release notes."
-        if len(notes) > 900:
-            notes = notes[:900].rstrip() + " ..."
         if messagebox.askyesno("Update available",
-                               f"YT2VM {info['version']} is available (you have {version}).\n\n{notes}\n\n"
-                               "Update now? Your current version is kept as a backup, and nothing restarts until you say so.",
+                               f"YT2VM {info['version']} is on GitHub (you have {version}).\n\n"
+                               "Update now? YT2VM restarts by itself, and your current version is kept as a backup.",
                                parent=self.root):
-            self._run_bg("update-install", self._update_install_work, info, False)
+            self._update_auto_run(info)
 
     def update_install_now(self):
         info = getattr(self, "_update_info", None)
         if info:
-            self._run_bg("update-install", self._update_install_work, info, False)
+            self._update_auto_run(info)
+
+    def _update_auto_run(self, info, tries=0):
+        if getattr(self, "_update_running", False):
+            return
+        if (getattr(self, "vm_maintenance", False) or getattr(self, "_switching_vm", False)) and tries < 30:
+            self.root.after(10000, lambda: self._update_auto_run(info, tries + 1))
+            return
+        self._update_running = True
+        bar = UpdateBar()
+        step = L("Getting ready...", "muted", ("ui", 9.5), wrap=True)
+        close = Button("Close", None, "neutral", "sm")
+        close.hide()
+        box = QWidget()
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 4, 0, 0)
+        bl.setSpacing(8)
+        bl.addWidget(bar)
+        bl.addWidget(step)
+        bl.addWidget(row_widget("stretch", close))
+        dlg = ModernDialog(self.win, f"Updating To Version {info['version']}",
+                           f"YT2VM {version} -> {info['version']}. It restarts by itself when it's done.", "info",
+                           buttons=(), width=520, extra=box)
+        dlg.keyPressEvent = lambda e: None
+        close.clicked.connect(lambda *_: dlg.done(0))
+        self._update_dlg = (dlg, bar, step, close)
+        try:
+            dlg.show()
+            dlg.raise_()
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+        self._run_bg("update-install", self._update_install_work, info)
+
+    def _update_progress(self, frac, text, fail=False):
+        dlg, bar, step, close = getattr(self, "_update_dlg", (None, None, None, None))
+        if dlg is None:
+            return
+        try:
+            bar.set_value(frac, fail)
+            step.setText(text)
+            set_role(step, "bad" if fail else "muted")
+            if fail:
+                close.show()
+        except RuntimeError:
+            pass
 
     def _update_install_work(self, info, auto=False):
-        self._update_set_status(f"Downloading {info['version']}...")
+        def prog(f, t, fail=False):
+            self.ui(self._update_progress, f, t, fail)
         try:
+            prog(0.25, f"Downloaded yt2vm.py {info['version']} ({len(info.get('data') or b'') // 1024} KB)")
+            time.sleep(0.5)
+            prog(0.45, "Checking the new file...")
             data = update_download(info)
+            time.sleep(0.4)
+            prog(0.65, "Backing up the current version...")
             backup = update_install(data)
+            time.sleep(0.4)
+            prog(0.85, "Installed. Saving settings...")
+            self.config["last_seen_version"] = version
+            self.save_settings()
+            time.sleep(0.4)
         except Exception as e:
-            log_crash(f"update to {info.get('tag')}", e)
+            plog("UPDATE", f"update to v{info.get('version')} failed: {e}")
+            console_log("ERROR", f"update to v{info.get('version')} failed: {e}")
+            self._update_running = False
             self._update_set_status(f"Update failed: {e}", "bad")
-            self.toast(f"Update failed: {e}", "bad")
+            prog(1.0, f"Update failed: {e}", True)
             return
-        plog("UPDATE", f"installed {info['tag']} - old version kept as {backup}")
+        plog("UPDATE", f"installed v{info['version']} - old version kept as {backup}")
         self._update_info = None
-        self._update_installed = info["version"]
-        self.ui(self._update_paint_buttons)
-        self._update_set_status(f"Version {info['version']} is installed - restart YT2VM to use it.", "ok")
-        if auto:
-            self.toast(f"YT2VM {info['version']} installed - restart when it suits you", "ok")
-            return
-        self.ui(self._update_ask_restart, info)
+        self._update_set_status(f"Version {info['version']} installed, restarting...", "ok")
+        prog(1.0, "Restarting YT2VM...")
+        time.sleep(1.0)
+        self.ui(self._restart_app)
+
+    def show_changelog(self):
+        t = T()
+        tags = (("added", "Added", t["ok"]), ("changed", "Changed", t["info"]), ("fixed", "Fixed", t["warn"]), ("removed", "Removed", t["bad"]))
+        parts = []
+        for rel in CHANGELOG:
+            cur = " &nbsp;<span style='color:%s'>(you have this)</span>" % t["accent"] if rel["version"] == version else ""
+            parts.append(f"<h3 style='margin:14px 0 4px 0;color:{t['hi']}'>Version {html.escape(rel['version'])}"
+                         f" <span style='color:{t['muted']};font-weight:normal;font-size:small'>{html.escape(rel.get('date', ''))}</span>{cur}</h3>")
+            for key, name, col in tags:
+                items = rel.get(key) or []
+                if not items:
+                    continue
+                parts.append(f"<p style='margin:8px 0 2px 0;color:{col};font-weight:bold'>{name}</p><ul style='margin:0 0 0 -18px'>")
+                parts.extend(f"<li style='margin:2px 0;color:{t['text']}'>{html.escape(x)}</li>" for x in items)
+                parts.append("</ul>")
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setHtml("".join(parts))
+        view.setMinimumSize(600, 440)
+        view.setFrameShape(QFrame.Shape.NoFrame)
+        dlg = ModernDialog(self.win, f"What's new in YT2VM {version}", "Everything added, changed, fixed and removed in each version.",
+                           "info", buttons=(("Close", True, "primary"),), width=700, extra=view)
+        self._changelog_dlg = dlg
+        dlg.open()
 
     def _update_ask_restart(self, info):
         if messagebox.askyesno("Update installed",

@@ -1075,7 +1075,7 @@ def draw_icon(p, name, rect, col, w=1.6, bg=None):
 
 
 _PAGE_ICONS = {
-    "Dashboard": "dashboard", "VM Config": "vmconfig", "Commands": "commands", "Settings": "settings",
+    "Dashboard": "dashboard", "VM Config": "vmconfig", "Commands": "commands", "Settings": "settings", "Updates": "download",
     "Keys": "keys", "Mouse": "mouse", "Macros": "macros", "Quick Type": "quicktype", "Win Apps": "winapps",
     "VMS": "vms", "Snapshots": "snapshots", "OS Voting": "osvoting", "Real PC": "realpc", "System": "system",
     "OBS": "obs", "Discord": "discord", "Overlays": "overlays", "Media": "media", "Music Queue": "music",
@@ -2834,12 +2834,12 @@ class _MainWindow(QMainWindow):
         self.setObjectName("Root")
 
     def closeEvent(self, e):
+        e.ignore()
         try:
             self._app.on_closing()
         except Exception as ex:
             log_crash("window close", ex)
-            os._exit(0)
-        e.ignore()
+            _hard_exit(0)
 
     def changeEvent(self, e):
         super().changeEvent(e)
@@ -5458,7 +5458,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.5.0"
+version = "1.6.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -5818,12 +5818,68 @@ try:
 except Exception:
     pass
 
+def _hard_exit(code=0):
+    for fh in (sys.stdout, sys.stderr):
+        try:
+            fh.flush()
+        except Exception:
+            pass
+    if platform.system() == "Windows":
+        try:
+            k32 = ctypes.windll.kernel32
+            k32.TerminateProcess(k32.GetCurrentProcess(), int(code))
+        except Exception:
+            pass
+    os._exit(int(code))
+
+
+def _quick_save(timeout=1.0):
+    def work():
+        try: _jlog_flush()
+        except Exception: pass
+        app = globals().get("main_gui_application")
+        if app is not None:
+            try: app.save_settings()
+            except Exception: pass
+        try: save_stats()
+        except Exception: pass
+        try: out_flush(0.5)
+        except Exception: pass
+    t = threading.Thread(target=work, daemon=True, name="quick-save")
+    t.start()
+    t.join(timeout)
+
+
 def _sigint_handler(signum, frame):
-    log_event("SHUTDOWN", f"signal {signum} received - shutting down cleanly")
-    try: _jlog_flush()
-    except Exception: pass
-    out_flush(1.0)
-    os._exit(0)
+    log_event("SHUTDOWN", f"signal {signum} received - shutting down")
+    _quick_save(1.0)
+    _hard_exit(0)
+
+
+_CONSOLE_CTRL = None
+
+
+def _install_console_close():
+    global _CONSOLE_CTRL
+    if platform.system() != "Windows" or _CONSOLE_CTRL is not None:
+        return
+    try:
+        proto = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+
+        def _handler(ev):
+            if ev in (1, 2, 5, 6):
+                try:
+                    log_event("SHUTDOWN", f"console closed (event {ev}) - exiting")
+                except Exception:
+                    pass
+                _quick_save(1.0)
+                _hard_exit(0)
+                return 1
+            return 0
+        _CONSOLE_CTRL = proto(_handler)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_CONSOLE_CTRL, True)
+    except Exception:
+        _CONSOLE_CTRL = None
 
 
 if not IN_IDLE:
@@ -5832,8 +5888,11 @@ if not IN_IDLE:
         _signal.signal(_signal.SIGINT, _sigint_handler)
         if hasattr(_signal, "SIGTERM"):
             _signal.signal(_signal.SIGTERM, _sigint_handler)
+        if hasattr(_signal, "SIGBREAK"):
+            _signal.signal(_signal.SIGBREAK, _sigint_handler)
     except Exception:
         pass
+    _install_console_close()
 
 log_event("START", f"yt2vm launching (instance {instance_id}, pid {os.getpid()})")
 plog("START", f"yt2vm {version}  instance {instance_id}  pid {os.getpid()}")
@@ -8961,7 +9020,7 @@ def find_vmx_files(root=None, max_depth=3):
     return sorted(set(found))
 
 _ng = [
-    ("MAIN",    ["Dashboard", "VM Config", "Commands", "Settings"]),
+    ("MAIN",    ["Dashboard", "VM Config", "Commands", "Settings", "Updates"]),
     ("CONTROL", ["Keys", "Mouse", "Macros", "Quick Type", "Win Apps"]),
     ("MACHINE", ["VMS", "Snapshots", "ChangeVM", "Command Power", "OS Voting", "Real PC", "System"]),
     ("STREAM",  ["OBS", "Discord", "Overlays", "Media", "Music Queue", "Chat Tools", "Moderation"]),
@@ -9004,7 +9063,8 @@ _PAGE_BLURB = {
     "Snapshots": "Create, restore and delete snapshots for the active VM.",
     "OS Voting": "Let chat vote on which OS runs next.",
     "Real PC": "Route chat input to a physical machine through the Pico.",
-    "System": "Live internals, the recovery buttons and app updates.",
+    "System": "Live internals and the recovery buttons.",
+    "Updates": "How often YT2VM looks for a new version on GitHub, and what it does when it finds one.",
     "OBS": "Scenes, media playback, the relay and overlay flashes.",
     "Overlays": "Browser sources for OBS, served from this app.",
     "Media": "Music queue controls and VM volume.",
@@ -10707,8 +10767,22 @@ UPDATE_REPO = "reallyiron/YT2VM"
 UPDATE_BRANCH = "main"
 UPDATE_CHECK_HOURS = 6
 _UPDATE_MAX_BYTES = 16 * 1024 * 1024
+_UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "1.6.0", "date": "2026-11-07",
+     "added": [
+         "Settings > Updates page: choose how often YT2VM looks for updates - only when it starts, every minute, every 5 minutes, every hour or every day - and whether it updates by itself.",
+         "Update checks only download yt2vm.py again when GitHub says it changed, so frequent checks stay light.",
+     ],
+     "changed": [
+         "Closing YT2VM hides the window at once and the app exits within a few seconds, whatever is still running.",
+         "The Updates card moved from System to its own page.",
+     ],
+     "fixed": [
+         "Clicking X on the window or on the black console window froze YT2VM and Windows showed 'Not Responding' instead of closing.",
+     ],
+     "removed": []},
     {"version": "1.5.0", "date": "2026-11-07",
      "added": [
          "Admins, mods and the owner skip every vote: their vote command runs right away, even while votes are paused or on cooldown.",
@@ -10806,7 +10880,22 @@ def update_check():
     """Compare the running yt2vm.py with the one on GitHub. Raises on network errors."""
     page, raw = _update_urls()
     sep = "&" if "?" in raw else "?"
-    data = _market_fetch(f"{raw}{sep}t={int(time.time())}", limit=_UPDATE_MAX_BYTES, timeout=40)
+    hdr = {"User-Agent": f"YT2VM/{version} updater", "Cache-Control": "no-cache"}
+    if _UPDATE_CACHE.get("etag") and _UPDATE_CACHE.get("data") is not None:
+        hdr["If-None-Match"] = _UPDATE_CACHE["etag"]
+    req = urllib.request.Request(f"{raw}{sep}t={int(time.time()) // 30}", headers=hdr)
+    try:
+        with urllib.request.urlopen(req, timeout=40) as r:
+            data = r.read(_UPDATE_MAX_BYTES + 1)
+            etag = r.headers.get("ETag")
+        if len(data) > _UPDATE_MAX_BYTES:
+            raise ValueError("yt2vm.py on GitHub is too large")
+        _UPDATE_CACHE.update({"etag": etag, "data": data})
+    except urllib.error.HTTPError as e:
+        if e.code == 304 and _UPDATE_CACHE.get("data") is not None:
+            data = _UPDATE_CACHE["data"]
+        else:
+            raise
     with open(os.path.abspath(sys.argv[0]), "rb") as fh:
         local = fh.read()
     try:
@@ -11502,7 +11591,7 @@ class QtAppUI:
                                 ("tab_backup", "Backup"), ("tab_help", "Help"), ("tab_vms", "VMS"),
                                 ("tab_changevm", "ChangeVM"), ("tab_cmdpower", "Command Power"),
                                 ("tab_diag", "Diagnostics"), ("tab_discord", "Discord"), ("tab_plugins", "Plugins"),
-                                ("tab_market", "Plugin Market"), ("tab_plugindocs", "Plugin Docs")):
+                                ("tab_market", "Plugin Market"), ("tab_plugindocs", "Plugin Docs"), ("tab_updates", "Updates")):
                 w = self._tab()
                 setattr(self, attr, w)
                 self.tabview.add(w, text=f"  {label}  ")
@@ -11515,7 +11604,7 @@ class QtAppUI:
             try: self.build_commands_tab()
             except Exception as _e: log_crash('tab build_commands_tab', _e)
             self._build_settings_page()
-            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_changevm_tab", "build_command_power_tab", "build_diagnostics_tab", "build_discord_tab", "build_plugins_tab", "build_market_tab", "build_plugindocs_tab"):
+            for _tab in ("build_extra_tab", "build_osvoting_tab", "build_realpc_tab", "build_automation_tab", "build_eventlog_tab", "build_appearance_tab", "build_obs_tab", "build_keys_tab", "build_mouse_tab", "build_macros_tab", "build_moderation_tab", "build_snapshots_tab", "build_overlays_tab", "build_chattools_tab", "build_system_tab", "build_replay_tab", "build_media_tab", "build_quicktype_tab", "build_winapps_tab", "build_backup_tab", "build_help_tab", "build_vms_tab", "build_changevm_tab", "build_command_power_tab", "build_diagnostics_tab", "build_discord_tab", "build_plugins_tab", "build_market_tab", "build_plugindocs_tab", "build_updates_tab"):
                 self._build_tab(_tab)
             self._bind_secret_replay()
             self._studio_finish()
@@ -13034,13 +13123,76 @@ class QtAppUI:
             ("Restart app", "#8B5CF6", self._restart_app),
         ], cols=3))
         sc.add(r)
-        self._build_update_card(sc)
         sc.add("stretch")
         self._sys_diag_tick()
 
+    _UPDATE_EVERY = (("start", "Only when it starts"), ("1m", "Every minute"), ("5m", "Every 5 minutes"),
+                     ("1h", "Every hour"), ("1d", "Every day"))
+    _UPDATE_SECS = {"start": 0, "1m": 60, "5m": 300, "1h": 3600, "1d": 86400}
+
+    def _update_every(self):
+        v = str(self.config.get("update_every", "1h") or "1h")
+        return v if v in self._UPDATE_SECS else "1h"
+
+    def build_updates_tab(self):
+        sc = self.make_scrollable(self.tab_updates)
+        self._build_update_card(sc)
+        w = Card("When to check", "YT2VM always checks right after it starts. Pick how often it checks again while it's running.")
+        self._upd_every = Segmented(self._UPDATE_EVERY, self._update_every())
+        self._upd_every.changed.connect(self._set_update_every)
+        w.add(row_widget(self._upd_every, "stretch"))
+        self._upd_next = L("", "faint", ("ui", 9.5))
+        w.add(self._upd_next)
+        sc.add(w)
+        m = Card("When an update is found", "Update automatically shows the 'Updating To Version' screen and restarts YT2VM by itself. "
+                 "If the VM is busy switching or reverting, it waits for that first.")
+        modes = (("auto", "Update automatically"), ("ask", "Ask me first"), ("off", "Don't check"))
+        self._upd_mode_seg = Segmented(modes, self._update_mode())
+        self._upd_mode_seg.changed.connect(self._set_update_mode)
+        m.add(row_widget(self._upd_mode_seg, "stretch"))
+        sc.add(m)
+        sc.add("stretch")
+        self._update_next_label()
+
+    def _set_update_every(self, v):
+        self.config["update_every"] = str(v)
+        self.save_settings()
+        self._update_reschedule()
+        self.toast("Update checks: " + dict(self._UPDATE_EVERY)[str(v)].lower(), "ok")
+
+    def _set_update_mode(self, v):
+        self.config["update_mode"] = str(v)
+        self.save_settings()
+        try:
+            names = {"auto": "Update automatically", "ask": "Ask me first", "off": "Don't check"}
+            self.update_mode_cb.set(names[str(v)])
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+        self._update_reschedule()
+        self.toast("Update setting saved", "ok")
+
+    def _update_next_label(self):
+        lbl = getattr(self, "_upd_next", None)
+        if lbl is None:
+            return
+        last = getattr(self, "_update_last_check", 0)
+        nxt = getattr(self, "_update_next_at", 0)
+        bits = []
+        if last:
+            bits.append("Last check " + time.strftime("%H:%M:%S", time.localtime(last)))
+        if self._update_mode() == "off":
+            bits.append("checks are off")
+        elif nxt:
+            bits.append("next check " + time.strftime("%H:%M:%S", time.localtime(nxt)))
+        else:
+            bits.append("next check when YT2VM starts")
+        try:
+            lbl.setText(", ".join(bits) + ".")
+        except RuntimeError:
+            pass
+
     def _build_update_card(self, parent):
-        c = Card("Updates", f"Running YT2VM {version}. YT2VM follows yt2vm.py on the {UPDATE_BRANCH} branch of github.com/{UPDATE_REPO} "
-                 "and checks it every time it starts.")
+        c = Card("Updates", f"Running YT2VM {version}. YT2VM follows yt2vm.py on the {UPDATE_BRANCH} branch of github.com/{UPDATE_REPO}.")
         text, fg = getattr(self, "_update_status_text", ("Not checked yet.", "faint"))
         self.update_status = L(text, fg if fg in _ROLE_KEYS else "muted", ("ui", 10, "semi"), wrap=True)
         c.add(self.update_status)
@@ -13051,14 +13203,7 @@ class QtAppUI:
                          "stretch", Button("Restore previous version", self._update_restore_backup, "neutral", "sm", icon="undo")))
         names = {"auto": "Update automatically", "ask": "Ask me first", "off": "Don't check"}
         self.update_mode_cb = Combo(list(names.values()), names[self._update_mode()], width=260)
-
-        def pick(_e=None):
-            mode = {v: k for k, v in names.items()}[self.update_mode_cb.get()]
-            self.config["update_mode"] = mode
-            self.save_settings()
-            self.toast("Update setting saved", "ok")
-        self.update_mode_cb.textActivated.connect(lambda *_: pick())
-        c.add(row_widget(L("When yt2vm.py changes on GitHub:", "muted", ("ui", 9.5)), self.update_mode_cb, "stretch"))
+        self.update_mode_cb.hide()
         if hasattr(parent, "add"):
             parent.add(c)
         self._update_paint_buttons()
@@ -15267,7 +15412,7 @@ class ChatPlaysApp(QtAppUI):
             "b64_filter": True, "discord_enabled": False, "discord_mode": "crossplay",
             "discord_guild_id": "", "discord_channel_id": "", "discord_log_channel_id": "",
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
-            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "auto",
+            "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "auto", "update_every": "1h",
             "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
             "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50,
             "osvote_cmd": "changevm", "osvote_style": "cmd", "osvote_needed": 3, "osvote_time": 90, "osvote_cooldown": 300, "changevm_aliases": {},
@@ -15348,31 +15493,45 @@ class ChatPlaysApp(QtAppUI):
         plog("QUEUE", f"command queue cleared ({n} dropped)")
 
     def on_closing(self):
+        if getattr(self, "_closing", False):
+            _hard_exit(0)
+        self._closing = True
         plog("SHUTDOWN", "window closed by user - saving and exiting")
-        try: _jlog_flush()
-        except Exception: pass
-        try: self.plugins.shutdown()
-        except Exception as _ex:
-            _trace(_ex_where(), _ex)
         self.running = False
         try:
-            if getattr(self, "discord", None) is not None:
-                self.discord.stop()
+            self.save_settings()
         except Exception as _ex:
             _trace(_ex_where(), _ex)
-        save_stats()
         try:
-            if hasattr(self, 'shared_session') and self.shared_session:
-                try:
-                    if vbox_pkg == "virtualbox": self.shared_session.unlock_machine()
-                    else: self.shared_session.unlockMachine()
-                except Exception as _ex:
-                    _trace(_ex_where(), _ex)
+            for w in self.qapp.topLevelWidgets():
+                w.hide()
+            self.qapp.processEvents()
         except Exception as _ex:
             _trace(_ex_where(), _ex)
-        self.root.update()
-        out_flush(1.0)
-        os._exit(0)
+
+        def cleanup():
+            for name, fn in (("logs", _jlog_flush), ("stats", save_stats),
+                             ("plugins", lambda: self.plugins.shutdown()),
+                             ("discord", lambda: self.discord.stop() if getattr(self, "discord", None) is not None else None)):
+                try:
+                    fn()
+                except Exception as _ex:
+                    plog("SHUTDOWN", f"{name} cleanup failed: {_ex}")
+            try:
+                ss = getattr(self, "shared_session", None)
+                if ss:
+                    if vbox_pkg == "virtualbox": ss.unlock_machine()
+                    else: ss.unlockMachine()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+            out_flush(0.6)
+        t = threading.Thread(target=cleanup, daemon=True, name="shutdown")
+        t.start()
+        t.join(2.5)
+        if t.is_alive():
+            plog("SHUTDOWN", "cleanup still busy after 2.5s - exiting anyway")
+            out_flush(0.3)
+        _hard_exit(0)
 
     def start_terminal_thread(self):
         def listen_terminal():
@@ -17471,7 +17630,8 @@ class ChatPlaysApp(QtAppUI):
                             if arg_val.startswith("--multistream"):
                                 args.append(arg_val)
                         subprocess.Popen(args)
-                        os._exit(0)
+                        out_flush(0.5)
+                        _hard_exit(0)
                 else:
                     if cmd == "!forcefixvm": self.process_vote(user, f"{self.command_prefix}forcefixvm", self._vote_need("restart"))
                 continue
@@ -19941,7 +20101,7 @@ class ChatPlaysApp(QtAppUI):
         return mode if mode in ("ask", "auto", "off") else "auto"
 
     def _update_schedule(self, first=False):
-        """Check right after start, then every few hours. Only the first instance checks."""
+        """Check right after start, then on the interval picked on the Updates page. Only the first instance checks."""
         if instance_id != 1 or not self.running:
             return
         if first:
@@ -19955,9 +20115,28 @@ class ChatPlaysApp(QtAppUI):
                 self.root.after(2500, lambda: self._run_bg("update-check", self._update_check_work, False, True))
             else:
                 self._update_set_status("Update checks are off.", "faint")
-        elif self._update_mode() != "off":
-            self._run_bg("update-check", self._update_check_work, False)
-        self.root.after(UPDATE_CHECK_HOURS * 3600 * 1000, self._update_schedule)
+        self._update_reschedule()
+
+    def _update_reschedule(self):
+        if instance_id != 1:
+            return
+        self._update_gen = getattr(self, "_update_gen", 0) + 1
+        gen = self._update_gen
+        secs = self._UPDATE_SECS.get(self._update_every(), 3600)
+        if self._update_mode() == "off" or not secs:
+            self._update_next_at = 0
+            self._update_next_label()
+            return
+        self._update_next_at = time.time() + secs
+
+        def fire():
+            if gen != getattr(self, "_update_gen", 0) or not self.running:
+                return
+            if self._update_mode() != "off" and not getattr(self, "_update_running", False):
+                self._run_bg("update-check", self._update_check_work, False)
+            self._update_reschedule()
+        self.root.after(int(secs * 1000), fire)
+        self._update_next_label()
 
     def _whats_new_note(self):
         seen = str(self.config.get("last_seen_version", "") or "")
@@ -19990,6 +20169,7 @@ class ChatPlaysApp(QtAppUI):
                 self.toast("Checked for updates: couldn't reach GitHub", "bad")
             return
         self._update_last_check = time.time()
+        self.ui(self._update_next_label)
         stamp = time.strftime("%H:%M")
         if info["same"]:
             self._update_info = None
@@ -20181,8 +20361,15 @@ class ChatPlaysApp(QtAppUI):
         try:
             self.save_settings(); time.sleep(0.3)
             args = [sys.executable, os.path.abspath(sys.argv[0])] + [a for a in sys.argv[1:] if a.startswith("--multistream")]
+            try:
+                for w in self.qapp.topLevelWidgets():
+                    w.hide()
+                self.qapp.processEvents()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
             subprocess.Popen(args)
-            os._exit(0)
+            out_flush(0.5)
+            _hard_exit(0)
         except Exception as e:
             self.log("[system]", f"[error] restart: {e}", "err")
 

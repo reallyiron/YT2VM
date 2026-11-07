@@ -38,6 +38,16 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - ChangeVM control: whitelist which VMs `!changevm` can switch to, and pick the snapshot each whitelisted VM reverts to (ChangeVM tab).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 1.6.0
+
+## Closing
+- Clicking X on the window or on the black console window closes YT2VM right away. The window disappears at once, settings and stats are saved, and the app exits within a few seconds even if Discord, a plugin or VirtualBox is stuck. No more "Not Responding".
+
+## Updates page
+- **Main → Updates**: check now, What's new, restore the previous version, and pick when to check: only when it starts, every minute, every 5 minutes, every hour (default) or every day.
+- Choose Update automatically, Ask me first or Don't check. The page shows the last and next check.
+- Checks only download `yt2vm.py` again when GitHub says it changed, so checking every minute stays light. Only the start-up check shows the "Checked for updates" message; later checks run quietly and update when there's something new.
+
 # Release Notes — 1.5.0
 
 ## Staff skip every vote
@@ -190,7 +200,7 @@ Covered commands include: `!revert`, `!startvm`, `!shutdown`, `!restartvm`, `!sw
 
 # Updates
 
-YT2VM updates itself from [`yt2vm.py` on the main branch](https://github.com/reallyiron/YT2VM/blob/main/yt2vm.py). It checks right after starting and then every 6 hours, and tells you at the top: *Checked for updates: you are up to date!*
+YT2VM updates itself from [`yt2vm.py` on the main branch](https://github.com/reallyiron/YT2VM/blob/main/yt2vm.py). It checks right after starting and then as often as you pick on **Main → Updates** (only on start, every minute, 5 minutes, hour or day), and tells you at the top after the start-up check: *Checked for updates: you are up to date!*
 
 When the file on GitHub has a different hash and the same or a higher version:
 
@@ -201,7 +211,7 @@ When the file on GitHub has a different hash and the same or a higher version:
 
 A lower version on GitHub is never installed over a newer copy.
 
-Under **Machine → System → Updates** you can:
+On **Main → Updates** you can:
 
 - check for updates now (also in the command palette, Ctrl K);
 - see **What's new** (also on the Help page);

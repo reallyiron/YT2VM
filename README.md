@@ -64,6 +64,7 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Overlays
 - The OG classic overlay is back at `/ogchat`: red vote counter on top (`!revert: 0/2`, or "No active votes"), viewers and likes, and the chat below with bold outlined names. Add `?transparent=1` for a see-through background in OBS.
 - Chat overlays are bigger by default, with a Chat size switch (Small / Normal / Big / Huge) on the Overlays page that resizes every chat overlay live in OBS. Add `?scale=1.6` to one overlay's URL to pin its size.
+- New `/clock` overlay: local time, date and how long the app has been live. `?h12=1` for AM/PM, `?seconds=0` to hide seconds.
 - Every chat overlay and the live chat in the app now show a YouTube or Discord icon next to each message, a crown next to the owner and a wrench next to mods.
 - The YouTube and Discord icons are the official full-colour logos (from SVG Logos), the crown, wrench, eye and thumbs-up come from Material Design Icons. They are built into `yt2vm.py` and also ship in `assets/icons`. Put your own `youtube.svg`, `discord.svg`, `owner.svg`, `mod.svg`, `eye.svg` or `likes.svg` in `assets/icons` (or an `icons` folder) next to `yt2vm.py` to replace them.
 

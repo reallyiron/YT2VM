@@ -52,7 +52,20 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 ## Discord
 - The command channel and log channel can now be a voice channel's chat (`VC:`) or a stage channel's chat (`Stage:`), not just text channels. The bot reads and posts in that chat without joining the call. Pick it from the same dropdown on the Discord page; the bot needs View Channel, Send Messages and Read Message History there.
 
-## File drop
+## OS voting
+- Chat now votes for a specific OS: `!changevm win7`. The first OS to reach the votes needed wins; voting for another OS moves your vote. `!changevm` on its own lists the options.
+- The vote command can be renamed (for example `!os`) on the OS Voting page; `!changevm` keeps working too.
+- Set the votes needed, how long an OS vote stays open and a cooldown after each switch, and see the live vote with a cancel button.
+- Pick which VMs chat can vote for, give each one a short name viewers type, and the snapshot it starts from. VMs that are off stay out of reach for viewers and mods; the owner can still switch to any VM.
+- Votes needed and vote time for `!revert`, `!restartvm` and `!forcefixvm` are now settings too.
+
+## Vote fixes
+- Switching VMs used to cycle through every VM, ignoring the whitelist and the chosen snapshot. It now only goes to votable VMs and uses their snapshot.
+- Force switching left the old VM running in the background and started the new one next to it. The old VM is now shut down first.
+- On VMware, switching VMs did nothing. It now stops the current VM, picks the new .vmx, reverts its snapshot and starts it.
+- A passing vote no longer wipes every other running vote.
+- Chat now gets told when a vote is full, paused, on cooldown or runs out of time, instead of silence.
+
 - `!sendfile` on Discord: admins and the owner attach a file (or type `!sendfile` and upload it within 2 minutes) and the bot puts it on the VM desktop. Everyone else gets told no.
 - The file is never opened on the host: it lands in a temp folder under a cleaned-up name, is copied into the VM with VirtualBox Guest Additions (`guestcontrol copyto`) or VMware Tools (`CopyFileFromHostToGuest`), and is deleted right after.
 - Set the VM's Windows username and password under **Discord → File drop** (the password is stored encrypted with Windows DPAPI and passed to VirtualBox through a temp file, never on the command line or in logs). Size limit 10-100 MB, up to 5 files per message. **Send test file** checks the setup.

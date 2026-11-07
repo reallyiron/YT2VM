@@ -10841,6 +10841,14 @@ class QtAppUI:
             self._automation_started = False
             self.automations = self.config.get("automations", [])
             self.osvoting_enabled = self.config.get("osvoting_enabled", False)
+            try:
+                globals()["vote_timeout"] = max(15, min(900, int(self.config.get("vote_time", 60))))
+            except Exception:
+                globals()["vote_timeout"] = 60
+            self._os_last_switch = 0.0
+            self._switching_vm = False
+            self._vote_said = {}
+            self._vm_cache = (0.0, [])
             self.replay_buffer = collections.deque(maxlen=4000)
             self.replaying = False
             self.ui_theme = self.config.get("ui_theme", "original")
@@ -11944,23 +11952,31 @@ class QtAppUI:
             self.last_thread_check = time.time()
             self.start_app_threads()
         t = self._ui_sec("threads", t)
+        expired = []
         if self.vote_lock.acquire(blocking=False):
             try:
                 now = time.time()
-                to_remove = []
-                for vtype, data in self.active_votes.items():
-                    if now - data["start_time"] > vote_timeout: to_remove.append(vtype)
-                for vtype in to_remove:
-                    del self.active_votes[vtype]
-                    plog("VOTE", f"vote {vtype} expired after {vote_timeout}s")
+                for vtype, data in list(self.active_votes.items()):
+                    if not isinstance(data, dict):
+                        del self.active_votes[vtype]
+                        continue
+                    end = data.get("expires") or (data.get("start_time", now) + vote_timeout)
+                    if now > end:
+                        del self.active_votes[vtype]
+                        expired.append((vtype, len(data.get("voters", ())), data.get("target", 0)))
+                        plog("VOTE", f"vote {vtype} expired")
                 if self.active_votes:
                     parts = []
-                    for vtype, data in self.active_votes.items(): parts.append(f"{vtype.lower()}: {len(data['voters'])}/{data['target']}")
-                    text = " | ".join(parts).lower()
-                    current_vote_info = {"active": True, "text": f"[vote] {text}"}
+                    for vtype, data in self.active_votes.items():
+                        left = int(max(0, (data.get("expires") or (data.get("start_time", now) + vote_timeout)) - now))
+                        parts.append(f"{vtype.lower()}: {len(data['voters'])}/{data['target']} ({left}s)")
+                    current_vote_info = {"active": True, "text": "[vote] " + " | ".join(parts)}
                 else: current_vote_info = {"active": False, "text": "no active votes"}
             finally:
                 self.vote_lock.release()
+        for vtype, n, need in expired:
+            self._vote_say(f"vote {vtype.lower()} ran out of time ({n}/{need}).")
+        self._osvote_live_refresh()
         self._ui_sec("votes", t)
 
     def _bind_secret_replay(self):
@@ -12204,40 +12220,253 @@ class QtAppUI:
             self.log("[system]", f"[error] extra tab build error: {e}", "err")
             console_log("ERROR", f"[error] extra tab build error: {e}\n{traceback.format_exc()}")
 
+    def _spin(self, value, lo, hi, on_change, suffix=""):
+        sp = QSpinBox()
+        sp.setRange(int(lo), int(hi))
+        sp.setValue(int(value))
+        if suffix:
+            sp.setSuffix(suffix)
+        sp.setFont(QF("mono", 10.5))
+        sp.setFixedWidth(120)
+        sp.setFixedHeight(34)
+        sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sp.valueChanged.connect(lambda v: on_change(int(v)))
+        return sp
+
+    def _osv_set(self, key, value, toast=None):
+        self.config[key] = value
+        if key == "vote_time":
+            globals()["vote_timeout"] = int(value)
+        self.save_settings()
+        if toast:
+            self.toast(toast, "ok")
+
+    def _osv_set_cmd(self):
+        raw = self._osv_cmd.get().strip().lstrip("!").lower()
+        clean = re.sub(r"[^a-z0-9_]", "", raw)
+        if not clean:
+            clean = "changevm"
+        if clean in _KNOWN_CMDS and clean != "changevm":
+            self.toast(f"!{clean} is already a command, pick another name", "bad")
+            self._osv_cmd.set(self.osvote_cmd_name())
+            return
+        self._osv_cmd.set(clean)
+        if clean != self.config.get("osvote_cmd"):
+            self._osv_set("osvote_cmd", clean, f"OS vote command is now {self.command_prefix}{clean}")
+            self._refresh_osvote()
+
     def build_osvoting_tab(self):
         sc = self.make_scrollable(self.tab_osvote)
-        c = Card("Viewer voting", "When on, viewers can vote !changevm to switch OS. Mods can force-switch to any VM below.")
+        c = Card("OS voting", "Viewers vote for the next OS with the vote command plus the OS name. The first OS to reach the votes "
+                 "needed wins, the current VM shuts down and the winner starts from its snapshot.")
         self.osvote_var = Toggle("Enable viewer voting", self.osvoting_enabled, command=self.toggle_osvoting)
         c.add_action(self.osvote_var)
+        fg = FormGrid(label_w=170)
+        self._osv_cmd = LineEdit(self.osvote_cmd_name(), "changevm", mono=True, width=200, on_enter=self._osv_set_cmd)
+        self._osv_cmd.editingFinished.connect(self._osv_set_cmd)
+        fg.field("Vote command", row_widget(L(self.command_prefix, "muted", ("mono", 11, "semi")), self._osv_cmd, "stretch", spacing=4),
+                 hint="Viewers type this plus the OS, like !os win7. !changevm always works too.")
+        fg.field("Votes needed", row_widget(self._spin(self._cfg_int("osvote_needed", 3, 1, 200), 1, 200,
+                                                       lambda v: self._osv_set("osvote_needed", v)), "stretch"),
+                 hint="How many different viewers must vote for the same OS.")
+        tsel = ((30, "30s"), (60, "1m"), (90, "90s"), (120, "2m"), (300, "5m"))
+        cur_t = self._cfg_int("osvote_time", 90, 15, 1800)
+        seg_t = Segmented(tsel, min(tsel, key=lambda o: abs(o[0] - cur_t))[0])
+        seg_t.changed.connect(lambda v: self._osv_set("osvote_time", int(v)))
+        fg.field("Vote time", row_widget(seg_t, "stretch"), hint="An OS vote that doesn't reach the votes needed in time is dropped.")
+        csel = ((0, "Off"), (120, "2m"), (300, "5m"), (600, "10m"), (1800, "30m"))
+        cur_c = self._cfg_int("osvote_cooldown", 300, 0, 7200)
+        seg_c = Segmented(csel, min(csel, key=lambda o: abs(o[0] - cur_c))[0])
+        seg_c.changed.connect(lambda v: self._osv_set("osvote_cooldown", int(v)))
+        fg.field("Cooldown after a switch", row_widget(seg_c, "stretch"), hint="Stops chat from flipping the OS again right away.")
+        c.add(fg)
+        sc.add(c)
+
+        lv = Card("Live vote", "What chat is voting for right now.")
+        lv.add_action(Button("Cancel OS vote", self._osv_cancel, "danger", "sm", icon="close"))
+        lv.add_action(Button("Reset cooldown", self._osv_reset_cd, "neutral", "sm", icon="refresh"))
+        self._osv_live = L("No OS vote running.", "text", ("mono", 10.5), wrap=True)
+        self._osv_live.setTextFormat(Qt.TextFormat.PlainText)
+        lv.add(self._osv_live)
+        sc.add(lv)
+
+        vc = Card("Votable VMs", "Turn on the VMs chat can vote for. The name is what viewers type; leave it empty to use the VM name "
+                  "without spaces. Each VM starts from the snapshot picked here.")
+        vc.add_action(Button("Refresh", lambda: (self._vm_list(fresh=True), self._refresh_osvote()), "neutral", "sm", icon="refresh"))
         self.osvote_list = QWidget()
         ol = QVBoxLayout(self.osvote_list)
         ol.setContentsMargins(0, 0, 0, 0)
         ol.setSpacing(6)
-        c.add(self.osvote_list)
-        c.add(row_widget(Button("Refresh VM list", self._refresh_osvote, "neutral", "sm", icon="refresh"), "stretch"))
-        sc.add(c)
+        vc.add(self.osvote_list)
+        self._osv_hint = L("", "faint", ("ui", 9))
+        vc.add(row_widget(Button("Save votable VMs", self._osv_save, "primary", "md", icon="check"), 10, self._osv_hint, "stretch"))
+        sc.add(vc)
+
+        ov = Card("Other votes", "Votes needed when viewers type !revert, !restartvm or !forcefixvm, and how long those votes stay open.")
+        fg2 = FormGrid(label_w=170)
+        fg2.field("!revert", row_widget(self._spin(self._vote_need("revert"), 1, 100, lambda v: self._osv_set("vote_needed_revert", v), " votes"), "stretch"))
+        fg2.field("!restartvm / !forcefixvm", row_widget(self._spin(self._vote_need("restart"), 1, 100, lambda v: self._osv_set("vote_needed_restart", v), " votes"), "stretch"))
+        osel = ((30, "30s"), (60, "1m"), (120, "2m"), (300, "5m"))
+        cur_o = self._cfg_int("vote_time", 60, 15, 900)
+        seg_o = Segmented(osel, min(osel, key=lambda o: abs(o[0] - cur_o))[0])
+        seg_o.changed.connect(lambda v: self._osv_set("vote_time", int(v)))
+        fg2.field("Vote time", row_widget(seg_o, "stretch"))
+        ov.add(fg2)
+        sc.add(ov)
         sc.add("stretch")
+        self._osv_rows = {}
         self._refresh_osvote()
 
     def _refresh_osvote(self):
+        if not hasattr(self, "osvote_list"):
+            return
         lay = self.osvote_list.layout()
         _clear_layout(lay)
-        names = get_all_vbox_vms(vbox_manage_cmd)
+        self._osv_rows = {}
+        names = self._vm_list()
         if not names:
-            lay.addWidget(EmptyState("vms", "No VirtualBox VMs found", "Check the VBoxManage path on the VM Config page."))
+            lay.addWidget(EmptyState("vms", "No VMs found", "Check the VBoxManage path on the VM Config page, or pick a .vmx on the VMS page."))
+            self._osv_hint.setText("")
             return
+        wl = set(self.changevm_whitelist)
+        aliases = dict(self.config.get("changevm_aliases", {}) or {})
+        cmdn = self.command_prefix + self.osvote_cmd_name()
         for name in names:
             cur = name == vm_name
-            row = Card(pad=12, tint="accent" if cur else None)
-            rl = QHBoxLayout()
-            rl.setSpacing(10)
-            rl.addWidget(L(name, "hi" if cur else "text", ("mono", 11, "semi" if cur else "normal")))
+            row = Card(pad=10, tint="accent" if cur else None)
+            hl = QHBoxLayout()
+            hl.setSpacing(10)
+            tg = Toggle(name, name in wl)
+            tg._qf = ("mono", 10, "semi")
+            tg.setFont(QF(*tg._qf))
+            tg.setMinimumWidth(QFontMetrics(tg.font()).horizontalAdvance(name) + 64)
+            hl.addWidget(tg, 1)
             if cur:
-                rl.addWidget(Pill("CURRENT", "accent"))
-            rl.addStretch(1)
-            rl.addWidget(Button("Force switch", lambda n=name: self.switch_to_vm(n), "violet", "sm", icon="refresh"))
-            row.body.addLayout(rl)
+                hl.addWidget(Pill("CURRENT", "accent"))
+            al = LineEdit(aliases.get(name, ""), self._vm_slug(name), mono=True, width=130)
+            al.setToolTip(f"Viewers type {cmdn} <this>")
+            hl.addWidget(L("name", "faint", ("ui", 9)))
+            hl.addWidget(al)
+            snap = self.changevm_snapshots.get(name, "")
+            cb = Combo([snap] if snap else [""], snap, width=170)
+            hl.addWidget(L("snapshot", "faint", ("ui", 9)))
+            hl.addWidget(cb)
+            hl.addWidget(Button("Switch now", lambda n=name: self._osv_switch_now(n), "violet", "sm", icon="refresh"))
+            row.body.addLayout(hl)
             lay.addWidget(row)
+            self._osv_rows[name] = (tg, al, cb)
+        on = [n for n in names if n in wl]
+        self._osv_hint.setText(f"{len(names)} VM(s) found, {len(on)} votable" + (f": {', '.join(on)}" if on else " - chat can't vote yet"))
+        if getattr(self, "backend", "virtualbox") == "vmware":
+            return
+        path = self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd
+
+        def work():
+            res = {}
+            for n in names:
+                try:
+                    res[n] = get_vbox_snapshots(path, n)
+                except Exception:
+                    res[n] = []
+            self.ui(self._osv_apply_snaps, res)
+        self._run_bg("osvote-snaps", work)
+
+    def _osv_apply_snaps(self, res):
+        for n, snaps in res.items():
+            row = getattr(self, "_osv_rows", {}).get(n)
+            if not row:
+                continue
+            cb = row[2]
+            try:
+                want = self.changevm_snapshots.get(n, "") or cb.get()
+                cb.set_values(snaps or [""])
+                cb.set(want if want in snaps else (snaps[-1] if snaps else ""))
+            except RuntimeError:
+                pass
+
+    def _osv_save(self):
+        wl, aliases, snaps, seen = [], {}, dict(self.changevm_snapshots), {}
+        for n, (tg, al, cb) in self._osv_rows.items():
+            if tg.get():
+                wl.append(n)
+            a = self._vm_slug(al.get())
+            if a:
+                aliases[n] = a
+            v = cb.get().strip()
+            if v:
+                snaps[n] = v
+            key = a or self._vm_slug(n)
+            if tg.get():
+                if key in seen:
+                    self.toast(f"{n} and {seen[key]} both use the name '{key}' - give one a different name", "bad")
+                    return
+                seen[key] = n
+        self.changevm_whitelist = wl
+        self.changevm_snapshots = snaps
+        self.config["changevm_whitelist"] = wl
+        self.config["changevm_snapshots"] = snaps
+        self.config["changevm_aliases"] = aliases
+        self.save_settings()
+        self.log("[system]", f"votable VMs: {', '.join(wl) if wl else 'none'}", "sysmsg")
+        self.toast(f"Saved {len(wl)} votable VM(s)", "ok")
+        self._refresh_osvote()
+        try:
+            self._cv_refresh()
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+
+    def _osv_switch_now(self, name):
+        if name == vm_name:
+            self.toast(f"Already running {name}", "info")
+            return
+        if self.switch_to_vm(name, self.changevm_snapshots.get(name, ""), "[console]"):
+            self.toast(f"Switching to {name}...", "info")
+
+    def _osv_cancel(self):
+        with self.vote_lock:
+            ks = [k for k, v in self.active_votes.items() if isinstance(v, dict) and v.get("os")]
+            for k in ks:
+                self.active_votes.pop(k, None)
+        if ks:
+            self._vote_say("the OS vote was cancelled.")
+        self.toast("OS vote cancelled" if ks else "No OS vote running", "ok" if ks else "info")
+
+    def _osv_reset_cd(self):
+        self._os_last_switch = 0.0
+        self.toast("OS vote cooldown reset", "ok")
+
+    def _osvote_live_refresh(self):
+        lbl = getattr(self, "_osv_live", None)
+        if lbl is None:
+            return
+        try:
+            if not lbl.isVisible():
+                return
+        except RuntimeError:
+            return
+        now = time.time()
+        lines = []
+        with self.vote_lock:
+            items = [(k, dict(v)) for k, v in self.active_votes.items() if isinstance(v, dict) and v.get("os")]
+        items.sort(key=lambda kv: -len(kv[1]["voters"]))
+        for k, v in items:
+            left = int(max(0, v.get("expires", now) - now))
+            n, need = len(v["voters"]), v["target"]
+            bar = "#" * min(20, round(20 * n / max(1, need))) + "." * max(0, 20 - min(20, round(20 * n / max(1, need))))
+            lines.append(f"{v['os'][:28]:<28} [{bar}] {n}/{need}  {left}s")
+        if not lines:
+            if not (getattr(self, "osvoting_enabled", False) and self.changevm_enabled):
+                lines.append("OS voting is off.")
+            elif getattr(self, "_switching_vm", False):
+                lines.append("Switching VMs...")
+            else:
+                cool = self._cfg_int("osvote_cooldown", 300, 0, 7200)
+                left = int(getattr(self, "_os_last_switch", 0) + cool - now)
+                lines.append(f"No OS vote running. Next vote opens in {left // 60}m {left % 60:02d}s." if left > 0
+                             else f"No OS vote running. Chat can start one with {self.command_prefix}{self.osvote_cmd_name()} <os>.")
+        txt = "\n".join(lines)
+        if lbl.text() != txt:
+            lbl.setText(txt)
 
     def build_realpc_tab(self):
         sc = self.make_scrollable(self.tab_realpc)
@@ -12829,7 +13058,7 @@ class QtAppUI:
             ("VIEWER", "!roll / !coinflip", "random number / coin"),
             ("VIEWER", "!skipsong / !pausesong ...", "start a music vote"),
             ("VIEWER", "!revert / !restartvm", "start a vote (mods bypass)"),
-            ("VIEWER", "!changevm", "vote to switch OS (if enabled)"),
+            ("VIEWER", "!changevm <os>", "vote for the next OS (if enabled)"),
             ("MOD", "!ban / !unban <user>", "blacklist / un-blacklist"),
             ("MOD", "!timeout / !mute <user> <mins>", "timed ban"),
             ("MOD", "!warn <user> <msg>", "warn flash"),
@@ -13012,6 +13241,10 @@ class QtAppUI:
         self.cv_hint.setText(f"saved: {len(wl)} whitelisted VM(s)")
         self.log("[system]", f"changevm whitelist: {wl if wl else 'current VM only'}", "sysmsg")
         self.toast("ChangeVM list saved", "ok")
+        try:
+            self._refresh_osvote()
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
 
     def build_command_power_tab(self):
         sc = self.make_scrollable(self.tab_cmdpower)
@@ -14078,7 +14311,7 @@ class QtAppUI:
                 ("h2", "Votes"),
                 ("code", "  !revert / !restartvm      viewers vote, mods act instantly"),
                 ("code", "  !skipsong !pausesong      music votes"),
-                ("code", "  !changevm                 vote to switch OS (if enabled)"),
+                ("code", "  !changevm <os>            vote for the next OS (if enabled)"),
             ]),
             ("Mod Commands", [
                 ("h1", "Mod Commands"),
@@ -14866,7 +15099,9 @@ class ChatPlaysApp(QtAppUI):
             "discord_owner_ids": "", "discord_screens": True, "discord_log_all": True,
             "plugins_enabled": {}, "plugin_settings": {}, "plugin_market_autoload": True, "plugin_owner_keys": {}, "update_mode": "ask",
             "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
-            "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50
+            "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50,
+            "osvote_cmd": "changevm", "osvote_needed": 3, "osvote_time": 90, "osvote_cooldown": 300, "changevm_aliases": {},
+            "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60
         }
         if os.path.exists(settings_file):
             try:
@@ -15354,48 +15589,87 @@ class ChatPlaysApp(QtAppUI):
         except ValueError: next_index = 0
         keyboard_layout = available_layouts[next_index]
 
-    def _advance_vm_state(self):
-        global vm_name, available_vms
+    def _vm_paths(self):
+        out = {}
+        try:
+            vmxs = list(find_vmx_files())
+        except Exception:
+            vmxs = []
+        for path in vmxs + [getattr(self, "vmx_path", "") or ""] + list(dict(self.config.get("changevm_vmx", {}) or {}).values()):
+            if path and os.path.isfile(path):
+                out.setdefault(os.path.splitext(os.path.basename(path))[0], path)
+        return out
+
+    def _vm_list(self, fresh=False):
+        global available_vms
+        ts, names = getattr(self, "_vm_cache", (0.0, []))
+        if not fresh and names and time.time() - ts < 20:
+            return list(names)
         if getattr(self, "backend", "virtualbox") == "vmware":
-            vmxs = find_vmx_files()
-            if not vmxs:
-                self.log("[system]", "[warn] no .vmx files found - pick one on the VMS tab.", "sysmsg")
-                return
-            cur = getattr(self, "vmx_path", "")
-            try: idx = (vmxs.index(cur) + 1) % len(vmxs)
-            except ValueError: idx = 0
-            self.vmx_path = vmxs[idx]
-            self.config["vmx_path"] = self.vmx_path
-            vm_name = os.path.splitext(os.path.basename(self.vmx_path))[0]
-            self.config["vm_name"] = vm_name
+            names = sorted(self._vm_paths().keys(), key=str.lower)
+        else:
+            try:
+                names = get_all_vbox_vms(self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd, quiet=True)
+            except Exception:
+                names = []
+            if names:
+                available_vms = list(names)
+        self._vm_cache = (time.time(), list(names))
+        return list(names)
+
+    def _pick_switch(self, target=None):
+        names = self._vm_list(fresh=True)
+        if target:
+            hit = next((n for n in names if n == target), None) or next((n for n in names if n.lower() == str(target).lower()), None)
+            if not hit:
+                self.log("[system]", f"[warn] VM '{target}' doesn't exist (any more).", "sysmsg")
+                return None
+            return hit
+        wl = [n for n in names if n in set(self.changevm_whitelist)]
+        if not wl:
+            self.log("[system]", "[warn] no votable VMs set - pick them on the OS Voting page.", "sysmsg")
+            return None
+        nxt = wl[(wl.index(vm_name) + 1) % len(wl)] if vm_name in wl else wl[0]
+        if nxt == vm_name:
+            self.log("[system]", "[warn] there is no other votable VM to switch to.", "sysmsg")
+            return None
+        return nxt
+
+    def _apply_switch(self, name, snapshot=""):
+        global vm_name
+        want = snapshot or self.changevm_snapshots.get(name, "")
+        if getattr(self, "backend", "virtualbox") == "vmware":
+            path = self._vm_paths().get(name)
+            if not path:
+                return False
+            self.vmx_path = path
+            self.config["vmx_path"] = path
+            vm_name = name
+            self.config["vm_name"] = name
             try:
                 snaps = self._vmware().list_snapshots()
-                self.current_snapshot = snaps[-1] if snaps else ""
             except Exception:
-                self.current_snapshot = ""
-            self.save_settings()
-            self.log("[system]", f"switched to vmware vm: {vm_name}", "sysmsg")
-            return
+                snaps = []
+        else:
+            vm_name = name
+            self.config["vm_name"] = name
+            try:
+                snaps = get_vbox_snapshots(vbox_manage_cmd, name)
+            except Exception:
+                snaps = []
+        self.current_snapshot = want if want in snaps else (snaps[-1] if snaps else "")
         try:
-            res = subprocess.run([vbox_manage_cmd, "list", "vms"], capture_output=True, text=True, timeout=15)
-            fresh_vms = [line.split('"')[1] for line in res.stdout.splitlines() if '"' in line]
-            if fresh_vms: available_vms = fresh_vms
-        except Exception:
-            pass
-        if not available_vms:
-            self.log("[system]", f"[warn] no VMs available to switch to. {_vle}", "sysmsg")
-            return
-        try:
-            current_index = available_vms.index(vm_name)
-            next_index = (current_index + 1) % len(available_vms)
-        except ValueError:
-            next_index = 0
-        vm_name = available_vms[next_index]
-        snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
-        self.current_snapshot = snaps[-1] if snaps else ""
-        self.config["vm_name"] = vm_name
+            with open(snap_file, "w") as f:
+                f.write(self.current_snapshot)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
         self.save_settings()
-        self.log("[system]", f"switched to vm: {vm_name}", "sysmsg")
+        self.log("[system]", f"switched to vm: {name}" + (f" (snapshot {self.current_snapshot})" if self.current_snapshot else ""), "sysmsg")
+        return True
+
+    def _advance_vm_state(self, target=None, snapshot=""):
+        pick = self._pick_switch(target)
+        return bool(pick) and self._apply_switch(pick, snapshot)
 
 
     def cycle_vm(self):
@@ -15461,52 +15735,77 @@ class ChatPlaysApp(QtAppUI):
             return True
         except Exception: return True
 
+    def _vote_say(self, msg, key=None, every=0.0):
+        now = time.time()
+        said = self.__dict__.setdefault("_vote_said", {})
+        if key is not None:
+            if now - said.get(key, 0) < every:
+                return
+            if len(said) > 2000:
+                said.clear()
+            said[key] = now
+        self.log("[system]", f"[vote] {msg}", "sysmsg")
+        self._discord_announce(msg[:1].upper() + msg[1:])
+
+    def _vote_need(self, kind):
+        key = {"revert": "vote_needed_revert", "restart": "vote_needed_restart"}.get(kind, "")
+        try:
+            return max(1, min(100, int(self.config.get(key, 2))))
+        except Exception:
+            return 2
+
     def process_vote(self, user, vote_type, target=2):
         if getattr(self, 'vm_maintenance', False):
             plog("VOTE", f"{user} voted {vote_type} but votes are paused (vm maintenance)")
-            self.log("[system]", "[warn] vm is processing commands. votes paused.", "sysmsg")
+            self._vote_say("the VM is busy right now, votes are paused for a moment.", "paused", 10)
             return
         msgs = []
         passed = None
+        now = time.time()
         with self.vote_lock:
             if vote_type in self.active_votes:
                 vote = self.active_votes[vote_type]
                 if not isinstance(vote, dict):
-                    vote = {"voters": set(), "target": target, "start_time": time.time()}
+                    vote = {"voters": set(), "target": target, "start_time": now, "expires": now + vote_timeout}
                     self.active_votes[vote_type] = vote
                 if target < vote["target"]: vote["target"] = target
                 if user not in vote["voters"]:
                     vote["voters"].add(user)
                     current_votes = len(vote["voters"])
-                    msgs.append(f"[vote] [alert] {vote_type.lower()} progress: {current_votes}/{vote['target']}!")
                     log_vote_action("vote_progress", user, vote_type, vote['target'], current_votes)
                     plog("VOTE", f"{user} -> {vote_type} {current_votes}/{vote['target']}")
                     if current_votes >= vote["target"]:
-                        msgs.append(f"[vote] [success] {vote_type.lower()} passed! executing now...")
+                        msgs.append(f"{vote_type.lower()} passed ({current_votes}/{vote['target']}), running it now.")
                         log_vote_action("vote_passed", user, vote_type, vote['target'], current_votes)
                         passed = vote_type
-                        self.active_votes.clear()
+                        self.active_votes.pop(vote_type, None)
+                    else:
+                        msgs.append(f"{vote_type.lower()}: {current_votes}/{vote['target']} votes.")
                 else:
                     plog("VOTE", f"{user} already voted {vote_type}", verbose=True)
-            elif len(self.active_votes) < 3:
-                msgs.append(f"[vote] [started] {vote_type.lower()} vote started by {user}! progress: 1/{target}.")
-                self.active_votes[vote_type] = {"voters": {user}, "target": target, "start_time": time.time()}
+            elif sum(1 for v in self.active_votes.values() if isinstance(v, dict) and not v.get("os")) < 3:
+                self.active_votes[vote_type] = {"voters": {user}, "target": target, "start_time": now, "expires": now + vote_timeout}
                 log_vote_action("vote_started", user, vote_type, target, 1)
                 plog("VOTE", f"{user} started {vote_type} vote (needs {target})")
+                if target <= 1:
+                    passed = vote_type
+                    self.active_votes.pop(vote_type, None)
+                    msgs.append(f"{vote_type.lower()} passed, running it now.")
+                else:
+                    msgs.append(f"{user} started a {vote_type.lower()} vote: 1/{target}. Type {vote_type.lower()} to join ({vote_timeout}s).")
             else:
                 plog("VOTE", f"{user} tried to start {vote_type} but 3 votes are already running")
+                self.__dict__.setdefault("_vote_full_note", 0)
+                if now - self._vote_full_note > 10:
+                    self._vote_full_note = now
+                    msgs.append("3 votes are already running, wait for one to finish.")
         for m in msgs:
-            self.log("[system]", m, "sysmsg")
-        for m in msgs:
-            clean = re.sub(r"\[(vote|alert|started|success)\]\s*", "", m, flags=re.I).strip()
-            if clean:
-                self._discord_announce(clean[:1].upper() + clean[1:])
+            self._vote_say(m)
         if passed is None:
             return
         clean_cmd = passed
         if clean_cmd.startswith(self.command_prefix): clean_cmd = clean_cmd[len(self.command_prefix):]
         plog("VOTE", f"vote PASSED: {clean_cmd} - executing")
-        self._discord_announce(f"Vote passed: {clean_cmd}. Running it now.")
         if clean_cmd == "skipsong" or clean_cmd == "stopsong":
             self.obs_media_action("OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP")
             self.current_song = None
@@ -16752,6 +17051,7 @@ class ChatPlaysApp(QtAppUI):
         known = set(_KNOWN_CMDS)
         pm = getattr(self, "plugins", None)
         if pm is not None: known.update(pm.command_names())
+        known.add(self.osvote_cmd_name())
         for k in self.custom_commands:
             if str(k).startswith(p):
                 known.add(str(k)[len(p):].lower())
@@ -16842,6 +17142,7 @@ class ChatPlaysApp(QtAppUI):
             cmd = "!" + raw_cmd[len(self.command_prefix):]
             aliases = {"!c": "!combo", "!k": "!key", "!t": "!type", "!m": "!move", "!d": "!drag", "!w": "!wait", "!kd": "!keydown", "!ku": "!keyup", "!lc": "!click", "!rc": "!rclick", "!s": "!screenshot", "!screen": "!screenshot"}
             if cmd in aliases: cmd = aliases[cmd]
+            if cmd == "!" + self.osvote_cmd_name(): cmd = "!changevm"
             arg = parts[1].strip() if len(parts) > 1 else ""
             total_commands_executed += 1
             if clean_user in owners or clean_user == "reallyiron": is_owner = True
@@ -16938,8 +17239,7 @@ class ChatPlaysApp(QtAppUI):
                         break
                     continue
             if cmd == "!changevm" and not is_admin:
-                if getattr(self, "osvoting_enabled", False) and self.changevm_enabled:
-                    self.process_vote(user, f"{self.command_prefix}changevm", 3)
+                self.os_vote(user, arg)
                 continue
             if cmd in ["!votestop", "!clear", "!changevm", "!switchsnapshot", "!swichsnapshot", "!say", "!fixvm", "!forcefixvm", "!shutdown", "!remake2", "!makesnapshot", "!fixscript"]:
                 if cmd == "!say" and not self.say_admin_only:
@@ -16953,23 +17253,7 @@ class ChatPlaysApp(QtAppUI):
                         global web_chat_history
                         with history_lock: web_chat_history.clear()
                     elif cmd == "!changevm":
-                         if not self.changevm_enabled:
-                             self.log("[system]", "[warn] changevm is disabled.", "sysmsg")
-                         else:
-                             target = (arg or "").strip()
-                             if target:
-                                 whitelist = self.changevm_whitelist
-                                 allowed = (not whitelist) or (target in whitelist) or (target == vm_name)
-                                 if not allowed:
-                                     self.log("[system]", f"[warn] {target} is not whitelisted for !changevm.", "sysmsg")
-                                 else:
-                                     snap = self.changevm_snapshots.get(target, "")
-                                     self.switch_to_vm(target, snap)
-                             else:
-                                 if self.changevm_whitelist and vm_name not in self.changevm_whitelist:
-                                     self.log("[system]", "[warn] current VM is not whitelisted for !changevm.", "sysmsg")
-                                 else:
-                                     action_chain.append(("changevm", "", user))
+                        self._mod_changevm(user, arg, is_owner)
                     elif cmd in ["!switchsnapshot", "!swichsnapshot"]:
                          snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
                          if len(snaps) > 1:
@@ -16999,11 +17283,11 @@ class ChatPlaysApp(QtAppUI):
                         subprocess.Popen(args)
                         os._exit(0)
                 else:
-                    if cmd == "!forcefixvm": self.process_vote(user, f"{self.command_prefix}forcefixvm", 2)
+                    if cmd == "!forcefixvm": self.process_vote(user, f"{self.command_prefix}forcefixvm", self._vote_need("restart"))
                 continue
             if cmd == "!restartvm":
                 if is_admin: action_chain.append(("restartvm", "", user))
-                else: self.process_vote(user, f"{self.command_prefix}restartvm", 2)
+                else: self.process_vote(user, f"{self.command_prefix}restartvm", self._vote_need("restart"))
                 continue
             if cmd == "!flash":
                 if is_admin and arg:
@@ -17018,7 +17302,7 @@ class ChatPlaysApp(QtAppUI):
                     self.log("[system]", "[warn] !revert is temporarily disabled while the system recovers.", "sysmsg")
                     continue
                 if is_admin: action_chain.append(("revert", "", user))
-                else: self.process_vote(user, f"{self.command_prefix}revert", 2)
+                else: self.process_vote(user, f"{self.command_prefix}revert", self._vote_need("revert"))
                 continue
             if cmd in ("!plugins", "!plugin"):
                 if is_owner: self._plugin_owner_cmd(arg)
@@ -17199,7 +17483,7 @@ class ChatPlaysApp(QtAppUI):
                                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                         self.clear_commands()
                                         self.trigger_command(("!startvm", "", c.author.name))
-                                    else: self.process_vote(c.author.name, f"{self.command_prefix}forcefixvm", 2)
+                                    else: self.process_vote(c.author.name, f"{self.command_prefix}forcefixvm", self._vote_need("restart"))
                                     continue
                                 if _hid and not c.message.startswith(self.command_prefix):
                                     self._hide_payload(clean_name, c.message, source="youtube")
@@ -17790,6 +18074,32 @@ class ChatPlaysApp(QtAppUI):
                     name = arg.strip() or f"chatsnap_{int(time.time())}"
                     vm.take_snapshot(name)
                     self.log("[system]", f"vmware snapshot '{name}' taken.", "sysmsg")
+                elif action == "changevm":
+                    tgt, _sep, snap = (arg or "").partition("\x00")
+                    pick = self._pick_switch(tgt or None)
+                    if pick and pick != vm_name:
+                        set_obs_scene(obs_scene_changevm)
+                        self.log("[system]", f"switching {vm_name} -> {pick}...", "sysmsg")
+                        try:
+                            vm.stop()
+                            self._vmware_wait_running(False, 40)
+                        except Exception as _ex:
+                            _trace(_ex_where(), _ex)
+                        if self._apply_switch(pick, snap):
+                            self.ui(self._update_vm_label)
+                            vm = self._vmware()
+                            if self.current_snapshot:
+                                vm.revert_snapshot(self.current_snapshot)
+                                time.sleep(2)
+                            vm.start()
+                            if self._vmware_wait_running(True, 90):
+                                self._vmware_wait_ready()
+                                set_obs_scene(obs_scene_main)
+                                self._os_last_switch = time.time()
+                                self.log("[system]", f"now running {pick}.", "sysmsg")
+                            else:
+                                set_obs_scene(obs_scene_error)
+                                return False
                 vm.connect()
                 return True
             except Exception as e:
@@ -17843,19 +18153,29 @@ class ChatPlaysApp(QtAppUI):
                         time.sleep(2)
                     ok = self._start_vm_safely()
                 elif action == "changevm":
-                    if not self.changevm_enabled:
-                        self.log("[system]", "[warn] changevm is disabled.", "sysmsg")
-                    else:
+                    tgt, _sep, snap = (arg or "").partition("\x00")
+                    pick = self._pick_switch(tgt or None)
+                    if pick and pick != vm_name:
                         set_obs_scene(obs_scene_changevm)
+                        self.log("[system]", f"switching {vm_name} -> {pick}...", "sysmsg")
                         self._kill_vbox_tasks()
                         if self._vm_is_running():
                             run_vbox(["controlvm", vm_name, "poweroff"], timeout=20)
                             time.sleep(2)
-                        self._advance_vm_state()
+                        self._apply_switch(pick, snap)
                         self.ui(self._update_vm_label)
                         if self.current_snapshot:
-                            run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
+                            for _ in range(3):
+                                r = run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
+                                if r is not None and r.returncode == 0:
+                                    break
+                                self._kill_vbox_tasks()
+                                time.sleep(2)
                         ok = self._start_vm_safely()
+                        if ok:
+                            self._os_last_switch = time.time()
+                    else:
+                        ok = self._vm_is_running() or self._start_vm_safely()
                 elif action == "makesnapshot":
                     snap_name = arg.strip() or f"chatsnap_{int(time.time())}"
                     r = run_vbox(["snapshot", vm_name, "take", snap_name], timeout=45)
@@ -18841,28 +19161,165 @@ class ChatPlaysApp(QtAppUI):
         self.config["osvoting_enabled"] = self.osvoting_enabled
         self.save_settings()
         self.log("[system]", f"os voting {'enabled' if self.osvoting_enabled else 'disabled'}.", "sysmsg")
+        if self.osvoting_enabled and not self.changevm_enabled:
+            self.toast("OS voting is on, but !changevm is turned off on the ChangeVM page", "warn")
+        elif self.osvoting_enabled and not self.votable_vms():
+            self.toast("OS voting is on - now pick the votable VMs below", "info")
 
 
-    def switch_to_vm(self, name, snapshot=""):
+    def switch_to_vm(self, name, snapshot="", user="[console]"):
+        if getattr(self, "_switching_vm", False):
+            self.log("[system]", "[warn] already switching VMs, wait for it to finish.", "sysmsg")
+            return False
+        self._switching_vm = True
+        with self.vote_lock:
+            for k in [k for k, v in self.active_votes.items() if isinstance(v, dict) and v.get("os")]:
+                self.active_votes.pop(k, None)
+
         def _go():
-            global vm_name
             try:
-                vm_name = name
-                self.config["vm_name"] = name
-                self.save_settings()
-                if snapshot:
-                    self.current_snapshot = snapshot
-                else:
-                    snaps = get_vbox_snapshots(vbox_manage_cmd, name)
-                    self.current_snapshot = snaps[-1] if snaps else ""
-                self.ui(self._update_vm_label)
-                self._do_vm_maintenance("remake2", "", "[console]")
-                self.ui(self._refresh_osvote)
+                self._do_vm_maintenance("changevm", (name or "") + "\x00" + (snapshot or ""), user)
             except Exception as e:
                 console_log("ERROR", f"switch_to_vm failed: {e}")
-        threading.Thread(target=_go, daemon=True).start()
-        extra = f" -> {snapshot}" if snapshot else ""
-        self.log("[system]", f"switching to {name}{extra}...", "sysmsg")
+            finally:
+                self._switching_vm = False
+                self.ui(self._update_vm_label)
+                self.ui(self._refresh_osvote)
+        threading.Thread(target=_go, daemon=True, name="vm-switch").start()
+        if name:
+            self.log("[system]", f"switching to {name}" + (f" -> {snapshot}" if snapshot else "") + "...", "sysmsg")
+        return True
+
+    def osvote_cmd_name(self):
+        n = re.sub(r"[^a-z0-9_]", "", str(self.config.get("osvote_cmd", "changevm") or "").lower().lstrip("!"))
+        return n or "changevm"
+
+    def _cfg_int(self, key, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(float(self.config.get(key, default)))))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _vm_slug(name):
+        return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+    def votable_vms(self):
+        names = self._vm_list()
+        wl = [n for n in self.changevm_whitelist if (n in names or not names)]
+        aliases = dict(self.config.get("changevm_aliases", {}) or {})
+        return [(n, (self._vm_slug(aliases.get(n, "")) or self._vm_slug(n))) for n in wl]
+
+    def resolve_vm(self, text, opts):
+        q = self._vm_slug(text)
+        if not q:
+            return None
+        for n, a in opts:
+            if q == a or q == self._vm_slug(n):
+                return (n, a)
+        hits = [o for o in opts if o[1].startswith(q) or self._vm_slug(o[0]).startswith(q)]
+        if len(hits) == 1:
+            return hits[0]
+        hits = [o for o in opts if q in o[1] or q in self._vm_slug(o[0])]
+        return hits[0] if len(hits) == 1 else None
+
+    def _osvote_options_text(self, opts):
+        cmdn = self.command_prefix + self.osvote_cmd_name()
+        return ", ".join(f"{cmdn} {a}" for n, a in opts if n != vm_name)
+
+    def os_vote(self, user, arg):
+        cmdn = self.command_prefix + self.osvote_cmd_name()
+        if not (getattr(self, "osvoting_enabled", False) and self.changevm_enabled):
+            self._vote_say("OS voting is off right now.", "os-off", 20)
+            return
+        if getattr(self, "vm_maintenance", False) or getattr(self, "_switching_vm", False):
+            self._vote_say("the VM is busy right now, try the OS vote again in a moment.", "paused", 10)
+            return
+        cool = self._cfg_int("osvote_cooldown", 300, 0, 7200)
+        left = int(getattr(self, "_os_last_switch", 0) + cool - time.time())
+        if left > 0:
+            self._vote_say(f"next OS vote opens in {left // 60}m {left % 60:02d}s.", "os-cool", 15)
+            return
+        opts = self.votable_vms()
+        others = [o for o in opts if o[0] != vm_name]
+        if not others:
+            self._vote_say("there's no other OS to vote for right now.", "os-none", 20)
+            return
+        if not arg.strip():
+            if len(others) == 1:
+                pick = others[0]
+            else:
+                self._vote_say(f"pick an OS: {self._osvote_options_text(opts)}", "os-help", 10)
+                return
+        else:
+            pick = self.resolve_vm(arg, opts)
+            if pick is None:
+                self._vote_say(f"no OS called '{arg.strip()[:24]}'. Options: {self._osvote_options_text(opts)}", "os-bad", 8)
+                return
+            if pick[0] == vm_name:
+                self._vote_say(f"we're already on {pick[0]}. Options: {self._osvote_options_text(opts)}", "os-cur", 8)
+                return
+        name, alias = pick
+        key = f"{cmdn} {alias}"
+        need = self._cfg_int("osvote_needed", 3, 1, 200)
+        dur = self._cfg_int("osvote_time", 90, 15, 1800)
+        now = time.time()
+        msg = None
+        passed = False
+        moved = None
+        with self.vote_lock:
+            for k, v in list(self.active_votes.items()):
+                if isinstance(v, dict) and v.get("os") and k != key and user in v["voters"]:
+                    v["voters"].discard(user)
+                    moved = v["os"]
+                    if not v["voters"]:
+                        del self.active_votes[k]
+            entry = self.active_votes.get(key)
+            if entry is None:
+                entry = {"voters": set(), "target": need, "start_time": now, "expires": now + dur, "os": name}
+                self.active_votes[key] = entry
+                started = True
+            else:
+                started = False
+            if user in entry["voters"]:
+                plog("VOTE", f"{user} already voted for {name}", verbose=True)
+                return
+            entry["voters"].add(user)
+            n = len(entry["voters"])
+            log_vote_action("vote_os", user, key, entry["target"], n)
+            plog("VOTE", f"{user} -> OS {name} {n}/{entry['target']}")
+            if n >= entry["target"]:
+                passed = True
+                for k in [k for k, v in self.active_votes.items() if isinstance(v, dict) and v.get("os")]:
+                    self.active_votes.pop(k, None)
+                msg = f"{name} won the OS vote ({n}/{entry['target']}), switching now."
+            elif started:
+                msg = f"{user} started an OS vote for {name}: {n}/{entry['target']}. Type {key} to join ({dur}s)."
+            else:
+                msg = f"{key}: {n}/{entry['target']} votes" + (f" ({user} switched from {moved})" if moved else "") + "."
+        self._vote_say(msg)
+        if passed:
+            self._os_last_switch = time.time()
+            self.switch_to_vm(name, self.changevm_snapshots.get(name, ""), "vote_passed")
+
+    def _mod_changevm(self, user, arg, is_owner):
+        if not self.changevm_enabled and not is_owner:
+            self.log("[system]", "[warn] changevm is disabled.", "sysmsg")
+            return
+        target = (arg or "").strip()
+        if not target:
+            self.switch_to_vm("", "", user)
+            return
+        hit = self.resolve_vm(target, self.votable_vms())
+        if hit is None and is_owner:
+            hit = self.resolve_vm(target, [(n, self._vm_slug(n)) for n in self._vm_list(fresh=True)])
+        if hit is None:
+            self.log("[system]", f"[warn] '{target}' isn't a votable VM. Votable: {', '.join(a for n, a in self.votable_vms()) or 'none'}", "sysmsg")
+            return
+        if hit[0] == vm_name:
+            self.log("[system]", f"already running {hit[0]}.", "sysmsg")
+            return
+        self.switch_to_vm(hit[0], self.changevm_snapshots.get(hit[0], ""), user)
 
 
     def _apply_pico_target(self):

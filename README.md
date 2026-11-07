@@ -38,6 +38,13 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - ChangeVM control: whitelist which VMs `!changevm` can switch to, and pick the snapshot each whitelisted VM reverts to (ChangeVM tab).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 1.5.0
+
+## Staff skip every vote
+- Admins, mods and the owner never have to vote. Their `!revert`, `!restartvm`, `!forcefixvm`, music commands (`!skipsong`, `!pausesong` ...) and OS commands run right away, even while votes are paused, on cooldown or OS voting is off. A vote viewers already started for the same thing is closed.
+- `!win7` / `!winxp` style OS commands from staff switch the OS at once.
+- Admins on the YT2VM admin list count as staff for every vote, not just YouTube mods and the owner.
+
 # Release Notes — 1.4.0
 
 ## Automatic updates

@@ -6561,8 +6561,21 @@ def _enc_blob(tok, short=32):
     return None
 
 
+_ENC_NATRUN = re.compile(r"\d+|[a-z]+\d*|[A-Z]+\d*|[A-Z]?[a-z]+(?:[A-Z][a-z]+|[A-Z]{2,}(?![a-z]))*[A-Z]?\d*|[A-Z]{2,}[a-z]+[A-Z]?\d*|[a-z]+(?:[A-Z]+[a-z]*)+\d*")
+
+
+def _enc_codey(tok):
+    runs = [r for r in re.findall(r"[A-Za-z0-9]+", tok) if len(r) >= 3]
+    if len(runs) < 2:
+        return False
+    nat = [r for r in runs if _ENC_NATRUN.fullmatch(r)]
+    return len(nat) >= 2 and sum(map(len, nat)) >= 0.85 * sum(map(len, runs))
+
+
 def _enc_b85(tok, short=40):
     if len(tok) < short:
+        return None
+    if _enc_codey(tok):
         return None
     if len(tok) < 40 and re.search(r"[a-z]{6,}|[A-Z]{6,}", tok):
         return None

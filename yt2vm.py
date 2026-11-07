@@ -5458,7 +5458,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.4.0"
+version = "1.5.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -10709,6 +10709,19 @@ UPDATE_CHECK_HOURS = 6
 _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 
 CHANGELOG = (
+    {"version": "1.5.0", "date": "2026-11-07",
+     "added": [
+         "Admins, mods and the owner skip every vote: their vote command runs right away, even while votes are paused or on cooldown.",
+     ],
+     "changed": [
+         "!win7 / !winxp style OS commands from admins switch the OS at once instead of adding a vote.",
+         "Music votes (!skipsong, !pausesong ...) from admins run at once; admins from the YT2VM admin list count too, not just mods and the owner.",
+     ],
+     "fixed": [
+         "A music command from a mod did nothing while the VM was busy (votes paused).",
+         "!forcefixvm from a YouTube admin on the admin list went to a vote instead of running.",
+     ],
+     "removed": []},
     {"version": "1.4.0", "date": "2026-11-07",
      "added": [
          "Automatic updates from GitHub: on every start YT2VM compares itself with yt2vm.py on the main branch and, when it changed, installs it with an 'Updating To Version' screen and restarts by itself.",
@@ -15911,7 +15924,15 @@ class ChatPlaysApp(QtAppUI):
         except Exception:
             return 2
 
-    def process_vote(self, user, vote_type, target=2):
+    def process_vote(self, user, vote_type, target=2, force=False):
+        if force:
+            with self.vote_lock:
+                was = self.active_votes.pop(vote_type, None)
+            plog("VOTE", f"{user} skipped the {vote_type} vote (staff)")
+            log_vote_action("vote_forced", user, vote_type, target, len(was["voters"]) if isinstance(was, dict) else 0)
+            self._vote_say(f"{user} skipped the vote: {vote_type.lower()} runs now.")
+            self._vote_run(vote_type)
+            return
         if getattr(self, 'vm_maintenance', False):
             plog("VOTE", f"{user} voted {vote_type} but votes are paused (vm maintenance)")
             self._vote_say("the VM is busy right now, votes are paused for a moment.", "paused", 10)
@@ -15960,6 +15981,9 @@ class ChatPlaysApp(QtAppUI):
             self._vote_say(m)
         if passed is None:
             return
+        self._vote_run(passed)
+
+    def _vote_run(self, passed):
         clean_cmd = passed
         if clean_cmd.startswith(self.command_prefix): clean_cmd = clean_cmd[len(self.command_prefix):]
         plog("VOTE", f"vote PASSED: {clean_cmd} - executing")
@@ -17330,10 +17354,7 @@ class ChatPlaysApp(QtAppUI):
                 "!votedrop": 4, "!voterandom": 3
             }
             if cmd in music_votes:
-                if is_owner or is_mod:
-                    with self.vote_lock:
-                        self.active_votes[cmd] = {"voters": {f"FORCE_{i}" for i in range(max(0, music_votes[cmd] - 1))}, "target": music_votes[cmd], "start_time": time.time()}
-                self.process_vote(user, cmd, music_votes[cmd])
+                self.process_vote(user, cmd, music_votes[cmd], force=is_admin)
                 continue
 
             if cmd == "!music" and arg:
@@ -17404,7 +17425,10 @@ class ChatPlaysApp(QtAppUI):
                     if _why.startswith("cooldown") or _why.startswith("spam"):
                         break
                     continue
-            if cmd == "!changevm" and (not is_admin or _osdirect):
+            if cmd == "!changevm" and _osdirect and is_admin:
+                self._mod_changevm(user, _osdirect, True if is_owner else False)
+                continue
+            if cmd == "!changevm" and not is_admin:
                 self.os_vote(user, arg, direct=bool(_osdirect))
                 continue
             if cmd in ["!votestop", "!clear", "!changevm", "!switchsnapshot", "!swichsnapshot", "!say", "!fixvm", "!forcefixvm", "!shutdown", "!remake2", "!makesnapshot", "!fixscript"]:
@@ -17642,7 +17666,8 @@ class ChatPlaysApp(QtAppUI):
                                 console_log("CHAT", f"[youtube] [{c.author.name}]{' (owner)' if is_owner else (' (mod)' if is_mod else '')}: {_shown}")
                                 append_to_all_msgs_log(c.author.name, _shown)
                                 if msg_lower.startswith(f"{self.command_prefix}forcefixvm") and not yt_cmds_off:
-                                    if is_mod:
+                                    _fcn = c.author.name.replace("@", "").lower().strip()
+                                    if is_mod or is_owner or _fcn in admins or self._is_owner_name(_fcn):
                                         if platform.system() == "Windows":
                                             subprocess.run(["taskkill", "/F", "/FI", f"WINDOWTITLE eq *{vm_name}*",
                                                             "/IM", "VirtualBoxVM.exe", "/T"],

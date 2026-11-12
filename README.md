@@ -36,7 +36,31 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - Plugins: Add your own chat commands, chat reactions, timers and GUI panels without touching `yt2vm.py`.
 - Plugin Market: Browse, install and publish reviewed plugins straight from the app (Tools → Plugin Market).
 - ChangeVM control: whitelist which VMs `!changevm` can switch to, and pick the snapshot each whitelisted VM reverts to (ChangeVM tab).
+- AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
+
+# Release Notes — 1.8.0
+
+## AI page
+- A vision AI can now play the VM. Open the new **AI** page, turn on *Let the AI control the VM*, pick a model and press Start.
+- YT2VM finds Ollama, LM Studio, Jan, KoboldCpp, llama.cpp / LocalAI and vLLM on your PC by itself. Any OpenAI-compatible service works through *Custom*. Only models that can read images are listed (for Ollama, for example `ollama pull qwen2.5vl`).
+- Every step the AI gets a screenshot of the VM, answers with commands, YT2VM runs them as the user `[ai]` through the normal command queue, waits until they finished, and sends the next screenshot. It keeps going 24/7 if you want, and picks new goals by itself after finishing a task.
+- Thinking levels Off / Low / Medium / High, plus creativity, reply length, commands per step, speed, task time and step limits, screenshot and context size.
+- Live view of what the AI sees, thinks, plans and runs, with stats and an activity log.
+- Per-VM profiles with their own task, model and extra instructions.
+
+## Learning
+- The AI learns from its own commands and screenshots, from what viewers run, from `!teach`, and from everything said in YouTube chat and Discord. Everything is stored in `ai_learnings.db`.
+- It looks things up with its `Read_Learnings` tool and sees related lessons every step. You can search, add and delete learnings on the AI page.
+- `ai_logs.jsonl` logs every step with `timestamp`, `ai_thinking`, `ai_commands`, what ran, the result and the screenshot, plus learning events, errors and finished tasks. Export logs and learnings as a zip from the AI page.
+
+## Chat commands
+- `!ai <message>` talks to the AI while it plays. `!teach <text>` teaches it something (everyone, mods only or off).
+- Mods: `!aitask <task>`, `!aistart`, `!aistop`.
+
+## Safety
+- The AI only uses viewer commands. `!revert`, `!restartvm` and `!fixvm` need an extra switch, and a block list keeps any command away from it.
+- It goes through the same command filter and Protect VM rules as viewers, has its own commands-per-minute limit, can wait while viewers play, and pauses itself after repeated errors.
 
 # Release Notes — 1.7.0
 

@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.8.0"
+version = "1.9.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -10847,6 +10847,19 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "1.9.0", "date": "2026-11-12",
+     "added": [
+         "AI page: a Test button next to the address, and the address is tested as soon as you leave the field.",
+         "When the AI on another PC can't be reached, YT2VM says why: Ollama only listening to its own PC, the firewall blocking the port, a wrong address or the PC being off.",
+     ],
+     "changed": [
+         "AI addresses can be typed the short way: 192.168.1.20 or 192.168.1.20:11434 works, http:// and the normal port are added for you.",
+     ],
+     "fixed": [
+         "Using an AI on another PC always said 'not running' when the address was typed without http://.",
+         "Every connection problem with the AI was reported as 'not running', even when the AI was found but refused the connection.",
+     ],
+     "removed": []},
     {"version": "1.8.0", "date": "2026-11-12",
      "added": [
          "New AI page: a vision AI (Ollama, LM Studio, Jan, KoboldCpp, llama.cpp / LocalAI, vLLM or any OpenAI-compatible service) watches the VM and plays it with the same commands viewers use.",
@@ -11174,14 +11187,87 @@ AI_CONTINUOUS = ("CONTINUOUS MODE IS ON: you never stop. Always return at least 
                  "your own (explore programs, tidy the desktop, make something for viewers, follow a viewer request) and keep going.")
 
 
+def ai_base_url(prov_key, url=""):
+    prov = AI_PROVIDER_BY_KEY.get(prov_key) or AI_PROVIDERS[0]
+    u = str(url or "").strip().strip("\"'").strip()
+    if not u:
+        return (prov["url"] or "").rstrip("/")
+    if "://" not in u:
+        u = u.lstrip("/")
+        guess = urllib.parse.urlsplit("http://" + u).hostname
+        u = ("http://" if _ai_is_local_host(guess) else "https://") + u
+    parts = urllib.parse.urlsplit(u)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"'{url}' isn't an address - use something like 192.168.1.20:11434")
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError(f"the port in '{url}' isn't a number")
+    netloc = parts.netloc.rsplit("@", 1)[-1]
+    if port is None and parts.scheme == "http" and prov["url"]:
+        dport = urllib.parse.urlsplit(prov["url"]).port
+        if dport:
+            netloc = f"{netloc}:{dport}"
+    path = parts.path.rstrip("/")
+    if prov["kind"] == "ollama":
+        path = re.sub(r"/(?:api(?:/.*)?|v1(?:/.*)?)$", "", path)
+    else:
+        path = re.sub(r"/(?:chat/completions|completions|models)$", "", path)
+        if not path:
+            path = "/v1"
+    return urllib.parse.urlunsplit((parts.scheme, netloc, path, "", "")).rstrip("/")
+
+
+def _ai_is_local_host(host):
+    host = (host or "").strip("[]").lower()
+    if host in ("localhost", "0.0.0.0") or host.endswith((".local", ".lan", ".home", ".internal")):
+        return True
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(host)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return "." not in host
+
+
+def ai_conn_error(e, base, prov):
+    parts = urllib.parse.urlsplit(base)
+    where = parts.netloc or base
+    host = (parts.hostname or "").lower()
+    this_pc = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    reason = getattr(e, "reason", e)
+    text = str(reason)
+    low = text.lower()
+    if isinstance(e, RuntimeError) and text.startswith("HTTP"):
+        return text
+    if isinstance(reason, ConnectionRefusedError) or "refused" in low or "10061" in low:
+        if this_pc:
+            return "not running"
+        if prov["kind"] == "ollama":
+            return (f"{where} refused the connection. On that PC Ollama only listens to itself by default: turn on "
+                    f"'Expose Ollama to the network' in Ollama's settings (or set OLLAMA_HOST=0.0.0.0) and restart Ollama")
+        return f"{where} refused the connection - the AI app on that PC has to allow network connections"
+    if isinstance(reason, TimeoutError) or "timed out" in low or "10060" in low:
+        if this_pc:
+            return "not running"
+        port = parts.port or ""
+        return (f"no answer from {where}. Check the address, that the PC is on, and that its firewall allows port {port} "
+                f"(Windows Firewall: allow inbound TCP {port} on private networks)")
+    if "getaddrinfo" in low or "name or service" in low or "nodename" in low or "11001" in low:
+        return f"can't find {parts.hostname} on the network - check the address"
+    if "no route" in low or "unreachable" in low or "10065" in low or "10051" in low:
+        return f"{where} can't be reached from this PC - is it on the same network?"
+    if this_pc and isinstance(e, (urllib.error.URLError, ConnectionError, OSError)):
+        return "not running"
+    return text
+
+
 def _ai_http(method, url, body=None, headers=None, timeout=10.0):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     h = {"Content-Type": "application/json", "User-Agent": f"YT2VM/{version}"}
     h.update(headers or {})
     req = urllib.request.Request(url, data=data, headers=h, method=method)
-    host = (urllib.parse.urlparse(url).hostname or "").lower()
-    local = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0") or host.startswith(("192.168.", "10.")) or host.endswith(".local")
-    opener = _AI_DIRECT if local else _AI_PROXIED
+    opener = _AI_DIRECT if _ai_is_local_host(urllib.parse.urlsplit(url).hostname) else _AI_PROXIED
     try:
         with opener.open(req, timeout=timeout) as r:
             raw = r.read(64 * 1024 * 1024)
@@ -11217,7 +11303,10 @@ def ai_probe(prov_key, url="", api_key="", timeout=2.5):
     prov = AI_PROVIDER_BY_KEY.get(prov_key)
     if prov is None:
         return {"ok": False, "url": url, "models": [], "error": "unknown provider"}
-    base = (url or prov["url"] or "").rstrip("/")
+    try:
+        base = ai_base_url(prov_key, url)
+    except ValueError as e:
+        return {"ok": False, "url": str(url), "models": [], "error": str(e)}
     if not base:
         return {"ok": False, "url": base, "models": [], "error": "no address set"}
     hdr = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -11270,17 +11359,17 @@ def ai_probe(prov_key, url="", api_key="", timeout=2.5):
                 models.append({"name": n, "vision": bool(vision), "thinking": bool(re.search(r"(?:^|[/:])o[134]|gpt-5|r1|qwq|think|gpt-oss", n, re.I))})
         return {"ok": True, "url": base, "models": models, "error": ""}
     except Exception as e:
-        msg = str(e)
-        if isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError, OSError)) and "HTTP" not in msg:
-            msg = "not running"
-        return {"ok": False, "url": base, "models": [], "error": msg[:200]}
+        return {"ok": False, "url": base, "models": [], "error": ai_conn_error(e, base, prov)[:400]}
 
 
 def ai_chat(prov_key, url, api_key, model, system, user_text, image_b64=None, temperature=0.4, max_tokens=900,
             think=None, json_mode=True, timeout=120.0, num_ctx=8192):
     """One request to the model. Returns {"text", "thinking", "tokens", "ms"}. Raises RuntimeError with a readable reason."""
     prov = AI_PROVIDER_BY_KEY.get(prov_key) or AI_PROVIDERS[0]
-    base = (url or prov["url"] or "").rstrip("/")
+    try:
+        base = ai_base_url(prov_key, url)
+    except ValueError as e:
+        raise RuntimeError(str(e))
     t0 = time.time()
     if prov["kind"] == "ollama":
         msg = {"role": "user", "content": user_text}
@@ -14641,8 +14730,8 @@ class QtAppUI:
         live.add(lw)
         sc.add(live)
 
-        m = Card("AI provider and model", "YT2VM looks for Ollama, LM Studio, Jan, KoboldCpp, llama.cpp / LocalAI and vLLM on this PC. "
-                 "Only models that can read images are listed, because the AI has to see the screen.")
+        m = Card("AI provider and model", "YT2VM looks for Ollama, LM Studio, Jan, KoboldCpp, llama.cpp / LocalAI and vLLM on this PC, "
+                 "or on another PC at the address you type. Only models that can read images are listed, because the AI has to see the screen.")
         m.add_action(Button("Detect", self._ai_detect, "primary", "sm", icon="refresh"))
         self._ai_found = L("Not checked yet.", "muted", ("ui", 9.5), wrap=True)
         m.add(self._ai_found)
@@ -14659,10 +14748,13 @@ class QtAppUI:
         fg.field("Model", row_widget(self._ai_model, "stretch"))
         fg.field("", row_widget(self._ai_allmodels, "stretch"))
         self._ai_url = LineEdit("", "default address", mono=True, width=380, on_enter=self._ai_save_conn)
-        self._ai_url.editingFinished.connect(self._ai_save_conn)
+        self._ai_url.editingFinished.connect(self._ai_url_done)
         self._ai_key = LineEdit("", "only for online services", mono=True, width=380, secret=True, on_enter=self._ai_save_conn)
         self._ai_key.editingFinished.connect(self._ai_save_conn)
-        fg.field("Address", row_widget(self._ai_url, "stretch"), hint="Leave empty for the provider's normal address on this PC.")
+        fg.field("Address", row_widget(self._ai_url, Button("Test", lambda: self._ai_detect(only=self._ai_cur_provider()), "neutral", "sm",
+                                                            icon="refresh"), "stretch"),
+                 hint="Empty = this PC. To use the AI on another PC, type its address, like 192.168.1.20 (the port is added for you). "
+                      "That PC has to allow network connections - see the message after Test.")
         fg.field("API key", row_widget(self._ai_key, "stretch"),
                  hint="For Custom: any OpenAI-compatible service (OpenAI, OpenRouter, Groq ...). Stored in settings.json.")
         m.add(fg)
@@ -14835,8 +14927,25 @@ class QtAppUI:
 
     def _ai_save_conn(self):
         pk = self._ai_cur_provider()
-        self._ai_set(f"url_{pk}", self._ai_url.get().strip())
+        raw = self._ai_url.get().strip()
+        url = raw
+        if raw:
+            try:
+                url = ai_base_url(pk, raw)
+            except ValueError as e:
+                self.toast(str(e), "warn")
+                self._ai_found.setText(str(e))
+                return None
+            if url != raw:
+                self._ai_url.set(url)
+        changed = url != str(self._ai_get(f"url_{pk}", "") or "")
+        self._ai_set(f"url_{pk}", url)
         self._ai_set(f"key_{pk}", self._ai_key.get().strip())
+        return changed
+
+    def _ai_url_done(self):
+        if self._ai_save_conn():
+            self._ai_detect(only=self._ai_cur_provider())
 
     def _ai_pick_provider(self):
         pk = self._ai_cur_provider()
@@ -14872,7 +14981,9 @@ class QtAppUI:
             self.toast(f"AI model: {mdl}", "ok")
 
     def _ai_detect(self, only=None):
-        self._ai_found.setText("Looking for AI apps on this PC ...")
+        if self._ai_save_conn() is None:
+            return
+        self._ai_found.setText("Looking for AI apps ...")
 
         def work():
             keys = [only] if only else [p["key"] for p in AI_PROVIDERS]
@@ -14907,9 +15018,25 @@ class QtAppUI:
                 parts.append(f"{p['name']}: {r.get('error') or 'not found'}")
         self._ai_set("model_caps", caps)
         ok = [p["name"] for p in AI_PROVIDERS if (res.get(p["key"]) or {}).get("ok")]
+        cur = AI_PROVIDER_BY_KEY[self._ai_cur_provider()]
+        cr = res.get(cur["key"]) or {}
+        missing = [p["name"] for p in AI_PROVIDERS if p["key"] != cur["key"] and res.get(p["key"]) and not res[p["key"]].get("ok")
+                   and res[p["key"]].get("error") == "not running"]
+        lines = []
+        if cr:
+            if cr.get("ok"):
+                vis = [mm for mm in cr["models"] if mm.get("vision")]
+                lines.append(f"{cur['name']} at {cr.get('url')}: {len(vis)} vision model(s) of {len(cr['models'])}"
+                             + ("" if vis else ". Get one with: ollama pull qwen2.5vl" if cur["kind"] == "ollama" else ""))
+            else:
+                lines.append(f"{cur['name']} at {cr.get('url') or '?'}: {cr.get('error') or 'not found'}")
+        lines += [x for x in parts if not x.startswith(cur["name"] + ":") and not any(x == f"{m}: not running" for m in missing)]
+        if missing:
+            lines.append("Not running here: " + ", ".join(missing))
+        if not ok:
+            lines.append("No AI app found. Install Ollama (ollama.com) and run: ollama pull qwen2.5vl")
         try:
-            self._ai_found.setText(("Found " + ", ".join(ok) + ".   " if ok else "No AI app found on this PC. Install Ollama (ollama.com) and run: "
-                                    "ollama pull qwen2.5vl   ") + " | ".join(parts))
+            self._ai_found.setText("\n".join(lines))
             if ok and not (res.get(self._ai_cur_provider()) or {}).get("ok"):
                 first = next(p for p in AI_PROVIDERS if p["name"] == ok[0])
                 self._ai_prov.set(first["name"])

@@ -39,6 +39,14 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 1.9.0
+
+## AI on another PC
+- Typing the other PC's address without `http://` (like `192.168.86.57:11434`) always ended in "not running". Short addresses work now: `192.168.1.20` or `192.168.1.20:11434`, YT2VM adds `http://` and the normal port.
+- A **Test** button next to the address, and the address is tested as soon as you leave the field.
+- When the other PC can't be reached YT2VM tells you why instead of "not running": Ollama only listening to its own PC, the firewall blocking the port, a wrong address, or the PC being off.
+- On the AI PC, Ollama has to listen on the network: turn on *Expose Ollama to the network* in Ollama's settings (or set the environment variable `OLLAMA_HOST=0.0.0.0`) and restart Ollama. Allow inbound TCP 11434 in Windows Firewall for private networks.
+
 # Release Notes — 1.8.0
 
 ## AI page

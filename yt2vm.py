@@ -32,6 +32,13 @@ import base64
 import urllib.request, urllib.error, urllib.parse
 from ctypes import wintypes
 
+try:
+    _here = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else ""
+    if _here and os.path.isdir(_here) and os.path.basename(sys.argv[0]).lower().endswith((".py", ".pyw", ".exe")):
+        os.chdir(_here)
+except Exception:
+    pass
+
 
 def _hide_console():
     if globals().get("_HIDE_DISABLED"):
@@ -5458,7 +5465,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.6.0"
+version = "1.7.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -5924,6 +5931,38 @@ scancodes_file = "keycodes.json"
 musiclogs_file = "musiclog.json"
 heartbeat_file = f"heartbeat{suffix}.txt"
 crashguard_file = f"crashguard{suffix}.txt"
+update_guard_file = "update_guard.json"
+
+
+def _update_guard_check():
+    """After an automatic update, roll back to the backup if the new version keeps dying before it is up."""
+    if instance_id != 1 or not os.path.exists(update_guard_file):
+        return
+    try:
+        with open(update_guard_file, "r", encoding="utf-8") as f:
+            guard = json.load(f)
+        guard["boots"] = int(guard.get("boots", 0)) + 1
+        backup = str(guard.get("backup", ""))
+        target = os.path.abspath(sys.argv[0])
+        if guard["boots"] >= 3 and backup and os.path.isfile(backup) and target.lower().endswith((".py", ".pyw")):
+            shutil.copy2(target, target + ".failed-" + re.sub(r"[^0-9A-Za-z._-]", "_", str(guard.get("version", "new"))))
+            shutil.copy2(backup, target)
+            os.remove(update_guard_file)
+            try:
+                log_event("UPDATE", f"version {guard.get('version')} failed to start {guard['boots'] - 1} times - restored {os.path.basename(backup)}")
+            except Exception:
+                pass
+            with open("update_rolled_back.txt", "w", encoding="utf-8") as f:
+                f.write(str(guard.get("version", "")))
+            subprocess.Popen([sys.executable, target] + sys.argv[1:])
+            _hard_exit(0)
+        with open(update_guard_file, "w", encoding="utf-8") as f:
+            json.dump(guard, f)
+    except Exception:
+        pass
+
+
+_update_guard_check()
 
 refresh_rate = 100
 keyboard_layout = "US"
@@ -6518,7 +6557,7 @@ help lock screen screenshot""".split())
 _TEXT_CMDS = frozenset("say announce flash shout alert pin warn title".split())
 
 
-_ENC_ZW = re.compile("[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ]")
+_ENC_ZW = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0]")
 _ENC_URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _ENC_PS_HOST = re.compile(r"\b(powershell|pwsh)(\.exe)?\b")
 _ENC_PS_ENC = re.compile(r"(?:^|\s)[-/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|"
@@ -7997,11 +8036,23 @@ def start_flask():
                 try:
                     out = subprocess.check_output(["netstat", "-ano"], timeout=15).decode(errors="ignore")
                     for line in out.splitlines():
-                        if "LISTENING" in line and f":{flask_port} " in line + " ":
-                            pid = line.strip().split()[-1]
+                        cols = line.split()
+                        if "LISTENING" in line and len(cols) >= 2 and cols[1].endswith(f":{flask_port}"):
+                            pid = cols[-1]
                             if pid.isdigit() and int(pid) > 0 and int(pid) != os.getpid():
-                                subprocess.call(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                time.sleep(0.5)
+                                try:
+                                    cmdline = subprocess.run(
+                                        ["powershell", "-NoProfile", "-Command",
+                                         f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"],
+                                        capture_output=True, text=True, timeout=10).stdout or ""
+                                except Exception:
+                                    cmdline = ""
+                                if "yt2vm" in cmdline.lower() and "--multistream" not in cmdline.lower():
+                                    plog("FLASK", f"port {flask_port} is held by an old YT2VM (pid {pid}) - closing it")
+                                    subprocess.call(["taskkill", "/F", "/PID", pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    time.sleep(0.5)
+                                else:
+                                    plog("FLASK", f"port {flask_port} is used by another program (pid {pid}) - using the next free port")
                 except Exception as _ex:
                     _trace(_ex_where(), _ex)
             for port in range(flask_port, flask_port + 10):
@@ -10770,6 +10821,29 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "1.7.0", "date": "2026-11-12",
+     "added": [
+         "If an automatic update fails to start twice, YT2VM goes back to the previous version by itself and skips that update until a newer one is out.",
+         "settings.json keeps a rolling backup (settings.json.bak) that is loaded if the main file is damaged.",
+     ],
+     "changed": [
+         "YT2VM always keeps its settings, logs and data next to yt2vm.py, whichever folder it was started from.",
+         "Starting is faster: VMs are only listed at start when no VM is saved yet.",
+     ],
+     "fixed": [
+         "YouTube viewers whose channel name was ReallyIron, System, ReallyBotYT or started with [ (like [console]) got owner or console rights. Only YouTube's own owner and moderator flags count now.",
+         "A damaged settings.json reset every setting. The backup is loaded instead and the damaged file is kept.",
+         "A hand-edited setting with the wrong type (text where a number belongs) crashed YT2VM on start. Wrong values are repaired.",
+         "An empty or spaced command prefix turned every chat message into a command.",
+         "A negative typing, key or mouse delay broke typing into the VM.",
+         "Connecting before the stream was live never retried. It now retries every 15 seconds.",
+         "Starting the overlay server closed any program using port 5000. It only closes an old YT2VM now.",
+         "The window froze while VirtualBox was slow: listing VMs, snapshots and diagnostics now run in the background.",
+         "Two music requests at the same moment could break the music queue.",
+         "Saving VM Config with no VM listed saved the '(no VMs ...)' text as the VM name.",
+         "Save snapshot list failed for VM names with characters Windows doesn't allow in file names.",
+     ],
+     "removed": []},
     {"version": "1.6.0", "date": "2026-11-07",
      "added": [
          "Settings > Updates page: choose how often YT2VM looks for updates - only when it starts, every minute, every 5 minutes, every hour or every day - and whether it updates by itself.",
@@ -10943,6 +11017,17 @@ def update_install(data):
     tmp = target + ".update"
     with open(tmp, "wb") as fh:
         fh.write(data)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    m = re.search(rb'^version = "([^"]+)"', data, re.M)
+    try:
+        with open(update_guard_file, "w", encoding="utf-8") as f:
+            json.dump({"backup": backup, "version": (m.group(1).decode() if m else "?"), "boots": 0}, f)
+    except Exception:
+        pass
     os.replace(tmp, target)
     return backup
 
@@ -11005,6 +11090,51 @@ class UpdateBar(QWidget):
                 p.setBrush(sh)
                 p.drawRoundedRect(fr, rad, rad)
         p.end()
+
+
+def _sanitize_config(cfg, base):
+    """Repair values whose type doesn't match the default (a hand-edited or damaged settings file)."""
+    fixed = []
+    for k, dv in base.items():
+        if k not in cfg:
+            continue
+        v = cfg[k]
+        try:
+            if isinstance(dv, bool):
+                if not isinstance(v, bool):
+                    cfg[k] = str(v).strip().lower() in ("1", "true", "yes", "on") if isinstance(v, (int, float, str)) else dv
+                    fixed.append(k)
+            elif isinstance(dv, (int, float)):
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+                    try:
+                        num = float(str(v).strip())
+                        if num != num or num in (float("inf"), float("-inf")):
+                            raise ValueError
+                        cfg[k] = int(num) if isinstance(dv, int) else num
+                    except Exception:
+                        cfg[k] = dv
+                    fixed.append(k)
+            elif isinstance(dv, str):
+                if not isinstance(v, str):
+                    cfg[k] = dv if v is None or isinstance(v, (dict, list)) else str(v)
+                    fixed.append(k)
+            elif isinstance(dv, list):
+                if not isinstance(v, list):
+                    cfg[k] = list(dv)
+                    fixed.append(k)
+            elif isinstance(dv, dict):
+                if not isinstance(v, dict):
+                    cfg[k] = dict(dv)
+                    fixed.append(k)
+        except Exception:
+            cfg[k] = dv
+            fixed.append(k)
+    if fixed:
+        try:
+            plog("SETTINGS", "repaired settings with the wrong type: " + ", ".join(fixed))
+        except Exception:
+            pass
+    return fixed
 
 
 class QtAppUI:
@@ -11104,7 +11234,7 @@ class QtAppUI:
             self.win_session = None
             self.cli_input = False
             if self.backend not in ("virtualbox", "vmware"): self.backend = "virtualbox"
-            _rb = self.backend
+            globals()["_rb"] = self.backend
 
             global vm_name, keyboard_layout, vbox_manage_cmd
             vm_name = self.config.get("vm_name", vm_name)
@@ -11231,6 +11361,20 @@ class QtAppUI:
             self._plugins_ready = True
             self.plugins.emit("ready")
             self._update_schedule(first=True)
+            _sn = getattr(self, "_settings_note", None)
+            if _sn:
+                self.root.after(2200, lambda: self.toast(_sn, "warn"))
+            self.root.after(20000, self._update_guard_clear)
+            if os.path.exists("update_rolled_back.txt"):
+                try:
+                    with open("update_rolled_back.txt", "r", encoding="utf-8") as f:
+                        _rv = f.read().strip()
+                    os.remove("update_rolled_back.txt")
+                    self.root.after(2600, lambda: self.toast(f"Version {_rv} kept crashing on start, so YT2VM went back to {version}. Updates skip it until a newer one is out.", "warn"))
+                    self.config["update_skip_version"] = _rv
+                    self.save_settings()
+                except Exception as _ex:
+                    _trace(_ex_where(), _ex)
             try: self.root.after(600, self.show_welcome_guide)
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
@@ -12299,18 +12443,31 @@ class QtAppUI:
         def refresh_snaps(event=None):
             current_vm = self.cb_vm_new.get()
             if not current_vm or current_vm.startswith("("): return
-            if getattr(self, "backend", "virtualbox") == "vmware":
-                try: snaps = self._vmware().list_snapshots()
-                except Exception: snaps = []
-            else:
-                snaps = get_vbox_snapshots(self.entry_vbox_new.get().strip() or vbox_manage_cmd, current_vm)
-            if not snaps:
-                self.cb_snap_new['values'] = [""]
-                self.cb_snap_new.set("")
-            else:
-                self.cb_snap_new['values'] = snaps
-                if self.current_snapshot in snaps: self.cb_snap_new.set(self.current_snapshot)
-                else: self.cb_snap_new.set(snaps[-1])
+            vmware = getattr(self, "backend", "virtualbox") == "vmware"
+            path = self.entry_vbox_new.get().strip() or vbox_manage_cmd
+
+            def work():
+                if vmware:
+                    try: snaps = self._vmware().list_snapshots()
+                    except Exception: snaps = []
+                else:
+                    snaps = get_vbox_snapshots(path, current_vm)
+                self.ui(apply_snaps, current_vm, snaps)
+
+            def apply_snaps(for_vm, snaps):
+                try:
+                    if self.cb_vm_new.get() != for_vm:
+                        return
+                    if not snaps:
+                        self.cb_snap_new['values'] = [""]
+                        self.cb_snap_new.set("")
+                    else:
+                        self.cb_snap_new['values'] = snaps
+                        if self.current_snapshot in snaps: self.cb_snap_new.set(self.current_snapshot)
+                        else: self.cb_snap_new.set(snaps[-1])
+                except RuntimeError:
+                    pass
+            self._run_bg("vm-config-snaps", work)
 
         def refresh_vms():
             if getattr(self, "backend", "virtualbox") == "vmware":
@@ -12323,15 +12480,27 @@ class QtAppUI:
                 elif names: self.cb_vm_new.set(names[0])
                 refresh_snaps()
                 return
-            vms = get_all_vbox_vms(self.entry_vbox_new.get().strip() or vbox_manage_cmd)
-            if vms:
-                self.cb_vm_new['values'] = vms
-                current_conf = self.config.get("vm_name")
-                if current_conf in vms: self.cb_vm_new.set(current_conf)
-                else: self.cb_vm_new.set(vms[0])
-            elif _vle:
-                self.cb_vm_new['values'] = [f"(no VMs - {_vle[:40]})"]
-            refresh_snaps()
+            path = self.entry_vbox_new.get().strip() or vbox_manage_cmd
+
+            def work():
+                vms = get_all_vbox_vms(path)
+                if vms:
+                    self._vm_cache = (time.time(), list(vms))
+                self.ui(apply, vms)
+
+            def apply(vms):
+                try:
+                    if vms:
+                        self.cb_vm_new['values'] = vms
+                        current_conf = self.config.get("vm_name")
+                        if current_conf in vms: self.cb_vm_new.set(current_conf)
+                        else: self.cb_vm_new.set(vms[0])
+                    elif _vle:
+                        self.cb_vm_new['values'] = [f"(no VMs - {_vle[:40]})"]
+                    refresh_snaps()
+                except RuntimeError:
+                    pass
+            self._run_bg("vm-config-list", work)
         self.cb_vm_new.textActivated.connect(lambda *_: refresh_snaps())
         fg.field("Target VM", row_widget(self.cb_vm_new, Button("Refresh", refresh_vms, "neutral", "sm", icon="refresh")))
         fg.field("Target snapshot", row_widget(self.cb_snap_new, Button("Refresh", refresh_snaps, "neutral", "sm", icon="refresh")),
@@ -12579,6 +12748,7 @@ class QtAppUI:
         _clear_layout(lay)
         self._osv_rows = {}
         names = self._vm_list()
+        self._osv_rendered = list(names)
         if not names:
             lay.addWidget(EmptyState("vms", "No VMs found", "Check the VBoxManage path on the VM Config page, or pick a .vmx on the VMS page."))
             self._osv_hint.setText("")
@@ -13484,9 +13654,10 @@ class QtAppUI:
         self.cv_snap_vars = {}
         self.cv_snap_boxes = {}
         try:
-            vms = self._cv_available_vms()
+            vms = self._vm_list()
         except Exception:
             vms = []
+        self._cv_rendered = list(vms)
         self.cv_available = vms
         cur = vm_name
         whitelist = set(self.changevm_whitelist)
@@ -15280,12 +15451,17 @@ class ChatPlaysApp(QtAppUI):
             plog("OBS", f"media action failed: {type(_ex).__name__}: {_ex}")
             _trace(_ex_where(), _ex)
 
+    _music_init_lock = threading.Lock()
+
     def queue_music(self, url, user, is_owner=False, is_mod=False, bypass=False):
-        q = getattr(self, "_music_q", None)
-        if q is None:
-            q = self._music_q = collections.deque()
-            self._music_lock = threading.Lock()
-            self._music_evt = threading.Event()
+        with self._music_init_lock:
+            q = getattr(self, "_music_q", None)
+            fresh = q is None
+            if fresh:
+                self._music_lock = threading.Lock()
+                self._music_evt = threading.Event()
+                q = self._music_q = collections.deque()
+        if fresh:
             def _worker():
                 while self.running:
                     self._music_evt.wait(2.0)
@@ -15401,7 +15577,13 @@ class ChatPlaysApp(QtAppUI):
 
     def load_settings(self):
         _be = _active_backend()
-        all_vms = get_all_vbox_vms(vbox_manage_cmd, quiet=True) if _be != "vmware" else []
+        _has_vm = False
+        try:
+            with open(settings_file, "r", encoding="utf-8") as f:
+                _has_vm = bool(json.load(f).get("vm_name"))
+        except Exception:
+            pass
+        all_vms = get_all_vbox_vms(vbox_manage_cmd, quiet=True) if (_be != "vmware" and not _has_vm) else []
         default_vm = all_vms[instance_id - 1] if (all_vms and len(all_vms) >= instance_id) else (all_vms[0] if all_vms else vm_name or "Windows10ChatVm")
         default_config = {
             "youtube_url": "", "vm_name": default_vm, "vbox_path": vbox_manage_cmd, "auto_start": False,
@@ -15416,13 +15598,43 @@ class ChatPlaysApp(QtAppUI):
             "changevm_whitelist": [], "changevm_snapshots": {}, "command_power": {},
             "sendfile_enabled": True, "guest_user": "", "sendfile_dir": "", "sendfile_max_mb": 50,
             "osvote_cmd": "changevm", "osvote_style": "cmd", "osvote_needed": 3, "osvote_time": 90, "osvote_cooldown": 300, "changevm_aliases": {},
-            "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60
+            "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60,
+            "ui_text_size": 0, "music_queue_max": 8, "relay_port": 8080, "relay_host": "127.0.0.1", "overlay_scale": 1.4,
+            "viewer_chain_max_wait": 10, "viewer_chain_max_steps": 12
         }
+        base = dict(default_config)
         if os.path.exists(settings_file):
-            try:
-                with open(settings_file, "r") as f: default_config.update(json.load(f))
-            except Exception as _ex:
-                _trace(_ex_where(), _ex)
+            loaded = None
+            for path in (settings_file, settings_file + ".bak"):
+                if not os.path.exists(path):
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if not isinstance(data, dict):
+                        raise ValueError("settings file doesn't hold a JSON object")
+                    loaded = data
+                    if path != settings_file:
+                        plog("SETTINGS", f"{os.path.basename(settings_file)} was damaged - loaded the backup {os.path.basename(path)}")
+                        self._settings_note = "Your settings file was damaged, so the last good copy was loaded."
+                    break
+                except Exception as _ex:
+                    plog("SETTINGS", f"couldn't read {os.path.basename(path)}: {type(_ex).__name__}: {_ex}")
+                    if path == settings_file:
+                        try:
+                            keep = f"{settings_file}.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
+                            shutil.copy2(settings_file, keep)
+                            plog("SETTINGS", f"kept the damaged file as {os.path.basename(keep)}")
+                        except Exception as _ex2:
+                            _trace(_ex_where(), _ex2)
+            if loaded is not None:
+                default_config.update(loaded)
+                _sanitize_config(default_config, base)
+                _pfx = str(default_config.get("command_prefix", "!") or "")
+                if not _pfx.strip() or any(ch.isspace() for ch in _pfx) or len(_pfx) > 3:
+                    default_config["command_prefix"] = "!"
+            else:
+                self._settings_note = "Your settings file couldn't be read, so YT2VM started with default settings. The old file was kept next to it."
         return default_config
 
     _settings_lock = threading.Lock()
@@ -15430,10 +15642,24 @@ class ChatPlaysApp(QtAppUI):
     def save_settings(self):
         try:
             with self._settings_lock:
+                text = json.dumps(self.config, indent=4, default=lambda o: sorted(o) if isinstance(o, (set, frozenset)) else str(o))
                 tmp_file = settings_file + ".tmp"
-                with open(tmp_file, "w") as f: json.dump(self.config, f, indent=4)
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    f.write(text)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                if os.path.exists(settings_file) and time.time() - getattr(self, "_settings_bak_t", 0) > 60:
+                    try:
+                        shutil.copy2(settings_file, settings_file + ".bak")
+                        self._settings_bak_t = time.time()
+                    except Exception as _ex:
+                        _trace(_ex_where(), _ex)
                 os.replace(tmp_file, settings_file)
         except Exception as _ex:
+            plog("SETTINGS", f"saving settings failed: {type(_ex).__name__}: {_ex}")
             _trace(_ex_where(), _ex)
 
     def trigger_command(self, action_tuple):
@@ -15765,6 +15991,8 @@ class ChatPlaysApp(QtAppUI):
             return
         def _work():
             vms = get_all_vbox_vms(path, quiet=True)
+            if vms:
+                self._vm_cache = (time.time(), list(vms))
             snaps = get_vbox_snapshots(path, active_vm) if active_vm else []
             self.ui(self._apply_vbox_refresh, vms, active_vm, snaps)
         self._run_bg("vbox-refresh", _work)
@@ -15824,7 +16052,11 @@ class ChatPlaysApp(QtAppUI):
                     return
             except Exception as e:
                 dbg("backend", "save vmware vm failed", e)
-        self.config["vm_name"] = self.cb_vm_new.get()
+        chosen = self.cb_vm_new.get().strip()
+        if not chosen or chosen.startswith("("):
+            self.toast("Pick a VM from the list first - none is selected", "warn")
+            return
+        self.config["vm_name"] = chosen
         self.config["vbox_path"] = self.entry_vbox_new.get()
         self.current_snapshot = self.cb_snap_new.get()
         try:
@@ -15843,19 +16075,31 @@ class ChatPlaysApp(QtAppUI):
         self.config["auto_start"] = self.var_auto_new.get()
         self.config["enable_chat"] = self.var_chat_new.get()
         self.config["keyboard_layout"] = self.cb_layout_new.get()
-        self.config["command_prefix"] = self.entry_prefix_new.get()
+        _pfx = self.entry_prefix_new.get().strip()
+        if not _pfx or any(ch.isspace() for ch in _pfx) or len(_pfx) > 3:
+            self.toast("The command prefix must be 1-3 characters with no spaces - kept " + repr(self.config.get("command_prefix", "!")), "warn")
+            _pfx = self.config.get("command_prefix", "!") or "!"
+            try: self.entry_prefix_new.set(_pfx)
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        self.config["command_prefix"] = _pfx
         self.config["enable_starting_scene"] = self.var_starting_scene.get()
         self.config["strict_live_check"] = self.var_strict_live.get()
         self.config["app_name"] = self.cb_app_name.get()
         self.config["ultra_speed"] = self.var_ultra_speed.get()
-        try: self.config["stats_interval"] = float(self.entry_stats_int.get())
-        except: self.config["stats_interval"] = 15
-        try: self.config["typing_speed"] = float(self.entry_type_spd.get())
-        except: self.config["typing_speed"] = 0.015
-        try: self.config["key_delay"] = float(self.entry_key_del.get())
-        except: self.config["key_delay"] = 0.015
-        try: self.config["mouse_delay"] = float(self.entry_mouse_del.get())
-        except: self.config["mouse_delay"] = 0.005
+
+        def _num(entry, dflt, lo, hi):
+            try:
+                v = float(entry.get())
+                if v != v:
+                    raise ValueError
+                return max(lo, min(hi, v))
+            except Exception:
+                return dflt
+        self.config["stats_interval"] = _num(self.entry_stats_int, 15, 1, 3600)
+        self.config["typing_speed"] = _num(self.entry_type_spd, 0.015, 0, 2)
+        self.config["key_delay"] = _num(self.entry_key_del, 0.015, 0, 2)
+        self.config["mouse_delay"] = _num(self.entry_mouse_del, 0.005, 0, 2)
         for _key, (_e, _dflt) in getattr(self, "_load_entries", {}).items():
             try:
                 _v = float(_e.get())
@@ -15930,10 +16174,38 @@ class ChatPlaysApp(QtAppUI):
         return out
 
     def _vm_list(self, fresh=False):
-        global available_vms
         ts, names = getattr(self, "_vm_cache", (0.0, []))
         if not fresh and names and time.time() - ts < 20:
             return list(names)
+        if _on_main():
+            if not getattr(self, "_vm_list_busy", False):
+                self._vm_list_busy = True
+
+                def work():
+                    try:
+                        self._vm_list_fetch()
+                    finally:
+                        self._vm_list_busy = False
+                        self.ui(self._vm_list_changed)
+                threading.Thread(target=work, daemon=True, name="vm-list").start()
+            return list(names)
+        return self._vm_list_fetch()
+
+    def _vm_list_changed(self):
+        names = list(getattr(self, "_vm_cache", (0.0, []))[1])
+        if names != getattr(self, "_osv_rendered", None):
+            try:
+                self._refresh_osvote()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        if names != getattr(self, "_cv_rendered", None) and hasattr(self, "cv_rows"):
+            try:
+                self._cv_refresh()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+
+    def _vm_list_fetch(self):
+        global available_vms
         if getattr(self, "backend", "virtualbox") == "vmware":
             names = sorted(self._vm_paths().keys(), key=str.lower)
         else:
@@ -16960,10 +17232,29 @@ class ChatPlaysApp(QtAppUI):
 
 
     def _refresh_diag(self):
+        if _on_main():
+            if getattr(self, "_diag_busy", False):
+                return
+            self._diag_busy = True
+
+            def work():
+                try:
+                    try:
+                        report = self.run_diagnostics()
+                    except Exception as e:
+                        report = f"diagnostics failed: {e}\n{traceback.format_exc()}"
+                    self.ui(self._show_diag, report)
+                finally:
+                    self._diag_busy = False
+            threading.Thread(target=work, daemon=True, name="diagnostics").start()
+            return
         try:
             report = self.run_diagnostics()
         except Exception as e:
             report = f"diagnostics failed: {e}\n{traceback.format_exc()}"
+        self.ui(self._show_diag, report)
+
+    def _show_diag(self, report):
         self.diag_text.configure(state="normal")
         self.diag_text.delete("1.0", "end")
         for line in report.splitlines():
@@ -17494,7 +17785,7 @@ class ChatPlaysApp(QtAppUI):
                 cmd = "!changevm"
             arg = _osdirect or (parts[1].strip() if len(parts) > 1 else "")
             total_commands_executed += 1
-            if clean_user in owners or clean_user == "reallyiron": is_owner = True
+            if clean_user in owners: is_owner = True
             is_admin = is_owner or is_mod or user == "[console]" or user == "[CONSOLE]" or clean_user in admins
             _POWER_CMDS = ("!revert", "!startvm", "!shutdown", "!restartvm", "!switchsnapshot", "!swichsnapshot",
                            "!makesnapshot", "!changevm", "!remake2", "!fixvm", "!forcefixvm",
@@ -17718,9 +18009,14 @@ class ChatPlaysApp(QtAppUI):
                             if vid and len(vid) == 11:
                                 if self.config.get("strict_live_check", True):
                                     if not self.is_video_currently_live(vid):
-                                        self.log("[system]", f"[warn] video {vid} is not currently live! refusing to connect.", "err")
-                                        connected_url = target_url
-                                        time.sleep(5)
+                                        if getattr(self, "_notlive_vid", None) != vid or time.time() - getattr(self, "_notlive_t", 0) > 120:
+                                            self._notlive_vid = vid
+                                            self._notlive_t = time.time()
+                                            self.log("[system]", f"[warn] video {vid} isn't live yet - retrying every 15s until it is.", "err")
+                                        for _ in range(15):
+                                            if not self.running or getattr(self, "active_url", None) != target_url:
+                                                break
+                                            time.sleep(1)
                                         continue
                                 if chat and hasattr(chat, 'terminate'):
                                     try: chat.terminate()
@@ -17806,13 +18102,17 @@ class ChatPlaysApp(QtAppUI):
                                 msg_lower = c.message.lower().strip()
                                 clean_name = c.author.name.replace("@", "").lower().strip()
                                 if clean_name == "nightbot": continue
-                                if clean_name in ["reallybotyt", "system"]:
+                                _yt_staff = bool(getattr(c.author, "isChatOwner", False) or getattr(c.author, "isChatModerator", False))
+                                if clean_name in ["reallybotyt", "system"] and _yt_staff:
                                     c.author.name = "[system]"
                                     is_owner = True
                                     is_mod = True
                                 else:
-                                    is_owner = c.author.isChatOwner or clean_name in owners or clean_name == "reallyiron"
-                                    is_mod = is_owner or c.author.isChatModerator or clean_name in admins
+                                    if str(c.author.name).lstrip("@").startswith("["):
+                                        c.author.name = "_" + str(c.author.name).lstrip("@").strip("[]")
+                                        clean_name = c.author.name.lower().strip()
+                                    is_owner = bool(getattr(c.author, "isChatOwner", False)) or clean_name in owners
+                                    is_mod = is_owner or bool(getattr(c.author, "isChatModerator", False)) or clean_name in admins
                                 yt_cmds_off = self._discord_exclusive()
                                 _shown = self._display_text(c.message, self._enc_trusted(clean_name, is_mod, is_owner))
                                 _hid = _shown is not c.message
@@ -19193,9 +19493,15 @@ class ChatPlaysApp(QtAppUI):
             if _tgt == "pico":
                 return
         try:
-            key_delay = float(self.config.get("key_delay", 0.015)) if not self.ultra_speed else 0
-            type_delay = float(self.config.get("typing_speed", 0.015)) if not self.ultra_speed else 0
-            mouse_delay = float(self.config.get("mouse_delay", 0.005)) if not self.ultra_speed else 0
+            def _delay(key, dflt):
+                try:
+                    v = float(self.config.get(key, dflt))
+                    return max(0.0, min(2.0, v)) if v == v else dflt
+                except Exception:
+                    return dflt
+            key_delay = _delay("key_delay", 0.015) if not self.ultra_speed else 0
+            type_delay = _delay("typing_speed", 0.015) if not self.ultra_speed else 0
+            mouse_delay = _delay("mouse_delay", 0.005) if not self.ultra_speed else 0
             base = cmd[1:] if cmd.startswith("!") else cmd
 
             if base in ("type", "send"):
@@ -20138,6 +20444,16 @@ class ChatPlaysApp(QtAppUI):
         self.root.after(int(secs * 1000), fire)
         self._update_next_label()
 
+    def _update_guard_clear(self):
+        if instance_id != 1 or not self.running:
+            return
+        try:
+            if os.path.exists(update_guard_file):
+                os.remove(update_guard_file)
+                plog("UPDATE", f"version {version} started fine - update guard cleared")
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
+
     def _whats_new_note(self):
         seen = str(self.config.get("last_seen_version", "") or "")
         if seen == version:
@@ -20184,6 +20500,11 @@ class ChatPlaysApp(QtAppUI):
             self._update_set_status(f"This copy (v{version}) is newer than GitHub (v{info['version']}), checked {stamp}.", "info")
             if loud:
                 self.toast(f"Checked for updates: you are ahead of GitHub (v{version}, GitHub has v{info['version']})", "info")
+            return
+        if info["newer"] and str(self.config.get("update_skip_version", "")) == info["version"]:
+            self._update_set_status(f"Skipping v{info['version']} on GitHub - it crashed on start before (checked {stamp}).", "warn")
+            if loud:
+                self.toast(f"Checked for updates: skipping v{info['version']}, it crashed on start before", "warn")
             return
         if not info["newer"]:
             self._update_set_status(f"GitHub's yt2vm.py has no version number, skipped (checked {stamp}).", "warn")
@@ -20609,13 +20930,18 @@ class ChatPlaysApp(QtAppUI):
             self.backup_status.config(text=f"error: {e}")
 
     def _save_snaplist(self):
-        try:
-            snaps = get_vbox_snapshots(vbox_manage_cmd, vm_name)
-            name = f"snapshots_{vm_name}.txt"
-            with open(name, "w", encoding="utf-8") as f: f.write("\n".join(snaps))
-            self.backup_status.config(text=f"saved {name} ({len(snaps)} snapshots)")
-        except Exception as e:
-            self.backup_status.config(text=f"error: {e}")
+        cur = vm_name
+
+        def work():
+            try:
+                snaps = get_vbox_snapshots(vbox_manage_cmd, cur)
+                name = "snapshots_" + safe_guest_filename(cur or "vm") + ".txt"
+                with open(name, "w", encoding="utf-8") as f: f.write("\n".join(snaps))
+                msg = f"saved {name} ({len(snaps)} snapshots)"
+            except Exception as e:
+                msg = f"error: {e}"
+            self.ui(lambda: self.backup_status.config(text=msg))
+        self._run_bg("save-snaplist", work)
 
     def _open_folder(self):
         try:

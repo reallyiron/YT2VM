@@ -38,6 +38,26 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - ChangeVM control: whitelist which VMs `!changevm` can switch to, and pick the snapshot each whitelisted VM reverts to (ChangeVM tab).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 1.7.0
+
+Stability release: a full bug hunt through the script.
+
+## Security
+- YouTube display names aren't unique, so anyone could name their channel ReallyIron, System or ReallyBotYT and get owner rights, or start their name with `[` (like `[console]`) and act as the console. Owner and mod rights on YouTube now only come from YouTube's own owner and moderator flags.
+
+## Settings
+- A damaged `settings.json` no longer resets everything: YT2VM loads `settings.json.bak` (kept automatically), keeps the damaged file next to it, and tells you.
+- Hand-edited values with the wrong type are repaired instead of crashing YT2VM on start.
+- An empty or spaced command prefix and negative typing/key/mouse delays are refused.
+- Settings, logs and data always live next to `yt2vm.py`, whichever folder YT2VM was started from.
+
+## Stability
+- Automatic updates roll back by themselves when the new version fails to start twice, and skip that version until a newer one is out.
+- No more frozen window while VirtualBox is slow: listing VMs, snapshots and diagnostics run in the background. Start-up no longer lists VMs when one is already saved.
+- Connecting before the stream is live keeps retrying every 15 seconds.
+- The overlay server only closes an old YT2VM that holds port 5000, never another program.
+- Fixed a race in the music queue, the "(no VMs ...)" text being saved as the VM name, and Save snapshot list failing on unusual VM names.
+
 # Release Notes — 1.6.0
 
 ## Closing

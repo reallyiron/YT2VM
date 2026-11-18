@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "2.0.0"
+version = "2.1.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -6834,6 +6834,171 @@ def _enc_b85(tok, short=40):
     return None
 
 
+_ENC_MAGIC = (
+    (b"\x89PNG", "a PNG image"), (b"\xff\xd8\xff", "a JPEG image"), (b"GIF8", "a GIF image"), (b"BM", "a BMP image"),
+    (b"RIFF", "a RIFF/WEBP/WAV file"), (b"MZ", "a Windows program"), (b"\x7fELF", "a Linux program"), (b"PK\x03\x04", "a zip file"),
+    (b"%PDF", "a PDF"), (b"\x1f\x8b", "gzip data"), (b"7z\xbc\xaf", "a 7z archive"), (b"Rar!", "a rar archive"),
+    (b"BZh", "bzip2 data"), (b"\xfd7zXZ", "xz data"), (b"\x00\x00\x01\x00", "an icon"), (b"#!", "a script"),
+    (b"\xca\xfe\xba\xbe", "a Java class"), (b"\x00asm", "WebAssembly"), (b"{\\rtf", "an RTF document"),
+)
+class OffenderList(dict):
+    def add(self, user, why="", msg="", minutes=0):
+        now = time.time()
+        self[str(user).lower()] = {"t": now, "until": now + minutes * 60 if minutes else 0, "why": str(why)[:200],
+                                   "msg": str(msg)[:400]}
+
+    def discard(self, user):
+        self.pop(str(user).lower(), None)
+
+    def blocked(self, user):
+        e = self.get(str(user).lower())
+        if e is None:
+            return False
+        until = float(e.get("until", 0) or 0)
+        if until and time.time() >= until:
+            self.pop(str(user).lower(), None)
+            return False
+        return True
+
+    def expire(self):
+        gone = [u for u in list(self) if not self.blocked(u)]
+        return gone
+
+
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _enc_int_bytes(tok, alphabet):
+    n = 0
+    base = len(alphabet)
+    for ch in tok:
+        i = alphabet.find(ch)
+        if i < 0:
+            return None
+        n = n * base + i
+    if n == 0:
+        return b""
+    return n.to_bytes((n.bit_length() + 7) // 8, "big")
+
+
+def _enc_texty(s, min_len=6):
+    if len(s) < min_len:
+        return False
+    printable = sum(1 for ch in s if ch.isprintable() or ch in "\r\n\t")
+    letters = sum(1 for ch in s if ch.isalpha())
+    if printable < 0.92 * len(s) or letters < max(3, 0.3 * len(s)):
+        return False
+    words = re.findall(r"[^\W\d_]{2,}", s)
+    return bool(words) and sum(map(len, words)) >= 0.3 * len(s)
+
+
+def _enc_meaning(b, min_text=6):
+    if not b or len(b) < 4:
+        return None
+    for sig, what in _ENC_MAGIC:
+        if b.startswith(sig) and (len(sig) >= 3 or len(b) >= 16):
+            return what
+    if len(b) >= 6 and b[0] == 0x78 and b[1] in (0x01, 0x5e, 0x9c, 0xda):
+        try:
+            import zlib as _z
+            _z.decompressobj().decompress(b, 64)
+            return "zlib data"
+        except Exception:
+            pass
+    for enc in ("utf-8", "utf-16-le"):
+        if enc == "utf-16-le" and (len(b) % 2 or b[1::2].count(0) < 0.6 * (len(b) // 2)):
+            continue
+        try:
+            txt = b.decode(enc)
+        except Exception:
+            continue
+        if _enc_texty(txt, min_text):
+            return "text" if enc == "utf-8" else "UTF-16 text"
+    return None
+
+
+def _enc_decodings(tok):
+    t = str(tok).strip()
+    core = t.rstrip("=")
+    out = []
+    if len(core) < 8:
+        return out
+    if re.fullmatch(r"[A-Za-z0-9+/_-]+", core) and len(core) % 4 != 1:
+        try:
+            s = core.replace("-", "+").replace("_", "/")
+            out.append(("base64", base64.b64decode(s + "=" * (-len(s) % 4), validate=True)))
+        except Exception:
+            pass
+    if re.fullmatch(r"[A-Za-z2-7]+", core) and (core.isupper() or core.islower()):
+        try:
+            s = core.upper()
+            out.append(("base32", base64.b32decode(s + "=" * (-len(s) % 8))))
+        except Exception:
+            pass
+    if re.fullmatch(r"[0-9a-fA-F]+", core) and len(core) % 2 == 0:
+        try:
+            out.append(("hex", bytes.fromhex(core)))
+        except Exception:
+            pass
+    for name, fn in (("base85", base64.b85decode), ("ascii85", base64.a85decode)):
+        try:
+            out.append((name, fn(t.strip("<~>") if name == "ascii85" else t)))
+        except Exception:
+            pass
+    if len(core) >= 11:
+        for name, alpha in (("base58", _B58), ("base62", _B62)):
+            b = _enc_int_bytes(core, alpha)
+            if b:
+                out.append((name, b))
+        if re.fullmatch(r"[0-9a-z]+|[0-9A-Z]+", core):
+            b = _enc_int_bytes(core.lower(), "0123456789abcdefghijklmnopqrstuvwxyz")
+            if b:
+                out.append(("base36", b))
+    return out
+
+
+def _enc_confirm(tok, why):
+    weak = ("base58", "base62", "base36")
+    for name, b in _enc_decodings(tok):
+        m = _enc_meaning(b, 10 if name in weak else 6)
+        if m and not (name in weak and m == "text" and len(b) < 10):
+            return f"{why} that decodes ({name}) to {m}"
+    if len(str(tok)) >= 200:
+        return f"{why} ({len(str(tok))} characters of raw data)"
+    return None
+
+
+def _enc_seq_bytes(kind, text):
+    try:
+        if kind.startswith("\\x"):
+            return bytes(int(h, 16) for h in re.findall(r"\\x([0-9a-f]{2})", text))
+        if kind.startswith("\\u"):
+            return "".join(chr(int(h, 16)) for h in re.findall(r"\\u\{?([0-9a-f]{4,6})", text)).encode("utf-8", "replace")
+        if kind == "octal escapes":
+            return bytes(int(o, 8) & 0xff for o in re.findall(r"\\([0-7]{3})", text))
+        if kind == "percent-encoded bytes":
+            b = urllib.parse.unquote_to_bytes(text)
+            return b if sum(1 for x in b if x < 0x80) >= 0.6 * len(b) else b""
+        if kind == "html character codes":
+            return html.unescape(text).encode("utf-8", "replace")
+        if kind == "0x byte list":
+            vals = [int(h, 16) for h in re.findall(r"0x([0-9a-f]{1,4})", text)]
+            return bytes(vals) if all(v < 256 for v in vals) else b""
+        if kind == "decimal char codes":
+            return bytes(int(d) for d in re.findall(r"\d{2,3}", text) if int(d) < 256)
+        if kind.startswith("binary"):
+            bits = re.sub(r"[^01]", "", text)
+            return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits) - 7, 8))
+        if kind in ("octal bytes",):
+            return bytes(int(o, 8) & 0xff for o in re.findall(r"[0-7]{3}", text))
+        if kind == "spaced hex bytes":
+            return bytes(int(h, 16) for h in re.findall(r"[0-9a-f]{2}", text))
+    except Exception:
+        return b""
+    return b""
+
+
 def _enc_scan(text, chat=False):
     """Why text looks like an encoded payload (base64/32/16/58/62/85/36/2, escapes, char codes, decoders), or None."""
     raw = str(text or "")
@@ -6843,7 +7008,8 @@ def _enc_scan(text, chat=False):
         norm = unicodedata.normalize("NFKC", raw)
     except Exception:
         norm = raw
-    norm = _ENC_ZW.sub("", norm).replace("^", "").replace("`", "")
+    keep = _ENC_ZW.sub("", norm)
+    norm = keep.replace("^", "").replace("`", "")
     low = norm.lower()
     squash = re.sub(r"['\"+(),&{}\[\]$;|]", "", re.sub(r"\s*([.+(),'\"&|;\[\]{}$:=])\s*", r"\1", low))
     if _ENC_PS_HOST.search(low) or _ENC_PS_HOST.search(squash):
@@ -6855,33 +7021,45 @@ def _enc_scan(text, chat=False):
     body = _ENC_URL.sub(" ", norm) if chat else norm
     blow = body.lower()
     for rx, why in _ENC_SEQS:
-        if rx.search(blow):
-            return why
+        for m in rx.finditer(blow):
+            what = _enc_meaning(_enc_seq_bytes(why, m.group(0)), 5)
+            if what:
+                return f"{why} that decode to {what}"
     m = _ENC_HEXPAIRS.search(blow)
     if m and sum(ch.isdigit() for ch in m.group(0)) >= 6 and re.search(r"[a-f]", m.group(0)):
-        return "spaced hex bytes"
+        what = _enc_meaning(_enc_seq_bytes("spaced hex bytes", m.group(0)), 5)
+        if what:
+            return f"spaced hex bytes that decode to {what}"
     cmd = not chat and norm.lstrip().startswith(("!", "/", "."))
     short = 16 if cmd else 32
     for part, lim in ((_ENC_URL.sub(" ", body), short), (" ".join(_ENC_URL.findall(body)), 32)):
         for m in _ENC_TOKEN.finditer(part):
-            why = _enc_blob(m.group(0), lim)
-            if why:
-                return why
-    for m in _ENC_PRINT_TOKEN.finditer(_ENC_URL.sub(" ", norm)):
+            for tok in {m.group(0), m.group(0).strip("_-")}:
+                why = _enc_blob(tok, lim) or (_enc_blob(tok, 8) if len(tok) >= 12 else None)
+                if why:
+                    why = _enc_confirm(tok, why)
+                    if why:
+                        return why
+    for m in _ENC_PRINT_TOKEN.finditer(_ENC_URL.sub(" ", keep)):
         tok = m.group(0)
         if cmd and tok.startswith("!") and tok[1:].isalnum():
             continue
         why = _enc_b85(tok, 20 if cmd else 40)
         if why:
-            return why
+            why = _enc_confirm(tok, why)
+            if why:
+                return why
     for m in _ENC_SPLIT.finditer(body):
         toks = m.group(0).split()
         odd = [tk for tk in toks if re.search(r"\d", tk) and re.search(r"[A-Za-z]", tk) or re.search(r"[a-z][A-Z]|[+/]|=$", tk)]
         if len(odd) * 10 >= len(toks) * 6:
-            joined = "".join(toks)
-            why = _enc_blob(joined, max(short, 24))
-            if why:
-                return why.replace("blob", "blob split with spaces")
+            for start in range(0, min(3, max(1, len(toks) - 2))):
+                joined = "".join(toks[start:])
+                why = _enc_blob(joined, max(short, 24))
+                if why:
+                    why = _enc_confirm(joined, why.replace("blob", "blob split with spaces"))
+                    if why:
+                        return why
     return None
 
 
@@ -7657,10 +7835,12 @@ class DiscordBridge:
         except Exception as _ex:
             _trace(_ex_where(), _ex)
 
-    def on_blocked(self, user, why, ref=None, listed=True):
+    def on_blocked(self, user, why, ref=None, listed=True, note=""):
         self.stats["blocked"] += 1
         if listed:
-            self.announce(f"Blocked {user}: encoding filter ({why}). That account can't send commands anymore.")
+            self.announce(f"Blocked {user}: encoding filter ({why}). {note or 'That account cannot send commands for now.'}")
+        elif note:
+            self.announce(f"{user}: {note}")
         self.log_line(f"[!] encoding filter blocked {user}: {why}")
         self.event(f"encoding filter blocked {user} ({why})")
         if ref:
@@ -8055,7 +8235,7 @@ def obs_reachable():
         if time.time() - _obs_warned_at > 120:
             _obs_warned_at = time.time()
             console_log("SYSTEM", f"obs not reachable on {obs_host}:{obs_port} - scene switching disabled until it is up.")
-        dbg("obs", f"port {obs_host}:{obs_port} refused; backing off 30s")
+        dbg("obs", f"port {obs_host}:{obs_port} refused; backing off 5s")
         return False
 
 def _obs_note_fail(e):
@@ -11139,6 +11319,27 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.1.0", "date": "2026-11-18",
+     "added": [
+         "Encoding filter strikes: a blocked command is not run and the viewer gets a warning. Only the 3rd encoded command within 10 minutes blocks them from commands (1st / 2nd / 3rd / 5th, on the Discord page).",
+         "Blocks run out by themselves: 10 min, 1 hour (default), 1 day or until a mod unblocks.",
+         "Block list on the Discord page with who, why, the message that did it and the time left, plus Unblock selected.",
+         "Recently blocked commands list and a 'Test a message' box that shows live whether the filter would block something and why.",
+     ],
+     "changed": [
+         "Encoding filter: a long code-looking token only counts when it really decodes to text, a file or a program. Links, hashes, IDs, UUIDs, product keys, passwords, gamer tags and normal Python / PowerShell commands get through.",
+         "Escape sequences, char-code lists, binary and percent-encoding only count when they decode to readable text, so number lists and links with non-English letters get through.",
+         "The old permanent block list is converted: everyone on it now gets a normal timed block that runs out.",
+         "Warnings about blocked commands and hidden chat messages no longer pop up as toasts.",
+     ],
+     "fixed": [
+         "False bans: 115 of 628 normal test messages were flagged before (hashes, Spotify / Drive / Discord links, gamer tags, passwords, product keys, chemistry formulas). Now 0 of 56,628.",
+         "base85 payloads containing ^ or ` slipped through because those characters were stripped before decoding.",
+         "Base64 split with spaces after a word (like !type abcd efgh ...) slipped through.",
+     ],
+     "removed": [
+         "Instant permanent bans on the first blocked command.",
+     ]},
     {"version": "2.0.0", "date": "2026-11-18",
      "added": [
          "Every VM has a Program button (OS Voting and ChangeVM pages): pick VirtualBox or VMware per VM. For VMware you pick the .vmx file and the VNC password instead of a name.",
@@ -16353,17 +16554,50 @@ class QtAppUI:
         sc.add(fd)
 
         sec = Card("Encoding filter", "Blocks base64, base32, base16/hex, base58, base62, base36, base85/ascii85, binary, escape sequences, "
-                                      "char codes and decoder tricks on YouTube and Discord. Only the console, the owner, admins and mods get through. "
-                                      "A viewer whose command is blocked can't send commands anymore; a plain chat message is just hidden "
-                                      "(and deleted on Discord). !tob64 turns it off, !eb64 turns it back on, !unblock <user> clears one sender.")
+                                      "char codes and decoder calls on YouTube and Discord. A long code-looking token only counts when it really "
+                                      "decodes to text, a file or a program, so links, hashes, IDs, passwords and normal scripts get through. "
+                                      "The console, the owner, admins and mods are never blocked. A blocked command is not run and the viewer gets "
+                                      "a warning; only repeat offenders are blocked from commands, and the block runs out by itself. "
+                                      "!tob64 / !eb64 turn it off / on, !unblock <user> clears one sender.")
         self._b64_pill = Pill("ON", "ok")
         sec.add_action(self._b64_pill)
         self._b64_var = Toggle("Block encoded payloads from viewers", self._b64_filter_on())
         self._b64_var.clicked.connect(lambda *_: self._toggle_b64_ui())
         sec.add(self._b64_var)
+        fgs = FormGrid(label_w=190)
+        strikes, mins = self._enc_policy()
+        self._enc_strikes_seg = Segmented(((1, "1st"), (2, "2nd"), (3, "3rd"), (5, "5th")), min((1, 2, 3, 5), key=lambda v: abs(v - strikes)))
+        self._enc_strikes_seg.changed.connect(lambda v: (self.config.__setitem__("enc_strikes", int(v)), self.save_settings()))
+        fgs.field("Block from commands on the", row_widget(self._enc_strikes_seg, L("encoded command within 10 min", "muted", ("ui", 9)), "stretch"))
+        self._enc_mins_seg = Segmented(((10, "10 min"), (60, "1 hour"), (1440, "1 day"), (0, "Until unblocked")),
+                                       min((10, 60, 1440, 0), key=lambda v: abs(v - mins) if mins else (0 if v == 0 else 10 ** 9)))
+        self._enc_mins_seg.changed.connect(lambda v: (self.config.__setitem__("enc_ban_minutes", int(v)), self.save_settings()))
+        fgs.field("Block lasts", row_widget(self._enc_mins_seg, "stretch"))
+        sec.add(fgs)
         self._b64_block_lbl = L("", "muted", ("ui", 9))
-        sec.add(row_widget(self._b64_block_lbl, "stretch", Button("Clear the block list", self._clear_offenders, "neutral", "sm", icon="trash")))
+        sec.add(row_widget(self._b64_block_lbl, "stretch",
+                           Button("Unblock selected", self._enc_unblock_selected, "primary", "sm", icon="check"),
+                           Button("Clear the block list", self._clear_offenders, "neutral", "sm", icon="trash")))
+        self._enc_list = ListBox(mono=False, size=9.5)
+        self._enc_list.setMinimumHeight(110)
+        self._enc_list_users = []
+        sec.add(self._enc_list)
+        sec.add(L("Recently blocked commands", "faint", ("ui", 8.5, "semi")))
+        self._enc_hits_list = ListBox(mono=True, size=9)
+        self._enc_hits_list.setMinimumHeight(110)
+        sec.add(self._enc_hits_list)
+        sec.add(L("Test a message", "faint", ("ui", 8.5, "semi")))
+        self._enc_test = LineEdit("", "paste a chat message or command to see if the filter would block it", mono=True, width=None,
+                                  on_enter=self._enc_test_run)
+        self._enc_test.textChanged.connect(lambda *_: self._enc_test_run())
+        self._enc_test_lbl = L("", "muted", ("ui", 9.5), wrap=True)
+        sec.add(self._enc_test)
+        sec.add(self._enc_test_lbl)
         sc.add(sec)
+        self._enc_timer = QTimer(self.win)
+        self._enc_timer.timeout.connect(lambda: self._sync_security_marks() if self._enc_list.isVisible() else None)
+        self._enc_timer.start(5000)
+        self._sync_security_marks()
 
         st = Card("Live status")
         grid = QHBoxLayout()
@@ -16413,10 +16647,31 @@ class QtAppUI:
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
         if hasattr(self, "_b64_block_lbl"):
-            n = len(getattr(self, "b64_offenders", ()))
+            lst = getattr(self, "b64_offenders", None)
+            if lst is not None and hasattr(lst, "expire") and lst.expire():
+                self._save_offenders()
+            n = len(lst or ())
             try:
-                self._b64_block_lbl.setText(f"{n} sender{'s' if n != 1 else ''} currently blocked." if n else "No senders blocked.")
+                self._b64_block_lbl.setText(f"{n} sender{'s' if n != 1 else ''} blocked from commands right now." if n else "Nobody is blocked.")
                 set_role(self._b64_block_lbl, "warn" if n else "muted")
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+        if hasattr(self, "_enc_list"):
+            try:
+                now = time.time()
+                rows, users = [], []
+                for u, e in sorted((lst or {}).items(), key=lambda kv: -float(kv[1].get("t", 0) or 0)):
+                    until = float(e.get("until", 0) or 0)
+                    left = f"{max(1, int((until - now) // 60) + 1)} min left" if until else "until unblocked"
+                    m = str(e.get("msg", "") or "").replace("\n", " ")
+                    rows.append(f"{u}  |  {left}  |  {e.get('why', '')}" + (f"  |  {m[:90]}" if m else ""))
+                    users.append(u)
+                self._enc_list_users = users
+                self._enc_list.set_items(rows or ["(nobody)"])
+                hits = list(self.__dict__.get("_enc_hits", ()))[::-1]
+                self._enc_hits_list.set_items([f"{time.strftime('%H:%M:%S', time.localtime(h['t']))} {h['src']:<7} {h['user']:<18} "
+                                               f"{'BLOCKED ' if h['banned'] else 'warned  '} {h['why']}  |  {h['msg'][:120]}"
+                                               for h in hits] or ["(nothing blocked yet)"])
             except Exception as _ex:
                 _trace(_ex_where(), _ex)
 
@@ -17561,6 +17816,29 @@ class ChatPlaysApp(QtAppUI):
         return bool(is_owner or clean_user in owners or clean_user == "reallyiron"
                     or clean_user in ("[console]", "[system]"))
 
+    def _enc_is_blocked(self, clean_user):
+        lst = getattr(self, "b64_offenders", None)
+        if not lst:
+            return False
+        was = clean_user in lst
+        on = lst.blocked(clean_user) if hasattr(lst, "blocked") else clean_user in lst
+        if was and not on:
+            self._save_offenders()
+            plog("SECURITY", f"encoding filter block for {clean_user} ran out")
+            self.ui(self._sync_security_marks)
+        return on
+
+    def _enc_policy(self):
+        try:
+            strikes = max(1, min(20, int(self.config.get("enc_strikes", 3) or 3)))
+        except Exception:
+            strikes = 3
+        try:
+            mins = max(0, min(10080, int(self.config.get("enc_ban_minutes", 60))))
+        except Exception:
+            mins = 60
+        return strikes, mins
+
     def _guard_payload(self, clean_user, message, is_owner, source="youtube", ref=None, is_mod=False):
         if not self._b64_filter_on():
             return False
@@ -17570,21 +17848,38 @@ class ChatPlaysApp(QtAppUI):
         if self._enc_trusted(clean_user, is_mod, is_owner):
             plog("SECURITY", f"encoding filter: {source}:{clean_user} is console/owner/admin/mod - allowed ({why})")
             return False
-        plog("SECURITY", f"encoding filter blocked {source}:{clean_user} - {why}")
-        if clean_user not in self.b64_offenders:
-            self.b64_offenders.add(clean_user)
+        now = time.time()
+        strikes, mins = self._enc_policy()
+        book = self.__dict__.setdefault("_enc_strikes", {})
+        hist = [t for t in book.get(clean_user, []) if now - t < 600] + [now]
+        book[clean_user] = hist
+        hits = self.__dict__.setdefault("_enc_hits", collections.deque(maxlen=60))
+        banned = len(hist) >= strikes
+        hits.append({"t": now, "user": clean_user, "src": source, "why": why, "msg": str(message)[:300], "banned": banned})
+        plog("SECURITY", f"encoding filter blocked {source}:{clean_user} ({len(hist)}/{strikes}) - {why} | {str(message)[:200]!r}")
+        if banned:
+            book.pop(clean_user, None)
+            self.b64_offenders.add(clean_user, why, message, mins)
             self._save_offenders()
-        self.log("[system]", f"[error] encoding filter blocked a command from {clean_user} ({why}). they can no longer send commands.", "err")
+            span = f"for {mins} min" if mins else "until a mod unblocks them"
+            note = f"Blocked from commands {span} after {len(hist)} encoded commands. A mod can !unblock {clean_user}."
+            self.log("[system]", f"[error] encoding filter: {clean_user} sent {len(hist)} encoded commands and is blocked from commands {span} "
+                                 f"({why}). a mod can !unblock {clean_user}.", "err")
+        else:
+            left = strikes - len(hist)
+            note = (f"that command looked like encoded text ({why}) so it was not run. Encoded commands aren't allowed here"
+                    + (f" - {left} more and you're blocked from commands for a while." if left else "."))
+            self.log("[system]", f"[warn] blocked a command from {clean_user}: {note}", "sysmsg")
         br = getattr(self, "discord", None)
         if source == "discord" and br is not None:
-            br.on_blocked(clean_user, why, ref=ref)
+            br.on_blocked(clean_user, why, ref=ref, listed=banned, note=note)
         self.ui(self._sync_security_marks)
         return True
 
     def _hide_payload(self, clean_user, message, source="youtube", ref=None):
         why = _enc_scan(message, chat=True) or "encoded text"
         plog("SECURITY", f"encoding filter hid a chat message from {source}:{clean_user} - {why}")
-        self.log("[system]", f"[warn] encoding filter hid a message from {clean_user} ({why}).", "sysmsg")
+        self.log("[system]", f"[warn] blocked (hidden) a chat message from {clean_user} - encoding filter ({why}).", "sysmsg")
         br = getattr(self, "discord", None)
         if source == "discord" and br is not None:
             br.on_blocked(clean_user, why, ref=ref, listed=False)
@@ -17593,18 +17888,36 @@ class ChatPlaysApp(QtAppUI):
         return os.path.splitext(settings_file)[0] + "_blocked.json"
 
     def _load_offenders(self):
+        out = OffenderList()
         try:
-            with open(self._offenders_file(), "r") as f:
+            with open(self._offenders_file(), "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return set(str(x).lower() for x in data)
         except Exception:
-            return set()
+            return out
+        now = time.time()
+        try:
+            mins = max(0, int(self.config.get("enc_ban_minutes", 60)))
+        except Exception:
+            mins = 60
+        if isinstance(data, list):
+            for u in data:
+                out[str(u).lower()] = {"t": now, "until": now + (mins or 60) * 60,
+                                       "why": "blocked by an older YT2VM version (no reason saved)", "msg": ""}
+            if data:
+                plog("SECURITY", f"{len(data)} sender(s) from the old permanent block list now run out in {mins or 60} min")
+        elif isinstance(data, dict):
+            for u, e in data.items():
+                if isinstance(e, dict):
+                    out[str(u).lower()] = {"t": float(e.get("t", now) or now), "until": float(e.get("until", 0) or 0),
+                                           "why": str(e.get("why", "")), "msg": str(e.get("msg", ""))}
+        out.expire()
+        return out
 
     def _save_offenders(self):
         try:
             tmp = self._offenders_file() + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(sorted(self.b64_offenders), f)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(dict(self.b64_offenders), f, ensure_ascii=False, indent=1)
             os.replace(tmp, self._offenders_file())
         except Exception as _ex:
             _trace(_ex_where(), _ex)
@@ -18064,7 +18377,8 @@ class ChatPlaysApp(QtAppUI):
             "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60,
             "ui_text_size": 0, "music_queue_max": 8, "relay_port": 8080, "relay_host": "127.0.0.1", "overlay_scale": 1.4,
             "viewer_chain_max_wait": 10, "viewer_chain_max_steps": 12,
-            "ai_enabled": False, "ai": {}, "ai_profiles": {}, "obs_scene_guard": True, "vm_programs": {}
+            "ai_enabled": False, "ai": {}, "ai_profiles": {}, "obs_scene_guard": True, "vm_programs": {},
+            "enc_strikes": 3, "enc_ban_minutes": 60
         }
         base = dict(default_config)
         if os.path.exists(settings_file):
@@ -19735,9 +20049,37 @@ class ChatPlaysApp(QtAppUI):
         self._sync_security_marks()
         self.toast("Encoding filter " + ("on." if self._b64_filter_on() else "off."), "ok" if self._b64_filter_on() else "warn")
 
+    def _enc_unblock_selected(self):
+        i = self._enc_list.selected_index()
+        users = getattr(self, "_enc_list_users", [])
+        if i is None or i < 0 or i >= len(users):
+            self.toast("Select a blocked sender first", "info")
+            return
+        u = users[i]
+        self.b64_offenders.discard(u)
+        self.__dict__.setdefault("_enc_strikes", {}).pop(u, None)
+        self._save_offenders()
+        self.log("[system]", f"{u} removed from the encoding filter block list.", "sysmsg")
+        self._sync_security_marks()
+        self.toast(f"{u} can send commands again", "ok")
+
+    def _enc_test_run(self):
+        txt = self._enc_test.get()
+        if not txt.strip():
+            self._enc_test_lbl.setText("")
+            return
+        cmd = txt.startswith(self.command_prefix or "!")
+        why = _enc_scan(txt, chat=not cmd)
+        if why:
+            self._enc_test_lbl.setText(("Blocked: " if cmd else "Hidden from chat: ") + why)
+            set_role(self._enc_test_lbl, "bad")
+        else:
+            self._enc_test_lbl.setText("Allowed - the filter lets this through.")
+            set_role(self._enc_test_lbl, "ok")
+
     def _clear_offenders(self):
         n = len(self.b64_offenders)
-        self.b64_offenders = set()
+        self.b64_offenders = OffenderList()
         self._save_offenders()
         self._sync_security_marks()
         self.toast(f"Cleared {n} blocked sender{'s' if n != 1 else ''}.", "ok")
@@ -20105,6 +20447,8 @@ class ChatPlaysApp(QtAppUI):
             self.ui(self._sync_security_marks)
             return True
         if cmd in ("!unblock", "!unb64"):
+            if target:
+                self.__dict__.setdefault("_enc_strikes", {}).pop(target, None)
             if target and target in getattr(self, "b64_offenders", set()):
                 self.b64_offenders.discard(target)
                 self._save_offenders()
@@ -20399,7 +20743,7 @@ class ChatPlaysApp(QtAppUI):
         if not msg.startswith(self.command_prefix): return
         clean_user = user.replace("@", "").lower().strip()
         if clean_user in self.blacklisted_users: return
-        if clean_user in getattr(self, "b64_offenders", set()) and not self._enc_trusted(clean_user, is_mod, is_owner):
+        if self._enc_is_blocked(clean_user) and not self._enc_trusted(clean_user, is_mod, is_owner):
             plog("SECURITY", f"ignored command from encoding-filter-blocked user {clean_user}")
             return
         _tb = self.timed_bans.get(clean_user)

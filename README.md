@@ -39,6 +39,29 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.0.0
+
+## Stability
+- If Python inside YT2VM breaks (every command failing with the same error, like `'NoneType' object is not subscriptable`), YT2VM writes the details to `crash_log.txt` and restarts itself clean. It stops after 3 restarts in 10 minutes so it can't loop.
+- YT2VM checks every 30 seconds whether another program loaded a second Python DLL into it. Two Pythons in one program break each other, and the log now names the DLLs that came in.
+- `fault_log.txt` records hard crashes inside Python or Qt.
+- The executor no longer dies when its very first command fails, and the stack dump works even when Python is half broken.
+
+## Mouse
+- VirtualBox: on VMs with a tablet / Guest Additions mouse every click, move, scroll and drag is sent as an absolute position, because those VMs ignore relative mouse events.
+- VirtualBox: when the `virtualbox` Python package breaks the mouse, YT2VM reconnects through VirtualBox's own COM interface. If the mouse still can't be reached it tells you why.
+- VMware: the first click or move goes from the cursor in the middle of the screen instead of the top-left corner, and positions are kept on screen.
+- Bad numbers in `!move`, `!abs` and `!drag` are ignored.
+
+## VirtualBox and VMware side by side
+- Every VM on the OS Voting and ChangeVM pages has a **Program** button. Pick VirtualBox (by VM name) or VMware (by .vmx file and VNC password).
+- **Add VM** adds a VMware VM by its .vmx file.
+- When chat switches to a VM in the other program, YT2VM shuts the old VM down, switches program and starts the new VM from its snapshot.
+
+## OBS scene guard
+- Scene switches are sent one at a time and checked: if OBS didn't move to the new scene, YT2VM switches again.
+- While the guard is on it keeps checking in the background. If OBS ends up on one of YT2VM's scenes when it shouldn't (for example stuck on Starting after the VM is up), the right scene is put back. Your own scenes are left alone. Turn it off on the OBS page.
+
 # Release Notes — 1.9.0
 
 ## AI on another PC

@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "1.9.0"
+version = "2.0.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -5686,13 +5686,32 @@ def _dump_all_stacks(reason, to_crash_log=True):
     lines = [f"{'='*70}", f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] STACK DUMP - {reason}", f"{'='*70}"]
     try:
         frames = sys._current_frames()
-        for th in threading.enumerate():
-            fr = frames.get(th.ident)
-            if fr is None:
-                continue
-            lines.append(f"--- thread '{th.name}' (daemon={th.daemon}) ---")
-            for fs in traceback.extract_stack(fr)[-14:]:
-                lines.append(f"    {os.path.basename(fs.filename)}:{fs.lineno} in {fs.name}()  {(fs.line or '').strip()[:110]}")
+        names = {}
+        try:
+            for th in threading.enumerate():
+                names[th.ident] = (th.name, th.daemon)
+        except Exception as e:
+            lines.append(f"(could not list threads: {e})")
+        for ident, fr in list(frames.items()):
+            nm, dm = names.get(ident, (f"thread-{ident}", "?"))
+            lines.append(f"--- thread '{nm}' (daemon={dm}) ---")
+            chain = []
+            f = fr
+            while f is not None and len(chain) < 14:
+                chain.append(f)
+                f = f.f_back
+            for f in reversed(chain):
+                try:
+                    co = f.f_code
+                    lno = f.f_lineno
+                    src = ""
+                    try:
+                        src = str(_linecache.getline(co.co_filename, lno) or "").strip()[:110]
+                    except Exception:
+                        src = ""
+                    lines.append(f"    {os.path.basename(str(co.co_filename))}:{lno} in {co.co_name}()  {src}")
+                except Exception as e:
+                    lines.append(f"    (frame unreadable: {e})")
     except Exception as e:
         lines.append(f"(could not read stacks: {e})")
     blob = "\n".join(lines)
@@ -5949,6 +5968,104 @@ musiclogs_file = "musiclog.json"
 heartbeat_file = f"heartbeat{suffix}.txt"
 crashguard_file = f"crashguard{suffix}.txt"
 update_guard_file = "update_guard.json"
+relaunch_guard_file = f"relaunch_guard{suffix}.json"
+FAULT_LOG = f"fault_log{suffix}.txt"
+_FAULT_FH = None
+
+
+def _enable_faulthandler():
+    global _FAULT_FH
+    try:
+        import faulthandler
+        _FAULT_FH = open(FAULT_LOG, "a", encoding="utf-8")
+        _FAULT_FH.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] yt2vm {version} pid {os.getpid()} python {sys.version.split()[0]}\n")
+        _FAULT_FH.flush()
+        faulthandler.enable(file=_FAULT_FH, all_threads=True)
+    except Exception:
+        _FAULT_FH = None
+
+
+_enable_faulthandler()
+
+
+def _loaded_dlls():
+    if platform.system() != "Windows":
+        return []
+    try:
+        from ctypes import wintypes
+        psapi = ctypes.WinDLL("psapi")
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.EnumProcessModules.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.HMODULE), wintypes.DWORD,
+                                             ctypes.POINTER(wintypes.DWORD)]
+        psapi.EnumProcessModules.restype = wintypes.BOOL
+        k32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+        k32.GetModuleFileNameW.restype = wintypes.DWORD
+        arr = (wintypes.HMODULE * 4096)()
+        need = wintypes.DWORD()
+        if not psapi.EnumProcessModules(k32.GetCurrentProcess(), arr, ctypes.sizeof(arr), ctypes.byref(need)):
+            return []
+        n = min(need.value // ctypes.sizeof(wintypes.HMODULE), 4096)
+        buf = ctypes.create_unicode_buffer(1024)
+        out = []
+        for i in range(n):
+            if arr[i] and k32.GetModuleFileNameW(arr[i], buf, 1024):
+                out.append(buf.value)
+        return out
+    except Exception:
+        return []
+
+
+def _python_runtime_report(dlls=None):
+    dlls = _loaded_dlls() if dlls is None else dlls
+    mine = f"python{sys.version_info.major}{sys.version_info.minor}.dll"
+
+    def base(d):
+        return re.split(r"[\\/]", str(d))[-1].lower()
+
+    def folder(d):
+        return "/".join(re.split(r"[\\/]", str(d).lower())[:-1])
+    runtimes = [d for d in dlls if re.fullmatch(r"python3\d+(_d)?\.dll", base(d))]
+    foreign = [d for d in runtimes if base(d) != mine]
+    dirs = {folder(d) for d in runtimes if base(d) == mine}
+    if foreign or len(dirs) > 1:
+        return ("more than one Python is loaded inside YT2VM: " + ", ".join(runtimes) +
+                f". YT2VM runs on {mine}. Something loaded another Python's DLL, and two Pythons in one program "
+                "break each other (errors like 'NoneType' object is not subscriptable everywhere).")
+    return ""
+
+
+def _runtime_sane():
+    try:
+        probe = {"k": None}
+        if probe["k"] is not None:
+            return False
+        t = threading.Thread(target=lambda: None, daemon=True)
+        if t is None:
+            return False
+        if not isinstance("".join(traceback.format_stack(limit=2)), str):
+            return False
+        return [x for x in (None, 1) if x is not None] == [1]
+    except Exception:
+        return False
+
+
+def _relaunch_allowed(max_n=3, window=600.0):
+    now = time.time()
+    try:
+        with open(relaunch_guard_file, "r", encoding="utf-8") as f:
+            ts = [float(t) for t in json.load(f) if now - float(t) < window]
+    except Exception:
+        ts = []
+    if len(ts) >= max_n:
+        return False
+    ts.append(now)
+    try:
+        with open(relaunch_guard_file, "w", encoding="utf-8") as f:
+            json.dump(ts, f)
+    except Exception:
+        pass
+    return True
 
 
 def _update_guard_check():
@@ -6395,6 +6512,10 @@ def normalize_payload(text):
     for ch in out:
         if not res or res[-1] != ch: res.append(ch)
     return "".join(res)
+
+class _MouseNeedsAbsolute(Exception):
+    pass
+
 
 class FairCommandQueue:
 
@@ -7819,6 +7940,16 @@ def clean_text(text):
     if not isinstance(text, str): return str(text)
     return ''.join(c for c in text if c <= '\uFFFF')
 
+def parse_xy(arg, lo=0, hi=16384):
+    p = str(arg or "").replace(",", " ").split()
+    if len(p) != 2:
+        return None
+    x, y = safe_int(p[0], None, lo, hi), safe_int(p[1], None, lo, hi)
+    if x is None or y is None:
+        return None
+    return x, y
+
+
 def safe_int(val, default=0, lo=None, hi=None):
     try:
         n = int(str(val).strip())
@@ -7920,7 +8051,7 @@ def obs_reachable():
         with socket.create_connection((obs_host, int(obs_port)), timeout=0.6):
             return True
     except Exception:
-        _obs_down_until = time.time() + 30
+        _obs_down_until = time.time() + 5
         if time.time() - _obs_warned_at > 120:
             _obs_warned_at = time.time()
             console_log("SYSTEM", f"obs not reachable on {obs_host}:{obs_port} - scene switching disabled until it is up.")
@@ -7938,19 +8069,132 @@ def _obs_note_fail(e):
     else:
         dbg("obs", "obs error", e)
 
-def set_obs_scene(scene_name):
-    try:
-        if not obs_available: return
-        def _switch():
+_OBS_SCENE = {"want": "", "t": 0.0, "seq": 0, "done_seq": 0, "tries": 0, "gave_up": "", "cur": "", "cur_t": 0.0,
+              "fixes": 0, "guard": True}
+_obs_scene_lock = threading.Lock()
+_obs_scene_evt = threading.Event()
+_obs_scene_thread = None
+
+
+def _obs_managed_scenes():
+    return {obs_scene_main, obs_scene_revert, obs_scene_error, obs_scene_changevm, obs_scene_starting}
+
+
+def _obs_client():
+    if obs_password:
+        return obs.ReqClient(host=obs_host, port=obs_port, password=obs_password, timeout=3)
+    return obs.ReqClient(host=obs_host, port=obs_port, timeout=3)
+
+
+def _obs_current_scene(cl):
+    r = cl.get_current_program_scene()
+    for attr in ("current_program_scene_name", "scene_name", "sceneName", "currentProgramSceneName"):
+        v = getattr(r, attr, None)
+        if v:
+            return str(v)
+    return ""
+
+
+def _obs_scene_worker():
+    cl = None
+    while True:
+        with _obs_scene_lock:
+            st = dict(_OBS_SCENE)
+        pending = st["seq"] != st["done_seq"]
+        _obs_scene_evt.wait(0.8 if pending else 3.0)
+        _obs_scene_evt.clear()
+        with _obs_scene_lock:
+            st = dict(_OBS_SCENE)
+        want, seq = st["want"], st["seq"]
+        if not want or not obs_available:
+            continue
+        pending = seq != st["done_seq"]
+        age = time.time() - st["t"]
+        if not pending and not st["guard"]:
+            continue
+        if st["gave_up"] == f"{seq}:{want}":
+            continue
+        if not obs_reachable():
+            cl = None
+            continue
+        try:
+            if cl is None:
+                cl = _obs_client()
+            cur = _obs_current_scene(cl)
+            with _obs_scene_lock:
+                _OBS_SCENE["cur"], _OBS_SCENE["cur_t"] = cur, time.time()
+            if cur == want:
+                if pending:
+                    with _obs_scene_lock:
+                        if _OBS_SCENE["seq"] == seq:
+                            _OBS_SCENE["done_seq"] = seq
+                    if st["tries"] > 1:
+                        plog("OBS", f"scene '{want}' confirmed after {st['tries']} tries")
+                continue
+            if not pending and cur not in _obs_managed_scenes():
+                continue
+            if not pending and age < 2.0:
+                continue
+            tries = st["tries"] + 1
+            with _obs_scene_lock:
+                if _OBS_SCENE["seq"] != seq:
+                    continue
+                _OBS_SCENE["tries"] = tries
+            if pending and tries > 12:
+                with _obs_scene_lock:
+                    _OBS_SCENE["gave_up"] = f"{seq}:{want}"
+                console_log("ERROR", f"obs stays on '{cur}' - it never switched to '{want}' after 12 tries. Does a scene "
+                                     f"called '{want}' exist in OBS?")
+                continue
+            if tries > 1 or not pending:
+                if not pending:
+                    with _obs_scene_lock:
+                        _OBS_SCENE["fixes"] += 1
+                plog("OBS", f"scene is '{cur}' but should be '{want}' - switching again (try {tries})")
+            cl.set_current_program_scene(want)
+            plog("OBS", f"scene switched -> {want}")
+            dbg("obs", f"scene -> {want} (was {cur!r}, try {tries})")
+            _obs_scene_evt.set()
+            time.sleep(0.5)
+        except Exception as e:
+            _obs_note_fail(e)
+            msg = str(e).lower()
+            if "600" in msg or "no source" in msg or "not found" in msg:
+                with _obs_scene_lock:
+                    if _OBS_SCENE["seq"] == seq:
+                        _OBS_SCENE["gave_up"] = f"{seq}:{want}"
+                console_log("ERROR", f"obs has no scene called '{want}' - create it or rename it in OBS settings.")
             try:
-                if not obs_reachable(): return
-                cl = obs.ReqClient(host=obs_host, port=obs_port, password=obs_password, timeout=3) if obs_password else obs.ReqClient(host=obs_host, port=obs_port, timeout=3)
-                cl.set_current_program_scene(scene_name)
-                plog("OBS", f"scene switched -> {scene_name}")
-                dbg("obs", f"scene -> {scene_name}")
-            except Exception as e: _obs_note_fail(e)
+                if cl is not None:
+                    cl.disconnect()
+            except Exception:
+                pass
+            cl = None
+            time.sleep(1.0)
+
+
+def obs_scene_guard(on=None):
+    with _obs_scene_lock:
+        if on is not None:
+            _OBS_SCENE["guard"] = bool(on)
+        return dict(_OBS_SCENE)
+
+
+def set_obs_scene(scene_name):
+    global _obs_scene_thread
+    try:
+        if not obs_available or not scene_name:
+            return
+        with _obs_scene_lock:
+            _OBS_SCENE["want"] = str(scene_name)
+            _OBS_SCENE["t"] = time.time()
+            _OBS_SCENE["seq"] += 1
+            _OBS_SCENE["tries"] = 0
         plog("OBS", f"scene switch requested -> {scene_name}", verbose=True)
-        threading.Thread(target=_switch, daemon=True, name="obs-scene").start()
+        if _obs_scene_thread is None or not _obs_scene_thread.is_alive():
+            _obs_scene_thread = threading.Thread(target=_obs_scene_worker, daemon=True, name="obs-scene")
+            _obs_scene_thread.start()
+        _obs_scene_evt.set()
     except Exception as _ex:
         _trace(_ex_where(), _ex)
 
@@ -8830,7 +9074,33 @@ class VMwareController:
             _trace(_ex_where(), _ex)
         self.client = None
 
+    def _screen_size(self):
+        try:
+            proto = getattr(self.client, "protocol", None)
+            w, h = int(getattr(proto, "width", 0) or 0), int(getattr(proto, "height", 0) or 0)
+            if 100 <= w <= 16384 and 100 <= h <= 16384:
+                self._fb = (w, h)
+        except Exception:
+            pass
+        return getattr(self, "_fb", None) or (1024, 768)
+
+    def _clamp(self, x, y):
+        w, h = self._screen_size()
+        return max(0, min(w - 1, int(x))), max(0, min(h - 1, int(y)))
+
+    def _ensure_pos(self):
+        if not getattr(self, "_pos_known", False):
+            w, h = self._screen_size()
+            self._mx, self._my = w // 2, h // 2
+            self._pos_known = True
+        self._mx, self._my = self._clamp(self._mx, self._my)
+        return self._mx, self._my
+
     def _need(self, fresh=False):
+        with self.lock:
+            return self._need_locked(fresh)
+
+    def _need_locked(self, fresh=False):
         idle = time.time() - getattr(self, "_last_ok", 0)
         if self.client is None or fresh or idle > 120:
             self.connect()
@@ -8988,12 +9258,14 @@ class VMwareController:
         with self.lock:
             if not self._need(): return
             try:
+                self._ensure_pos()
                 self.client.mouseMove(int(self._mx), int(self._my))
                 self._flush()
                 for _ in range(max(1, min(int(count), 20))):
                     self.client.mousePress(int(button))
                     self._flush()
                     time.sleep(0.03)
+                self._last_ok = time.time()
                 dbg("vmware", f"click btn={button} x{count} at ({self._mx},{self._my})")
             except Exception as e:
                 self.status = f"click error: {e}"
@@ -9031,20 +9303,32 @@ class VMwareController:
         if not self._need(): return
         try:
             with self.lock:
+                x, y = self._clamp(x, y)
                 self.client.mouseMove(int(x), int(y))
                 self._mx, self._my = int(x), int(y)
+                self._pos_known = True
+                self._last_ok = time.time()
         except Exception as e:
             self.status = f"move error: {e}"
 
     def move_rel(self, dx, dy):
-        self.move_abs(max(0, self._mx + int(dx)), max(0, self._my + int(dy)))
+        if not self._need(): return
+        with self.lock:
+            x, y = self._ensure_pos()
+        self.move_abs(x + int(dx), y + int(dy))
 
     def scroll(self, amount):
         if not self._need(): return
+        if int(amount) == 0:
+            return
         btn = 4 if int(amount) > 0 else 5
         try:
             with self.lock:
-                for _ in range(min(abs(int(amount)), 10)): self.client.mousePress(btn)
+                self.client.mouseMove(*self._ensure_pos())
+                for _ in range(min(abs(int(amount)), 10)):
+                    self.client.mousePress(btn)
+                    time.sleep(0.02)
+                self._last_ok = time.time()
         except Exception as e:
             self.status = f"scroll error: {e}"
 
@@ -9052,10 +9336,18 @@ class VMwareController:
         if not self._need(): return
         try:
             with self.lock:
+                sx, sy = self._ensure_pos()
+                tx, ty = self._clamp(sx + int(dx), sy + int(dy))
+                self.client.mouseMove(sx, sy)
                 self.client.mouseDown(1)
-                self.client.mouseDrag(max(0, self._mx + int(dx)), max(0, self._my + int(dy)), step=10)
+                steps = 10
+                for i in range(1, steps + 1):
+                    self.client.mouseMove(sx + (tx - sx) * i // steps, sy + (ty - sy) * i // steps)
+                    time.sleep(0.015)
                 self.client.mouseUp(1)
-                self._mx += int(dx); self._my += int(dy)
+                self._mx, self._my = tx, ty
+                self._pos_known = True
+                self._last_ok = time.time()
         except Exception as e:
             self.status = f"drag error: {e}"
 
@@ -10847,6 +11139,33 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.0.0", "date": "2026-11-18",
+     "added": [
+         "Every VM has a Program button (OS Voting and ChangeVM pages): pick VirtualBox or VMware per VM. For VMware you pick the .vmx file and the VNC password instead of a name.",
+         "Add VM button to add a VMware VM by its .vmx file.",
+         "Chat can switch between a VirtualBox VM and a VMware VM: YT2VM shuts the old one down, switches program by itself and starts the new one from its snapshot.",
+         "Scene guard (OBS page): after every scene switch YT2VM checks OBS really moved and switches again if it didn't, and keeps OBS off a wrong YT2VM scene (like stuck on Starting) in the background.",
+         "Runtime watchdog: if Python inside YT2VM breaks and every command fails with the same error, YT2VM writes what happened to crash_log.txt and restarts itself clean (at most 3 times in 10 minutes).",
+         "YT2VM notices when another program loads a second Python DLL into it, which is what makes errors like 'NoneType' object is not subscriptable appear everywhere, and logs which DLLs were loaded.",
+         "fault_log.txt records hard crashes inside Python or Qt.",
+     ],
+     "changed": [
+         "VirtualBox mouse: with a tablet / Guest Additions mouse every click, move, scroll and drag is sent as an absolute position, so the mouse works on VMs where relative mouse events are ignored.",
+         "VirtualBox mouse: if the 'virtualbox' Python package breaks the mouse, YT2VM reconnects through VirtualBox's own COM interface and tries again instead of dropping the command.",
+         "Scene switches are sent one at a time in order, so a slow 'starting' switch can no longer land after 'main'.",
+         "OBS being unreachable now pauses scene switching for 5 seconds instead of 30.",
+     ],
+     "fixed": [
+         "The executor could die when its very first command failed, so no command ran any more until the watchdog restarted it a minute later.",
+         "The stack dump and the error watcher crashed when Python was in a broken state, so the logs showed nothing useful.",
+         "VMware: the first !click or !move went to the top-left corner (0,0) instead of the cursor.",
+         "VMware: mouse positions outside the screen are clamped to the screen.",
+         "VirtualBox: when the mouse couldn't be reached the command was silently ignored; now YT2VM says why and keeps trying to reconnect.",
+         "!move, !abs and !drag with a bad number moved the mouse to a corner or counted as a VirtualBox connection error; they are ignored now.",
+         "Switching the backend from a background thread touched the UI from that thread.",
+         "The AI export zip is written under a temporary name first, so a half-written zip never shows up.",
+     ],
+     "removed": []},
     {"version": "1.9.0", "date": "2026-11-12",
      "added": [
          "AI page: a Test button next to the address, and the address is tested as soon as you leave the field.",
@@ -12543,6 +12862,7 @@ class QtAppUI:
             self._ai_last_chain = 0.0
             self._ai_cmd_t = {}
             self.ai = AIAgent(self)
+            obs_scene_guard(bool(self.config.get("obs_scene_guard", True)))
             self.music_queue = []
             self.banned_users = {}
             self.current_song = None
@@ -14043,7 +14363,8 @@ class QtAppUI:
 
         vc = Card("Votable VMs", "Turn on the VMs chat can vote for. The name is what viewers type; leave it empty to use the VM name "
                   "without spaces. Each VM starts from the snapshot picked here.")
-        vc.add_action(Button("Refresh", lambda: (self._vm_list(fresh=True), self._refresh_osvote()), "neutral", "sm", icon="refresh"))
+        vc.add_action(Button("Add VM", lambda: self._vm_program_dialog(None), "primary", "sm", icon="plus"))
+        vc.add_action(Button("Refresh", self._vm_lists_reload, "neutral", "sm", icon="refresh"))
         self.osvote_list = QWidget()
         ol = QVBoxLayout(self.osvote_list)
         ol.setContentsMargins(0, 0, 0, 0)
@@ -14102,25 +14423,185 @@ class QtAppUI:
             cb = Combo([snap] if snap else [""], snap, width=170)
             hl.addWidget(L("snapshot", "faint", ("ui", 9)))
             hl.addWidget(cb)
+            hl.addWidget(self._vm_program_button(name))
             hl.addWidget(Button("Switch now", lambda n=name: self._osv_switch_now(n), "violet", "sm", icon="refresh"))
             row.body.addLayout(hl)
             lay.addWidget(row)
             self._osv_rows[name] = (tg, al, cb)
         on = [n for n in names if n in wl]
         self._osv_hint.setText(f"{len(names)} VM(s) found, {len(on)} votable" + (f": {', '.join(on)}" if on else " - chat can't vote yet"))
-        if getattr(self, "backend", "virtualbox") == "vmware":
-            return
-        path = self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd
+        self._run_bg("osvote-snaps", lambda: self.ui(self._osv_apply_snaps, self._snaps_for(names)))
 
-        def work():
-            res = {}
-            for n in names:
-                try:
+    def _snaps_for(self, names):
+        res = {}
+        path = self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd
+        paths = None
+        for n in names:
+            try:
+                if self._vm_program(n) == "vmware":
+                    if paths is None:
+                        paths = self._vm_paths()
+                    vmx = paths.get(n)
+                    if vmx and os.path.isfile(vmx):
+                        ctl = VMwareController(vmrun_path=self.config.get("vmrun_path", getattr(self, "vmrun_path", "")), vmx=vmx)
+                        res[n] = ctl.list_snapshots() if ctl.available() else []
+                    else:
+                        res[n] = []
+                else:
                     res[n] = get_vbox_snapshots(path, n)
-                except Exception:
-                    res[n] = []
-            self.ui(self._osv_apply_snaps, res)
-        self._run_bg("osvote-snaps", work)
+            except Exception:
+                res[n] = []
+        return res
+
+    def _vm_lists_reload(self):
+        def work():
+            self._vm_list_fetch()
+            self.ui(self._vm_lists_rerender)
+        self._run_bg("vm-list-reload", work)
+
+    def _vm_lists_rerender(self):
+        for fn in (self._refresh_osvote, self._cv_refresh):
+            try:
+                if fn == self._cv_refresh and not hasattr(self, "cv_rows"):
+                    continue
+                fn()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
+
+    def _vm_program_button(self, name):
+        prog = self._vm_program(name)
+        b = Button("VMware" if prog == "vmware" else "VirtualBox", lambda n=name: self._vm_program_dialog(n),
+                   "violet" if prog == "vmware" else "info", "sm", icon="vms")
+        b.setToolTip(f"Which program runs {name}. Click to change it.")
+        return b
+
+    def _vm_program_dialog(self, name=None):
+        progs = self._vm_programs()
+        entry = progs.get(name) if name and isinstance(progs.get(name), dict) else {}
+        prog = self._vm_program(name) if name else "vmware"
+        kinds = getattr(self, "_vm_kinds", None) or {}
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 4, 0, 0)
+        v.setSpacing(10)
+        seg = Segmented((("virtualbox", "VirtualBox"), ("vmware", "VMware")), prog)
+        v.addWidget(seg, 0, Qt.AlignmentFlag.AlignLeft)
+        vb_box = QWidget()
+        fv = FormGrid(label_w=120)
+        vb_names = sorted([n for n, k in kinds.items() if k == "virtualbox"] or list(available_vms or []), key=str.lower)
+        vb_cur = name if (name and prog == "virtualbox") else (vb_names[0] if vb_names else "")
+        vb_combo = Combo(vb_names or [vb_cur], vb_cur, editable=True, width=320)
+        fv.field("VM name", row_widget(vb_combo, "stretch"), hint="The VM's name in VirtualBox.")
+        vb_box.setLayout(fv)
+        vmw_box = QWidget()
+        fw = FormGrid(label_w=120)
+        vmx_cur = str(entry.get("vmx") or "") or (self._vm_paths().get(name, "") if name else "")
+        vmx_edit = LineEdit(vmx_cur, "C:\\Users\\you\\Documents\\Virtual Machines\\Win10\\Win10.vmx", mono=True, width=340)
+
+        def browse():
+            fp = filedialog.askopenfilename(title="Pick the VM's .vmx file", filetypes=[("VMware VM", "*.vmx")],
+                                            initialdir=os.path.dirname(vmx_edit.get().strip().strip('"')) or "")
+            if fp:
+                vmx_edit.set(fp)
+        fw.field(".vmx file", row_widget(vmx_edit, Button("Browse", browse, "neutral", "sm", icon="folder"), "stretch"))
+        pw_edit = LineEdit(str(entry.get("vnc_password") or ""), "empty = no password", mono=True, secret=True, width=200)
+        pw_edit.setMaxLength(8)
+        fw.field("VNC password", row_widget(pw_edit, "stretch"),
+                 hint="YT2VM talks to VMware over VNC. It turns VNC on in the .vmx for you when it starts the VM. Max 8 characters.")
+        vmw_box.setLayout(fw)
+        v.addWidget(vb_box)
+        v.addWidget(vmw_box)
+
+        holder = {}
+
+        def show(p):
+            vb_box.setVisible(p == "virtualbox")
+            vmw_box.setVisible(p == "vmware")
+            box.adjustSize()
+            d = holder.get("dlg")
+            if d is not None:
+                QTimer.singleShot(0, d.adjustSize)
+        seg.changed.connect(lambda p: show(str(p)))
+        show(prog)
+        title = f"Program for {name}" if name else "Add a VM"
+        dlg = ModernDialog(self.win, title, "Pick the program the VM runs in. YT2VM switches between VirtualBox and VMware "
+                           "by itself when chat changes the VM.", "ask",
+                           buttons=(("Cancel", False, "neutral"), ("Save", True, "primary")), width=700, extra=box)
+        holder["dlg"] = dlg
+        self._vm_prog_dlg = dlg
+        if not dlg.run():
+            return None
+        p = str(seg.get() or prog)
+        if p == "vmware":
+            path = vmx_edit.get().strip().strip('"')
+            if not path.lower().endswith(".vmx") or not os.path.isfile(path):
+                self.toast("Pick an existing .vmx file", "bad")
+                return None
+            new = os.path.splitext(os.path.basename(path))[0]
+            same = os.path.normcase(os.path.abspath(path))
+            for n, e in progs.items():
+                if n != name and isinstance(e, dict) and e.get("program") == "vmware" and \
+                        os.path.normcase(os.path.abspath(str(e.get("vmx") or ""))) == same:
+                    new = n
+            if kinds.get(new) == "virtualbox" and new != name and self._vm_programs().get(new, {}).get("program") != "vmware":
+                new = f"{new} (VMware)"
+            rec = {"program": "vmware", "vmx": path, "vnc_password": pw_edit.get()[:8]}
+        else:
+            new = vb_combo.get().strip()
+            if not new:
+                self.toast("Type the VM's VirtualBox name", "bad")
+                return None
+            rec = {"program": "virtualbox"}
+        self._vm_program_save(name, new, rec)
+        return new
+
+    def _vm_program_save(self, old, new, rec):
+        global vm_name
+        progs = self._vm_programs()
+        if old and old != new:
+            progs.pop(old, None)
+            if old in self.changevm_whitelist and new not in self.changevm_whitelist:
+                self.changevm_whitelist = [new if n == old else n for n in self.changevm_whitelist]
+                self.config["changevm_whitelist"] = list(self.changevm_whitelist)
+            if old in self.changevm_snapshots:
+                self.changevm_snapshots[new] = self.changevm_snapshots.pop(old)
+                self.config["changevm_snapshots"] = dict(self.changevm_snapshots)
+            al = dict(self.config.get("changevm_aliases", {}) or {})
+            if old in al:
+                al[new] = al.pop(old)
+                self.config["changevm_aliases"] = al
+        progs[new] = rec
+        cur = old == vm_name or new == vm_name
+        self.save_settings()
+        kinds = dict(getattr(self, "_vm_kinds", None) or {})
+        if old and old != new:
+            kinds.pop(old, None)
+        kinds[new] = rec["program"]
+        self._vm_kinds = kinds
+        ts, names = getattr(self, "_vm_cache", (0.0, []))
+        names = [n for n in names if n != old] + ([new] if new not in names else [])
+        self._vm_cache = (time.time(), sorted(names, key=str.lower))
+        what = "VMware" if rec["program"] == "vmware" else "VirtualBox"
+        if cur and rec["program"] != getattr(self, "backend", "virtualbox"):
+            if old == vm_name and old != new:
+                vm_name = new
+                self.config["vm_name"] = new
+            if rec["program"] == "vmware":
+                self.vmx_path = rec["vmx"]
+                self.config["vmx_path"] = rec["vmx"]
+                self.vnc_password = rec.get("vnc_password") or str(self.config.get("vnc_password", "") or "")
+            self._run_bg("backend-switch", lambda: self.switch_backend(rec["program"]))
+            self.toast(f"{new} now runs in {what} - YT2VM switched to {what}", "ok")
+        else:
+            if cur and rec["program"] == "vmware":
+                self.vmx_path = rec["vmx"]
+                self.config["vmx_path"] = rec["vmx"]
+                self.vnc_password = rec.get("vnc_password") or str(self.config.get("vnc_password", "") or "")
+                self.save_settings()
+            self.toast(f"{new} runs in {what}", "ok")
+        self.log("[system]", f"{new} is set to run in {what}.", "sysmsg")
+        self._vm_lists_rerender()
+        self._vm_lists_reload()
 
     def _osv_apply_snaps(self, res):
         for n, snaps in res.items():
@@ -14416,6 +14897,27 @@ class QtAppUI:
         s.add(L("Switch scene", "muted", ("ui", 9, "semi")))
         s.add(g)
         sc.add(s)
+        gd = Card("Scene guard", "After every scene switch YT2VM checks that OBS really moved to the new scene and switches again "
+                  "if it didn't. While the guard is on it keeps checking: if OBS ends up on one of the scenes above "
+                  "(for example stuck on Starting after the VM is up), it puts the right one back. Scenes you switch to "
+                  "yourself that aren't in the list above are left alone.")
+        self._obs_guard_tg = Toggle("Keep OBS on the right scene", bool(self.config.get("obs_scene_guard", True)))
+
+        def _guard():
+            on = bool(self._obs_guard_tg.get())
+            self.config["obs_scene_guard"] = on
+            obs_scene_guard(on)
+            self.save_settings()
+            self.toast("Scene guard " + ("on" if on else "off"), "ok" if on else "info")
+        self._obs_guard_tg.clicked.connect(lambda *_: _guard())
+        gd.add_action(self._obs_guard_tg)
+        self._obs_guard_lbl = L("", "muted", ("mono", 9.5), wrap=True)
+        gd.add(self._obs_guard_lbl)
+        sc.add(gd)
+        self._obs_guard_timer = QTimer(self.win)
+        self._obs_guard_timer.timeout.connect(self._obs_guard_refresh)
+        self._obs_guard_timer.start(1500)
+        self._obs_guard_refresh()
         r = Card("IronControl relay", "Remote control panel and LAN clients")
         r.add(row_widget(Button("Launch relay", self.launch_relay, "violet", "md", icon="globe"),
                          Button("Control panel", lambda: self._open_relay("/control"), "neutral", "md"),
@@ -14426,6 +14928,28 @@ class QtAppUI:
         f.add(row_widget(self.flash_entry, Button("Send", self.send_flash_ui, "primary", "md", icon="send")))
         sc.add(f)
         sc.add("stretch")
+
+    def _obs_guard_refresh(self):
+        lbl = getattr(self, "_obs_guard_lbl", None)
+        if lbl is None or (not lbl.isVisible() and lbl.text()):
+            return
+        st = obs_scene_guard()
+        if not obs_available:
+            txt = "obsws-python isn't installed - no scene switching (pip install obsws-python)"
+        elif not st["want"]:
+            txt = "no scene switched yet"
+        else:
+            ok = st["seq"] == st["done_seq"]
+            seen = f"OBS shows '{st['cur']}' ({int(time.time() - st['cur_t'])}s ago)" if st["cur_t"] else "OBS not checked yet"
+            txt = (f"should be '{st['want']}'  |  {seen}  |  " + ("confirmed" if ok else f"switching (try {st['tries']})")
+                   + (f"  |  fixed {st['fixes']} wrong scene(s)" if st["fixes"] else ""))
+            if st["gave_up"] == f"{st['seq']}:{st['want']}":
+                txt += "  |  gave up - check the scene name in OBS"
+        try:
+            if lbl.text() != txt:
+                lbl.setText(txt)
+        except RuntimeError:
+            pass
 
     def build_keys_tab(self):
         sc = self.make_scrollable(self.tab_keys)
@@ -15171,12 +15695,13 @@ class QtAppUI:
             import zipfile
             name = f"ai_export_{time.strftime('%Y%m%d_%H%M%S')}.zip"
             try:
-                with zipfile.ZipFile(name, "w", zipfile.ZIP_DEFLATED) as z:
+                with zipfile.ZipFile(name + ".part", "w", zipfile.ZIP_DEFLATED) as z:
                     for f in (AI_LOG_FILE, AI_LOG_FILE + ".1", AI_STATE_FILE):
                         if os.path.exists(f):
                             z.write(f)
                     if self.ai.mem is not None:
                         z.writestr("ai_learnings.json", json.dumps(self.ai.mem.export(), indent=1, ensure_ascii=False, default=str))
+                os.replace(name + ".part", name)
                 msg, kind = f"Saved {name} next to yt2vm.py", "ok"
             except Exception as e:
                 msg, kind = f"Export failed: {e}", "bad"
@@ -15571,7 +16096,8 @@ class QtAppUI:
         self.var_changevm_enabled = Toggle("Enable !changevm", bool(getattr(self, "changevm_enabled", True)),
                                            command=self._apply_changevm_enabled)
         c.add_action(self.var_changevm_enabled)
-        c.add_action(Button("Refresh VM list", self._cv_refresh, "neutral", "sm", icon="refresh"))
+        c.add_action(Button("Add VM", lambda: self._vm_program_dialog(None), "primary", "sm", icon="plus"))
+        c.add_action(Button("Refresh VM list", self._vm_lists_reload, "neutral", "sm", icon="refresh"))
         self.cv_rows = QWidget()
         rl = QVBoxLayout(self.cv_rows)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -15616,6 +16142,7 @@ class QtAppUI:
             cb = Combo([self.changevm_snapshots.get(name, "")] if self.changevm_snapshots.get(name) else [""],
                        self.changevm_snapshots.get(name, ""), width=240)
             hl.addWidget(cb)
+            hl.addWidget(self._vm_program_button(name))
             row.body.addLayout(hl)
             lay.addWidget(row)
             self.cv_vars[name] = tg
@@ -15624,19 +16151,9 @@ class QtAppUI:
         if not vms:
             lay.addWidget(EmptyState("vms", "No VMs found", "Add one in VirtualBox (or pick a .vmx on the VMS page) and press Refresh."))
         self.cv_hint.setText(f"{len(vms)} VM(s) found   /   whitelisted: {len(whitelist) if whitelist else 'current VM only'}")
-        path = self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd
         names = list(vms)
-
-        def work():
-            res = {}
-            for n in names:
-                try:
-                    res[n] = get_vbox_snapshots(path, n)
-                except Exception:
-                    res[n] = []
-            self.ui(self._cv_apply_snaps, res)
-        if names and getattr(self, "backend", "virtualbox") != "vmware":
-            self._run_bg("cv-snaps", work)
+        if names:
+            self._run_bg("cv-snaps", lambda: self.ui(self._cv_apply_snaps, self._snaps_for(names)))
 
     def _cv_apply_snaps(self, res):
         for n, snaps in res.items():
@@ -17547,7 +18064,7 @@ class ChatPlaysApp(QtAppUI):
             "vote_needed_revert": 2, "vote_needed_restart": 2, "vote_time": 60,
             "ui_text_size": 0, "music_queue_max": 8, "relay_port": 8080, "relay_host": "127.0.0.1", "overlay_scale": 1.4,
             "viewer_chain_max_wait": 10, "viewer_chain_max_steps": 12,
-            "ai_enabled": False, "ai": {}, "ai_profiles": {}
+            "ai_enabled": False, "ai": {}, "ai_profiles": {}, "obs_scene_guard": True, "vm_programs": {}
         }
         base = dict(default_config)
         if os.path.exists(settings_file):
@@ -17966,23 +18483,39 @@ class ChatPlaysApp(QtAppUI):
     def update_say_admin(self):
         self.say_admin_only = self.say_admin_var.get()
 
-    def switch_backend(self, name):
+    def switch_backend(self, name, quiet=False):
         global _rb
         name = "vmware" if str(name).lower() == "vmware" else "virtualbox"
         plog("BACKEND", f"switching backend -> {name}")
+        old = getattr(self, "backend", "virtualbox")
         self.backend = name
         self.config["backend"] = name
         _rb = name
         self.save_settings()
         self._teardown_com_session()
+        self._vmrun_cache = None
+        self._mouse_caps_c = None
+        self._vb_mpos = None
+        self._vb_screen_c = None
+        if old == "vmware" and name != "vmware" and getattr(self, "vmware", None) is not None:
+            try:
+                self.vmware.disconnect()
+            except Exception as _ex:
+                _trace(_ex_where(), _ex)
         dbg("backend", f"switched to {name}")
         self.log("[system]", f"backend is now {name.upper()}.", "sysmsg")
-        try:
-            if hasattr(self, "backend_lbl"):
-                self.backend_lbl.config(text=name.upper(), fg=("#8B5CF6" if name == "vmware" else "#10B981"))
-        except Exception as _ex:
-            _trace(_ex_where(), _ex)
-        if name == "vmware":
+
+        def _ui():
+            for attr in ("backend_lbl", "_cfg_backend_lbl"):
+                lab = getattr(self, attr, None)
+                if lab is None:
+                    continue
+                try:
+                    lab.config(text=name.upper(), fg=("violet" if name == "vmware" else "ok"))
+                except Exception as _ex:
+                    _trace(_ex_where(), _ex)
+        self.ui(_ui)
+        if name == "vmware" and not quiet:
             threading.Thread(target=lambda: self._vmware().connect(), daemon=True, name="vnc-connect-switch").start()
 
     def save_vbox_settings(self):
@@ -18111,16 +18644,37 @@ class ChatPlaysApp(QtAppUI):
         except ValueError: next_index = 0
         keyboard_layout = available_layouts[next_index]
 
+    def _vm_programs(self):
+        d = self.config.get("vm_programs")
+        if not isinstance(d, dict):
+            d = self.config["vm_programs"] = {}
+        return d
+
     def _vm_paths(self):
         out = {}
+        for n, e in self._vm_programs().items():
+            if isinstance(e, dict) and e.get("program") == "vmware" and e.get("vmx"):
+                out[n] = str(e["vmx"])
         try:
             vmxs = list(find_vmx_files())
         except Exception:
             vmxs = []
+        taken = {os.path.normcase(os.path.abspath(p)) for p in out.values()}
         for path in vmxs + [getattr(self, "vmx_path", "") or ""] + list(dict(self.config.get("changevm_vmx", {}) or {}).values()):
-            if path and os.path.isfile(path):
+            if path and os.path.isfile(path) and os.path.normcase(os.path.abspath(path)) not in taken:
                 out.setdefault(os.path.splitext(os.path.basename(path))[0], path)
         return out
+
+    def _vm_program(self, name):
+        e = self._vm_programs().get(name)
+        if isinstance(e, dict) and e.get("program") in ("vmware", "virtualbox"):
+            return e["program"]
+        kinds = getattr(self, "_vm_kinds", None) or {}
+        if name in kinds:
+            return kinds[name]
+        if name == vm_name:
+            return getattr(self, "backend", "virtualbox")
+        return "vmware" if name in self._vm_paths() else "virtualbox"
 
     def _vm_list(self, fresh=False):
         ts, names = getattr(self, "_vm_cache", (0.0, []))
@@ -18155,15 +18709,28 @@ class ChatPlaysApp(QtAppUI):
 
     def _vm_list_fetch(self):
         global available_vms
-        if getattr(self, "backend", "virtualbox") == "vmware":
-            names = sorted(self._vm_paths().keys(), key=str.lower)
-        else:
-            try:
-                names = get_all_vbox_vms(self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd, quiet=True)
-            except Exception:
-                names = []
-            if names:
-                available_vms = list(names)
+        kinds = {}
+        try:
+            vb = get_all_vbox_vms(self.config.get("vbox_path", vbox_manage_cmd) or vbox_manage_cmd, quiet=True) or []
+        except Exception:
+            vb = []
+        if vb:
+            available_vms = list(vb)
+        for n in vb:
+            kinds[n] = "virtualbox"
+        try:
+            paths = self._vm_paths()
+        except Exception:
+            paths = {}
+        for n in paths:
+            kinds.setdefault(n, "vmware")
+        for n, e in self._vm_programs().items():
+            if isinstance(e, dict) and e.get("program") in ("vmware", "virtualbox"):
+                kinds[n] = e["program"]
+        if vm_name and vm_name not in kinds and (vb or paths):
+            kinds[vm_name] = getattr(self, "backend", "virtualbox")
+        names = sorted(kinds, key=str.lower)
+        self._vm_kinds = kinds
         self._vm_cache = (time.time(), list(names))
         return list(names)
 
@@ -18188,10 +18755,19 @@ class ChatPlaysApp(QtAppUI):
     def _apply_switch(self, name, snapshot=""):
         global vm_name
         want = snapshot or self.changevm_snapshots.get(name, "")
-        if getattr(self, "backend", "virtualbox") == "vmware":
-            path = self._vm_paths().get(name)
-            if not path:
+        prog = self._vm_program(name)
+        entry = self._vm_programs().get(name) if isinstance(self._vm_programs().get(name), dict) else {}
+        if prog == "vmware":
+            path = str(entry.get("vmx") or "") or self._vm_paths().get(name)
+            if not path or not os.path.isfile(path):
+                self.log("[system]", f"[error] can't find the .vmx file for {name} - set it with the Program button on the OS Voting page.", "err")
                 return False
+        if prog != getattr(self, "backend", "virtualbox"):
+            self.switch_backend(prog, quiet=True)
+        self._vmrun_cache = None
+        if prog == "vmware":
+            pw = entry.get("vnc_password")
+            self.vnc_password = str(pw)[:8] if pw else str(self.config.get("vnc_password", "") or "")
             self.vmx_path = path
             self.config["vmx_path"] = path
             vm_name = name
@@ -20727,6 +21303,15 @@ class ChatPlaysApp(QtAppUI):
 
     def _do_vm_maintenance(self, action, arg, user):
         global _vlk
+        act = str(action or "").lower()
+        if act.startswith(self.command_prefix): act = act[len(self.command_prefix):]
+        act = act.lstrip("!")
+        if act == "changevm":
+            tgt, _sep, snap = (arg or "").partition("\x00")
+            pick = self._pick_switch(tgt or None)
+            if pick and pick != vm_name and self._vm_program(pick) != getattr(self, "backend", "virtualbox"):
+                return self._changevm_cross(pick, snap, user)
+            arg = (pick or vm_name or "") + "\x00" + (snap or "")
         if getattr(self, "backend", "virtualbox") == "vmware":
             return self._do_vm_maintenance_inner(action, arg, user)
         _vlk = False
@@ -20756,6 +21341,82 @@ class ChatPlaysApp(QtAppUI):
             self.log("[system]", f"retrying '{action}' after unlock...", "sysmsg")
             ok = self._do_vm_maintenance_inner(action, arg, user)
         return ok
+
+    def _changevm_cross(self, pick, snap, user):
+        old_be = getattr(self, "backend", "virtualbox")
+        new_be = self._vm_program(pick)
+        old_name = vm_name
+        self.vm_maintenance = True
+        self._maint_start_t = time.time()
+        with self.vote_lock:
+            self.active_votes.clear()
+        self.clear_commands()
+        ok = False
+        try:
+            set_obs_scene(obs_scene_changevm)
+            self.log("[system]", f"switching {old_name} ({old_be}) -> {pick} ({new_be})...", "sysmsg")
+            plog("VM", f"cross-program switch {old_name} [{old_be}] -> {pick} [{new_be}] by {user}")
+            if old_be == "vmware":
+                try:
+                    vm = self._vmware()
+                    if vm.is_running():
+                        vm.stop()
+                        if not self._vmware_wait_running(False, 40):
+                            vm.stop(hard=True)
+                            self._vmware_wait_running(False, 20)
+                    vm.disconnect()
+                except Exception as e:
+                    dbg("vm", "stopping the vmware vm failed", e)
+            else:
+                self._teardown_com_session()
+                try:
+                    if self._vm_is_running_blocking():
+                        run_vbox(["controlvm", old_name, "poweroff"], timeout=20)
+                        time.sleep(2)
+                except Exception as e:
+                    dbg("vm", "stopping the virtualbox vm failed", e)
+            if not self._apply_switch(pick, snap):
+                self.log("[system]", f"[error] couldn't switch to {pick}.", "err")
+                return False
+            self._vmrun_cache = None
+            self.ui(self._update_vm_label)
+            if new_be == "vmware":
+                vm = self._vmware()
+                if self.current_snapshot:
+                    vm.revert_snapshot(self.current_snapshot)
+                    time.sleep(2)
+                vm.start()
+                ok = self._vmware_wait_running(True, 90)
+                if ok:
+                    self._vmware_wait_ready()
+                    vm.connect()
+            else:
+                with self.maintenance_lock:
+                    if self.current_snapshot:
+                        for _ in range(3):
+                            r = run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
+                            if r is not None and r.returncode == 0:
+                                break
+                            self._kill_vbox_tasks()
+                            time.sleep(2)
+                    ok = self._start_vm_safely()
+            if ok:
+                self._os_last_switch = time.time()
+                self.consecutive_failures = 0
+                self.last_success_time = time.time()
+                set_obs_scene(obs_scene_main)
+                self.log("[system]", f"now running {pick} on {new_be}.", "sysmsg")
+            else:
+                set_obs_scene(obs_scene_error)
+                self.log("[system]", f"[error] {pick} didn't start on {new_be}.", "err")
+            return ok
+        except Exception as e:
+            console_log("ERROR", f"switching to {pick} failed: {e}")
+            log_crash("changevm cross-program", e)
+            set_obs_scene(obs_scene_error)
+            return False
+        finally:
+            self.vm_maintenance = False
 
     def _do_vm_maintenance_inner(self, action, arg, user):
         action = action.lower()
@@ -21415,47 +22076,206 @@ class ChatPlaysApp(QtAppUI):
             seq += [0x39, 0xB9]
         self._send_scancodes(seq)
 
-    def _mouse_event(self, dx, dy, dz, buttons):
+    def _mouse_api(self):
         with self.input_lock:
-            m = self.shared_mouse
-            if m is None: return
+            return self.shared_mouse, getattr(self, "com_mode", "")
+
+    @staticmethod
+    def _mouse_flag(m, mode, name):
+        try:
+            if mode == "wincom":
+                return bool(getattr(m, name))
+            if vbox_pkg == "virtualbox":
+                return bool(getattr(m, re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()))
+            return bool(getattr(m, name[0].lower() + name[1:]))
+        except Exception:
+            return None
+
+    def _mouse_caps(self, m, mode):
+        c = getattr(self, "_mouse_caps_c", None)
+        if c and c[0] is m and time.time() - c[1] < 5:
+            return c[2], c[3]
+        ab = self._mouse_flag(m, mode, "AbsoluteSupported")
+        rel = self._mouse_flag(m, mode, "RelativeSupported")
+        self._mouse_caps_c = (m, time.time(), ab, rel)
+        return ab, rel
+
+    def _vb_screen(self):
+        c = getattr(self, "_vb_screen_c", None)
+        if c and time.time() - c[0] < 10:
+            return c[1]
+        size = None
+        try:
+            sess = getattr(self, "shared_session", None)
+            mode = getattr(self, "com_mode", "")
+            if sess is not None:
+                if mode == "wincom":
+                    r = sess.Console.Display.GetScreenResolution(0)
+                elif vbox_pkg == "virtualbox":
+                    r = sess.console.display.get_screen_resolution(0)
+                else:
+                    r = sess.console.display.getScreenResolution(0)
+                w, h = int(r[0]), int(r[1])
+                if 100 <= w <= 16384 and 100 <= h <= 16384:
+                    size = (w, h)
+        except Exception:
+            size = None
+        if size is None:
+            size = c[1] if c else (1024, 768)
+        self._vb_screen_c = (time.time(), size)
+        return size
+
+    def _mouse_pos(self):
+        w, h = self._vb_screen()
+        pos = getattr(self, "_vb_mpos", None)
+        if pos is None:
+            pos = (w // 2, h // 2)
+        return max(0, min(w - 1, int(pos[0]))), max(0, min(h - 1, int(pos[1])))
+
+    def _mouse_reconnect(self):
+        now = time.time()
+        if now - getattr(self, "_mouse_reconnect_t", 0) < 10:
+            return False
+        self._mouse_reconnect_t = now
+        if getattr(self, "backend", "virtualbox") == "vmware":
+            return False
+        try:
+            if platform.system() == "Windows":
+                with self.input_lock:
+                    ok = self._wincom_connect()
+                if ok:
+                    plog("MOUSE", "mouse reconnected through VirtualBox's native COM interface")
+                    return True
+            self.force_session_refresh = True
+            return bool(self._ensure_com_session()) and self.shared_mouse is not None
+        except Exception as e:
+            dbg("mouse", "reconnect failed", e)
+            return False
+
+    def _mouse_unavailable(self, why):
+        if time.time() - getattr(self, "_mouse_warn_t", 0) < 60:
+            return
+        self._mouse_warn_t = time.time()
+        hint = ("install pywin32 (pip install pywin32) so YT2VM can use VirtualBox's own COM interface"
+                if platform.system() == "Windows" else "install the VirtualBox SDK python bindings (vboxapi)")
+        self.log("[system]", f"[warn] mouse commands can't reach the VM ({str(why)[:120]}). Keyboard still works - {hint}.", "err")
+        console_log("ERROR", f"mouse unavailable: {why}")
+
+    @staticmethod
+    def _mouse_binding_error(e):
+        _l = str(e).lower()
+        return ("subscriptable" in _l or "nonetype" in _l or "no attribute" in _l
+                or isinstance(e, (TypeError, AttributeError)))
+
+    def _mouse_send(self, absolute, a, b, dz, buttons):
+        for attempt in (0, 1):
+            m, mode = self._mouse_api()
+            if m is None:
+                if attempt == 0 and self._mouse_reconnect():
+                    continue
+                self._mouse_unavailable("no mouse connection to the VM" + (" (keyboard-only fallback is active)"
+                                                                          if getattr(self, "cli_input", False) else ""))
+                return False
             try:
-                if getattr(self, "com_mode", "") == "wincom":
-                    m.PutMouseEvent(int(dx), int(dy), int(dz), 0, int(buttons))
-                elif vbox_pkg == "virtualbox": m.put_mouse_event(dx, dy, dz, 0, buttons)
-                else: m.putMouseEvent(dx, dy, dz, 0, buttons)
+                with self.input_lock:
+                    if absolute:
+                        if mode == "wincom":
+                            m.PutMouseEventAbsolute(int(a), int(b), int(dz), 0, int(buttons))
+                        elif vbox_pkg == "virtualbox":
+                            m.put_mouse_event_absolute(int(a), int(b), int(dz), 0, int(buttons))
+                        else:
+                            m.putMouseEventAbsolute(int(a), int(b), int(dz), 0, int(buttons))
+                    else:
+                        if mode == "wincom":
+                            m.PutMouseEvent(int(a), int(b), int(dz), 0, int(buttons))
+                        elif vbox_pkg == "virtualbox":
+                            m.put_mouse_event(int(a), int(b), int(dz), 0, int(buttons))
+                        else:
+                            m.putMouseEvent(int(a), int(b), int(dz), 0, int(buttons))
+                self._mouse_ok_t = time.time()
+                return True
             except Exception as e:
+                if self._mouse_binding_error(e):
+                    if attempt == 0 and mode != "wincom" and self._mouse_reconnect():
+                        continue
+                    self._mouse_unavailable(f"{type(e).__name__}: {e}")
+                    return False
                 emsg = str(e)
-                _l = emsg.lower()
-                if ("subscriptable" in _l or "nonetype" in _l or "no attribute" in _l
-                        or isinstance(e, (TypeError, AttributeError))):
-                    if not getattr(self, "_mouse_warned", False):
-                        self._mouse_warned = True
-                        self.log("[system]", "[warn] mouse needs the VirtualBox API - run: pip install --upgrade virtualbox", "err")
-                    return
+                if attempt == 0 and ("mouse" in emsg.lower() or "0x80bb" in emsg.lower()) and absolute is False:
+                    self._mouse_caps_c = None
+                    raise _MouseNeedsAbsolute(emsg)
                 self._flag_com_error(emsg)
                 raise
+        return False
+
+    def _mouse_event(self, dx, dy, dz, buttons):
+        m, mode = self._mouse_api()
+        if m is None:
+            return self._mouse_send(False, dx, dy, dz, buttons)
+        ab, rel = self._mouse_caps(m, mode)
+        if ab:
+            x, y = self._mouse_pos()
+            w, h = self._vb_screen()
+            nx, ny = max(0, min(w - 1, x + int(dx))), max(0, min(h - 1, y + int(dy)))
+            self._vb_mpos = (nx, ny)
+            return self._mouse_send(True, nx + 1, ny + 1, dz, buttons)
+        try:
+            ok = self._mouse_send(False, dx, dy, dz, buttons)
+        except _MouseNeedsAbsolute:
+            x, y = self._mouse_pos()
+            w, h = self._vb_screen()
+            nx, ny = max(0, min(w - 1, x + int(dx))), max(0, min(h - 1, y + int(dy)))
+            self._vb_mpos = (nx, ny)
+            return self._mouse_send(True, nx + 1, ny + 1, dz, buttons)
+        if ok:
+            x, y = self._mouse_pos()
+            self._vb_mpos = (x + int(dx), y + int(dy))
+        return ok
 
     def _mouse_abs(self, x, y, buttons=0):
-        with self.input_lock:
-            m = self.shared_mouse
-            if m is None: return
+        w, h = self._vb_screen()
+        x, y = max(0, min(w - 1, int(x))), max(0, min(h - 1, int(y)))
+        m, mode = self._mouse_api()
+        ab, rel = self._mouse_caps(m, mode) if m is not None else (None, None)
+        if ab is False and rel:
             try:
-                if getattr(self, "com_mode", "") == "wincom":
-                    m.PutMouseEventAbsolute(int(x), int(y), 0, 0, int(buttons))
-                elif vbox_pkg == "virtualbox": m.put_mouse_event_absolute(x, y, 0, 0, buttons)
-                else: m.putMouseEventAbsolute(x, y, 0, 0, buttons)
-            except Exception as e:
-                emsg = str(e)
-                _l = emsg.lower()
-                if ("subscriptable" in _l or "nonetype" in _l or "no attribute" in _l
-                        or isinstance(e, (TypeError, AttributeError))):
-                    if not getattr(self, "_mouse_warned", False):
-                        self._mouse_warned = True
-                        self.log("[system]", "[warn] mouse needs the VirtualBox API - run: pip install --upgrade virtualbox", "err")
-                    return
-                self._flag_com_error(emsg)
-                raise
+                self._mouse_send(False, -w * 2, -h * 2, 0, 0)
+                ok = self._mouse_send(False, x, y, 0, buttons)
+            except _MouseNeedsAbsolute:
+                ok = self._mouse_send(True, x + 1, y + 1, 0, buttons)
+        else:
+            ok = self._mouse_send(True, x + 1, y + 1, 0, buttons)
+        if ok:
+            self._vb_mpos = (x, y)
+        return ok
+
+    def _mouse_click(self, buttons, count=1):
+        for i in range(max(1, min(int(count), 20))):
+            if not self._mouse_event(0, 0, 0, buttons):
+                return False
+            time.sleep(0.03)
+            self._mouse_event(0, 0, 0, 0)
+            if i + 1 < count:
+                try:
+                    md = float(self.config.get("mouse_delay", 0.005) or 0)
+                except Exception:
+                    md = 0.0
+                time.sleep(max(0.05, min(md, 2.0)))
+        return True
+
+    def _mouse_drag(self, dx, dy):
+        if not self._mouse_event(0, 0, 0, 1):
+            return False
+        time.sleep(0.05)
+        steps = 10
+        done_x = done_y = 0
+        for i in range(1, steps + 1):
+            tx, ty = dx * i // steps, dy * i // steps
+            self._mouse_event(tx - done_x, ty - done_y, 0, 1)
+            done_x, done_y = tx, ty
+            time.sleep(0.015)
+        self._mouse_event(0, 0, 0, 0)
+        return True
 
     def _vmware_exec(self, cmd, arg):
         vm = self._vmware()
@@ -21478,18 +22298,23 @@ class ChatPlaysApp(QtAppUI):
         elif base == "move":
             p = str(arg).split()
             if len(p) == 2:
-                d, amt = p[0].lower(), safe_int(p[1], 10, -5000, 5000)
-                dx = -amt if d == "left" else (amt if d == "right" else 0)
-                dy = -amt if d == "up" else (amt if d == "down" else 0)
-                vm.move_rel(dx, dy)
+                d, amt = p[0].lower(), safe_int(p[1], None, -5000, 5000)
+                if d in ("left", "right", "up", "down") and amt is not None:
+                    dx = -amt if d == "left" else (amt if d == "right" else 0)
+                    dy = -amt if d == "up" else (amt if d == "down" else 0)
+                    vm.move_rel(dx, dy)
+                elif d not in ("left", "right", "up", "down"):
+                    xy = parse_xy(arg, -5000, 5000)
+                    if xy:
+                        vm.move_rel(*xy)
         elif base == "abs":
-            p = str(arg).split()
-            if len(p) == 2: vm.move_abs(safe_int(p[0], 0, 0, 10000), safe_int(p[1], 0, 0, 10000))
+            xy = parse_xy(arg)
+            if xy: vm.move_abs(*xy)
         elif base == "scroll":
             vm.scroll(safe_int(arg, -1, -20, 20))
         elif base == "drag":
-            p = str(arg).split()
-            if len(p) == 2: vm.drag(safe_int(p[0], 0, -5000, 5000), safe_int(p[1], 0, -5000, 5000))
+            xy = parse_xy(arg, -5000, 5000)
+            if xy: vm.drag(*xy)
         elif base == "run" and len(arg) > self.RUN_BOX_MAX:
             plog("TYPE", f"!run is {len(arg)} chars - the Windows Run box stops at ~259, sending it through a cmd window instead")
             vm.key_combo("win+r"); time.sleep(0.7); vm.type_text("cmd"); vm.press_key("enter")
@@ -21589,7 +22414,6 @@ class ChatPlaysApp(QtAppUI):
                     return dflt
             key_delay = _delay("key_delay", 0.015) if not self.ultra_speed else 0
             type_delay = _delay("typing_speed", 0.015) if not self.ultra_speed else 0
-            mouse_delay = _delay("mouse_delay", 0.005) if not self.ultra_speed else 0
             base = cmd[1:] if cmd.startswith("!") else cmd
 
             if base in ("type", "send"):
@@ -21621,45 +22445,33 @@ class ChatPlaysApp(QtAppUI):
                 if key_delay: time.sleep(key_delay)
                 for s in reversed(seqs): self._release(s)
             elif base in ("click", "lclick"):
-                count = int(arg) if arg.strip().isdigit() else 1
-                for _ in range(max(1, min(count, 20))):
-                    self._mouse_event(0, 0, 0, 1); time.sleep(0.02); self._mouse_event(0, 0, 0, 0)
-                    if mouse_delay: time.sleep(mouse_delay)
+                self._mouse_click(1, safe_int(arg, 1, 1, 20))
             elif base == "rclick":
-                count = int(arg) if arg.strip().isdigit() else 1
-                for _ in range(max(1, min(count, 20))):
-                    self._mouse_event(0, 0, 0, 2); time.sleep(0.02); self._mouse_event(0, 0, 0, 0)
-                    if mouse_delay: time.sleep(mouse_delay)
+                self._mouse_click(2, safe_int(arg, 1, 1, 20))
             elif base == "mclick":
-                self._mouse_event(0, 0, 0, 4); time.sleep(0.02); self._mouse_event(0, 0, 0, 0)
+                self._mouse_click(4, 1)
             elif base == "move":
-                p = arg.split()
+                p = str(arg).split()
                 if len(p) == 2:
-                    d, amt = p[0].lower(), int(p[1])
-                    dx = dy = 0
-                    if d == "left": dx = -amt
-                    elif d == "right": dx = amt
-                    elif d == "up": dy = -amt
-                    elif d == "down": dy = amt
-                    self._mouse_event(dx, dy, 0, 0)
-                elif len(p) == 2:
-                    self._mouse_event(int(p[0]), int(p[1]), 0, 0)
+                    d = p[0].lower()
+                    amt = safe_int(p[1], None, -5000, 5000)
+                    if d in ("left", "right", "up", "down") and amt is not None:
+                        dx = -amt if d == "left" else (amt if d == "right" else 0)
+                        dy = -amt if d == "up" else (amt if d == "down" else 0)
+                        self._mouse_event(dx, dy, 0, 0)
+                    elif d not in ("left", "right", "up", "down"):
+                        xy = parse_xy(arg, -5000, 5000)
+                        if xy:
+                            self._mouse_event(xy[0], xy[1], 0, 0)
             elif base == "abs":
-                p = arg.split()
-                if len(p) == 2: self._mouse_abs(int(p[0]), int(p[1]), 0)
+                xy = parse_xy(arg)
+                if xy: self._mouse_abs(xy[0], xy[1], 0)
             elif base == "scroll":
-                try: amt = int(arg)
-                except Exception: amt = -1
-                self._mouse_event(0, 0, amt, 0)
+                self._mouse_event(0, 0, safe_int(arg, -1, -20, 20), 0)
             elif base == "drag":
-                p = arg.split()
-                if len(p) == 2:
-                    dx, dy = int(p[0]), int(p[1])
-                    self._mouse_event(0, 0, 0, 1); time.sleep(0.05)
-                    steps = 10
-                    for i in range(steps):
-                        self._mouse_event(dx // steps, dy // steps, 0, 1); time.sleep(0.01)
-                    self._mouse_event(0, 0, 0, 0)
+                xy = parse_xy(arg, -5000, 5000)
+                if xy:
+                    self._mouse_drag(xy[0], xy[1])
             elif base == "run" and len(arg) > self.RUN_BOX_MAX:
                 plog("TYPE", f"!run is {len(arg)} chars - the Windows Run box stops at ~259, sending it through a cmd window instead")
                 self.run_cmd_worker("cmd", arg, user)
@@ -21788,18 +22600,110 @@ class ChatPlaysApp(QtAppUI):
                 plog("EXEC", f"< {cmd} done in {_el*1000:.0f}ms" + ("  (SLOW)" if _el > 5 else ""))
                 dbg("exec", f"DONE  {cmd} in {_el*1000:.0f}ms")
                 self._exec_current = ""
+                self._exec_err_streak = 0
             except Exception as e:
-                dbg("exec", f"CRASH in {self._exec_current!r}", e)
-                log_crash(f"executor '{getattr(self,'_exec_current','?')}'", e)
-                console_log("ERROR", f"executor loop error: {e}")
-                self.force_session_refresh = True
+                try:
+                    self._exec_err_streak = getattr(self, "_exec_err_streak", 0) + 1
+                    key = f"{type(e).__name__}: {e}"
+                    cur = getattr(self, "_exec_current", "") or "(idle)"
+                    if key != getattr(self, "_exec_err_last", "") or self._exec_err_streak in (1, 10, 50) or self._exec_err_streak % 200 == 0:
+                        self._exec_err_last = key
+                        dbg("exec", f"CRASH in {cur!r}", e)
+                        log_crash(f"executor '{cur}' (error {self._exec_err_streak} in a row)", e)
+                        console_log("ERROR", f"executor loop error: {e}")
+                    self._exec_current = ""
+                    self.force_session_refresh = True
+                    if self._exec_err_streak >= 20:
+                        self._check_runtime_health(f"executor failed {self._exec_err_streak} times in a row ({key[:120]})",
+                                                   force=self._exec_err_streak >= 120)
+                except Exception as e2:
+                    try:
+                        console_log("ERROR", f"executor error handler failed: {e2}")
+                    except Exception:
+                        pass
                 time.sleep(0.5)
 
+    def _check_runtime_health(self, why, force=False):
+        now = time.time()
+        if now - getattr(self, "_health_checked_t", 0) < 5 and not force:
+            return
+        self._health_checked_t = now
+        sane = _runtime_sane()
+        report = _python_runtime_report()
+        if sane and not report and not force:
+            return
+        detail = report or ("Python itself is broken inside YT2VM (basic checks on None failed)" if not sane
+                            else "the same error keeps repeating and nothing works any more")
+        try:
+            write_log(CRASH_LOG, f"\n{'='*70}\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] RUNTIME BROKEN: {why}\n   {detail}\n"
+                                 f"   python {sys.version}\n   new dlls since start: {', '.join(getattr(self, '_dll_new', [])[-40:]) or '-'}\n{'='*70}\n")
+        except Exception:
+            pass
+        if getattr(self, "_health_relaunching", False):
+            return
+        if _relaunch_allowed():
+            self._health_relaunching = True
+            console_log("ERROR", f"{detail} - restarting YT2VM clean to recover.")
+            try:
+                self._quick_save_settings()
+            except Exception:
+                pass
+            self._relaunch_self(f"runtime broken: {why}")
+        elif not getattr(self, "_health_gave_up", False):
+            self._health_gave_up = True
+            console_log("ERROR", f"{detail}. YT2VM already restarted 3 times in 10 minutes for this, so it stops "
+                                 f"restarting. Close it and send crash_log.txt.")
+
+    def _quick_save_settings(self):
+        try:
+            self.save_settings()
+        except Exception:
+            pass
+
+    def _dll_watch(self):
+        if platform.system() != "Windows":
+            return
+        now = time.time()
+        if now - getattr(self, "_dll_watch_t", 0) < 30:
+            return
+        self._dll_watch_t = now
+        dlls = _loaded_dlls()
+        if not dlls:
+            return
+        cur = {os.path.normcase(d) for d in dlls}
+        known = getattr(self, "_dll_known", None)
+        if known is None:
+            self._dll_known = cur
+            self._dll_new = []
+            rep = _python_runtime_report(dlls)
+            if rep:
+                console_log("ERROR", rep)
+                write_log(CRASH_LOG, f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] AT START: {rep}\n")
+            return
+        new = sorted(cur - known)
+        if not new:
+            return
+        self._dll_known = cur
+        self._dll_new = (self._dll_new + [os.path.basename(d) for d in new])[-200:]
+        plog("DLL", "loaded: " + ", ".join(os.path.basename(d) for d in new), verbose=True)
+        rep = _python_runtime_report(dlls)
+        if rep and not getattr(self, "_dll_py_warned", False):
+            self._dll_py_warned = True
+            console_log("ERROR", rep)
+            write_log(CRASH_LOG, f"\n{'='*70}\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] {rep}\n   loaded in the last 30s: "
+                                 f"{', '.join(new)}\n{'='*70}\n")
+
     def error_watcher_loop(self):
+        crashes = 0
         while self.running:
             try:
                 time.sleep(5)
+                try:
+                    self._dll_watch()
+                except Exception as _ex:
+                    _trace(_ex_where(), _ex)
                 if getattr(self, 'vm_maintenance', False):
+                    crashes = 0
                     continue
                 now = time.time()
                 if now - getattr(self, 'executor_tick', now) > 60:
@@ -21824,8 +22728,14 @@ class ChatPlaysApp(QtAppUI):
                             console_log("SYSTEM", "24/7 mode: vm is down, auto-starting.")
                             self.trigger_command(("startvm", "", "[watchdog]"))
                             self.vm_start_time = now
+                crashes = 0
             except Exception as e:
+                crashes += 1
                 console_log("ERROR", f"error watcher crashed: {e}")
+                log_crash("error watcher", e)
+                if crashes >= 2:
+                    self._check_runtime_health(f"error watcher crashed {crashes} times in a row ({type(e).__name__}: {e})",
+                                               force=crashes >= 4)
                 time.sleep(5)
 
     def _relaunch_self(self, reason=""):

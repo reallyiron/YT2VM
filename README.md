@@ -39,6 +39,25 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.1.0
+
+## Encoding filter: no more false bans
+- A long code-looking token (letters and numbers mixed) only counts as encoded when it really decodes to text, a file or a program. Links, hashes, IDs, UUIDs, product keys, passwords, gamer tags and normal Python / PowerShell / CMD commands get through.
+- Escape sequences, char-code lists, binary and percent-encoding only count when they decode to readable text.
+- Tested with virtual viewers: 6,628 fake accounts sent normal messages through the real YouTube and Discord paths with 0 blocks, plus 50,000 more messages through the filter itself with 0 blocks. Before this, 115 of 628 normal messages were flagged.
+- Every benign encoded test message (base64, url-safe base64, UTF-16 base64, base32, hex, base85, ascii85, base58, base64 split with spaces, \x escapes, percent-encoding, char codes, binary, decoder calls, PNG and program headers) is still caught.
+
+## Strikes instead of instant bans
+- A blocked command is not run and the viewer gets a warning in chat (and on Discord).
+- Only the 3rd encoded command within 10 minutes blocks them from commands. You can pick 1st / 2nd / 3rd / 5th.
+- Blocks run out by themselves after 10 min, 1 hour (default) or 1 day, or last until a mod runs `!unblock <user>`.
+- The old permanent block list is converted to normal timed blocks.
+
+## Discord page
+- Block list with who, why, the exact message and the time left, plus **Unblock selected**.
+- Recently blocked commands.
+- **Test a message**: paste anything and see right away whether it would be blocked and why.
+
 # Release Notes — 2.0.0
 
 ## Stability

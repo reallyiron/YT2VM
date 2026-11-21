@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "2.1.0"
+version = "2.2.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -8211,7 +8211,7 @@ def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None):
     else:
         shown_user = name
     msg_obj = {"u": escape_html(shown_user), "m": escape_html(msg), "t": tag, "is_admin": is_mod, "is_owner": is_owner,
-               "src": label, "name": escape_html(name)}
+               "src": label, "name": escape_html(name), "ts": round(time.time(), 1)}
     with history_lock:
         global_msg_id += 1
         msg_obj["id"] = global_msg_id
@@ -8386,7 +8386,7 @@ if flask_available:
     def add_cors_headers(response):
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/clock"><div class="title">Stream Clock (/clock)</div><div class="desc">Local time, date and how long you have been live. ?h12=1 for AM/PM, ?seconds=0 to hide seconds.</div></a><a href="/ogchat"><div class="title">OG Classic Chat (/ogchat)</div><div class="desc">The original: red vote text, viewers and likes on top, chat below.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/pulse"><div class="title">Pulse Chat (/pulse)</div><div class="desc">YT2VM's own chat: avatars on a timeline rail, commands as chips, live vote bar and what is running now. Themes and options on the Overlays page.</div></a><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/clock"><div class="title">Stream Clock (/clock)</div><div class="desc">Local time, date and how long you have been live. ?h12=1 for AM/PM, ?seconds=0 to hide seconds.</div></a><a href="/ogchat"><div class="title">OG Classic Chat (/ogchat)</div><div class="desc">The original: red vote text, viewers and likes on top, chat below.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
     html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;box-sizing:border-box;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}.plat{font-weight:700}.plat.dc{color:#8C94FF;text-shadow:0 0 3px #5865F2}.plat.yt{color:#FF5C5C;text-shadow:0 0 3px #FF0000}""" + _OV_ICON_CSS + """</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else if(i.src){u=PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||u)+RI(i);}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;u+=RI(i);}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
     html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}.plat{font-weight:800}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}""" + _OV_ICON_CSS + """</style></head><body><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?(PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)+RI(i)):'@'+cleanU+RI(i);if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
@@ -8399,8 +8399,179 @@ if flask_available:
 
     html_ogchat = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>OG Chat</title><link rel="icon" href="/favicon.ico"><style>@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=Anton&family=Open+Sans:wght@500;600&display=swap');html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}body.clear{background:rgba(0,0,0,0)!important}body{display:flex;flex-direction:column;color:#fff;font-family:'Segoe UI','Open Sans',Arial,sans-serif}.top{flex:0 0 36%;position:relative;min-height:110px}#vote{position:absolute;top:4%;left:0;right:0;text-align:center;font-family:Impact,'Anton','Arial Narrow Bold',sans-serif;font-size:clamp(16px,5.6vw,40px);color:#ff0000;line-height:1.05;letter-spacing:.3px;text-shadow:0 0 2px #000,2px 2px 0 #000;padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#vote.on{animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}.stats{position:absolute;bottom:6%;left:0;right:0;display:flex;justify-content:space-around;align-items:center;padding:0 8%}.stat{display:flex;align-items:center;gap:7px;font-family:'Archivo Black','Arial Black',Arial,sans-serif;font-size:clamp(12px,3.6vw,22px);text-shadow:0 0 2px #000,1px 1px 0 #000}.stat img{height:1.25em;width:1.25em;filter:drop-shadow(0 0 1px #000)}.sep{flex:0 0 1px;background:rgba(189,189,189,.38);margin:0 0 4px}#chat{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;padding:0 8px 6px}.line{font-size:clamp(11px,3.15vw,17px);line-height:1.32;word-wrap:break-word;overflow-wrap:anywhere;animation:in .22s ease-out both;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000}@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}.at{font-family:'Segoe UI','Open Sans',Arial,sans-serif;font-weight:600}.nm{font-family:'Archivo Black','Arial Black',Arial,sans-serif;font-weight:900;letter-spacing:.2px}.nm.mod{color:#6f8ff5}.nm.own{color:#ffd23f}.nm.sys{color:#ff4040}.nm.con{color:#00e5ff}.col{font-family:'Archivo Black','Arial Black',Arial,sans-serif;margin:0 6px 0 2px}.msg{font-weight:600}.pi{height:1.15em;width:auto;vertical-align:-0.2em;margin-right:6px}.ri{height:0.95em;width:0.95em;vertical-align:-0.12em;margin-left:5px;filter:drop-shadow(0 0 1px #000)}</style></head><body><div class="top"><div id="vote">No active votes</div><div class="stats"><div class="stat"><img src="/icons/eye.svg" alt="viewers"><span id="viewers">0</span></div><div class="stat"><img src="/icons/likes.svg" alt="likes"><span id="likes">0</span></div></div></div><div class="sep"></div><div id="chat"></div><script>""" + _OV_SCALE_JS + """var Q=new URLSearchParams(location.search);if(Q.get('transparent')==='1'||Q.get('bg')==='clear')document.body.classList.add('clear');var SHOWSYS=Q.get('system')==='1';var MAX=parseInt(Q.get('max')||'40',10);function PI(i){if(!i||!i.src)return '';var k=i.src==='Discord'?'discord':'youtube';return '<img class="pi" src="/icons/'+k+'.svg" alt="'+i.src+'">';}function RI(i){if(!i)return '';if(i.is_owner)return '<img class="ri" src="/icons/owner.svg" alt="owner">';if(i.is_admin)return '<img class="ri" src="/icons/mod.svg" alt="mod">';return '';}var lastId=-1,busy=false,busy2=false;function row(i){var u=i.u||'';var m=i.m||'';var cls='nm',name;if(u==='[system]'||u==='system'){if(!SHOWSYS)return null;cls+=' sys';name='system';}else if(u==='[console]'){cls+=' con';name='console';}else if(u==='[announcement]'){cls+=' con';name='announcement';}else{name=(i.name||u).replace(/^@+/,'');if(i.is_owner)cls+=' own';else if(i.is_admin)cls+=' mod';}var d=document.createElement('div');d.className='line';d.innerHTML=PI(i)+'<span class="at">@</span><span class="'+cls+'">'+name+'</span>'+RI(i)+'<span class="col">:</span><span class="msg">'+m+'</span>';return d;}setInterval(function(){if(busy)return;busy=true;fetch('/history?t='+Date.now()).then(function(r){return r.json();}).then(function(data){try{if(!Array.isArray(data))return;var c=document.getElementById('chat');var f=document.createDocumentFragment(),n=0;data.forEach(function(i){if(i.id>lastId){lastId=i.id;try{var d=row(i);if(d){f.appendChild(d);n++;}}catch(e){}}});if(n){c.appendChild(f);while(c.children.length>MAX)c.removeChild(c.firstChild);}}finally{busy=false;}}).catch(function(){busy=false;});},1000);setInterval(function(){if(busy2)return;busy2=true;fetch('/status_update?t='+Date.now()).then(function(r){return r.json();}).then(function(d){try{var v=document.getElementById('vote');if(d.vote&&d.vote.active){v.textContent=(d.vote.text||'').replace('[vote] ','');v.classList.add('on');}else{v.textContent='No active votes';v.classList.remove('on');}document.getElementById('viewers').textContent=d.viewers||'0';document.getElementById('likes').textContent=d.likes||'0';document.getElementById('chat').style.visibility=(d.chat_visible===false)?'hidden':'visible';}finally{busy2=false;}}).catch(function(){busy2=false;});},1500);</script></body></html>"""
 
+    html_pulse = r"""<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Pulse Chat</title><link rel="icon" href="/favicon.ico">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+:root{--bg:rgba(13,15,22,.80);--bg2:rgba(255,255,255,.045);--line:rgba(255,255,255,.08);--txt:#e9ecf4;--dim:#8a91a6;--acc:#4de2c5;--acc2:#9b7bff;--warn:#ffb547;--bad:#ff5c7a;--rail:rgba(255,255,255,.10);--rad:14px;--font:'Sora','Segoe UI',system-ui,sans-serif;--mono:'JetBrains Mono',Consolas,monospace;--shadow:0 6px 22px rgba(0,0,0,.35)}
+body.t-glass{--bg:rgba(255,255,255,.10);--bg2:rgba(255,255,255,.08);--line:rgba(255,255,255,.18);--dim:#c3c8d6;--rail:rgba(255,255,255,.22)}
+body.t-paper{--bg:rgba(250,250,252,.94);--bg2:rgba(15,20,40,.05);--line:rgba(15,20,40,.10);--txt:#151a2b;--dim:#5b6278;--rail:rgba(15,20,40,.14);--shadow:0 6px 20px rgba(0,0,0,.18)}
+body.t-mono{--acc:#e9ecf4;--acc2:#e9ecf4}
+body.t-solid{--bg:#11131b;--bg2:#1a1d28}
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent!important}
+body{font-family:var(--font);color:var(--txt);-webkit-font-smoothing:antialiased}
+#app{position:absolute;inset:0;display:flex;flex-direction:column;padding:14px 16px 14px 14px;box-sizing:border-box;gap:10px}
+body.right #app{padding:14px 14px 14px 16px}
+#hud{display:flex;flex-direction:column;gap:8px;flex:0 0 auto}
+#hud:empty{display:none}
+.strip{display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 12px;box-shadow:var(--shadow);backdrop-filter:blur(10px);font-size:13px;overflow:hidden;animation:pop .35s cubic-bezier(.2,.9,.25,1.2) both}
+.strip .k{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:1.4px;color:var(--dim);text-transform:uppercase;flex:0 0 auto}
+.strip .v{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.strip .n{font-family:var(--mono);font-weight:700;color:var(--acc);flex:0 0 auto}
+.run .v{font-family:var(--mono);font-size:12.5px}
+.run .beat{width:8px;height:8px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 0 var(--acc);animation:beat 1.4s ease-out infinite;flex:0 0 auto}
+@keyframes beat{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--acc) 70%,transparent)}100%{box-shadow:0 0 0 9px transparent}}
+.vote{flex-direction:column;align-items:stretch;gap:7px}
+.vrow{display:flex;align-items:center;gap:10px}
+.vrow .vt{font-weight:800;font-size:13px;text-transform:uppercase;letter-spacing:.6px;flex:0 0 auto}
+.vrow .vc{font-family:var(--mono);font-weight:700;font-size:12px;color:var(--dim);margin-left:auto}
+.bar{position:relative;height:6px;border-radius:6px;background:var(--bg2);overflow:hidden}
+.bar i{position:absolute;inset:0 auto 0 0;border-radius:6px;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .5s ease}
+.bar b{position:absolute;inset:0 0 0 auto;background:repeating-linear-gradient(135deg,transparent 0 6px,rgba(255,255,255,.06) 6px 12px)}
+.stats{display:flex;gap:8px}
+.stats .strip{flex:1 1 0;justify-content:center}
+.stats svg{width:15px;height:15px;flex:0 0 auto}
+#feed{position:relative;flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
+#feed::before{content:"";position:absolute;top:0;bottom:6px;left:13px;width:2px;border-radius:2px;background:linear-gradient(to bottom,transparent,var(--rail) 18%,var(--rail))}
+body.right #feed::before{left:auto;right:13px}
+body.norail #feed::before{display:none}
+.msg{position:relative;display:flex;gap:12px;align-items:flex-start;margin-top:8px;animation:in .42s cubic-bezier(.2,.9,.25,1.15) both;transition:opacity .8s ease,transform .8s ease,max-height .5s ease,margin .5s ease}
+body.right .msg{flex-direction:row-reverse}
+.msg.cont{margin-top:3px}
+.msg.cont .node{visibility:hidden}
+.msg.cont .head{display:none}
+.msg.gone{opacity:0;transform:translateX(-14px)}
+body.right .msg.gone{transform:translateX(14px)}
+@keyframes in{from{opacity:0;transform:translateX(-22px) scale(.97)}to{opacity:1;transform:none}}
+body.right .msg{animation-name:inr}
+@keyframes inr{from{opacity:0;transform:translateX(22px) scale(.97)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+.node{flex:0 0 30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--uc);box-shadow:0 0 0 3px rgba(0,0,0,.35),0 0 14px color-mix(in srgb,var(--uc) 55%,transparent);font-weight:800;font-size:12px;color:#0b0d14;position:relative;z-index:1;letter-spacing:-.3px}
+.node .src{position:absolute;right:-7px;bottom:-6px;width:15px;height:15px;border-radius:50%;background:#0d0f16;display:grid;place-items:center;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
+.node .src svg{width:10px;height:10px}
+.role.own{}body.right .node .src{right:auto;left:-7px}body.t-paper .role.own{background:rgba(214,140,20,.16);color:#a76400}body.t-paper .role.mod{background:rgba(70,95,220,.13);color:#3346c9}body.noavatar .node{flex-basis:10px;height:10px;margin:9px 9px 0;font-size:0}
+body.noavatar .node .src{display:none}
+.card{min-width:0;flex:1 1 auto;max-width:100%;background:var(--bg);border:1px solid var(--line);border-radius:4px var(--rad) var(--rad) var(--rad);padding:7px 12px 8px;box-shadow:var(--shadow);backdrop-filter:blur(10px);position:relative;overflow:hidden}
+body.right .card{border-radius:var(--rad) 4px var(--rad) var(--rad)}
+.card::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--uc);opacity:.9}
+body.right .card::after{left:auto;right:0}
+body.fit .card{flex:0 1 auto}
+.head{display:flex;align-items:center;gap:7px;margin-bottom:2px;min-width:0}
+.nm{font-weight:700;font-size:14px;color:var(--uc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;filter:brightness(1.12)}
+body.t-paper .nm{filter:brightness(.78) saturate(1.3)}
+.role{font-family:var(--mono);font-size:9.5px;font-weight:700;letter-spacing:1px;padding:2px 6px 2px 5px;border-radius:5px;display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
+.role svg{width:10px;height:10px}
+.role.own{background:rgba(255,193,59,.16);color:#ffc13b}
+.role.mod{background:rgba(110,140,255,.17);color:#8fa6ff}
+.tm{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:0 0 auto}
+.txt{font-size:15px;line-height:1.42;font-weight:400;overflow-wrap:anywhere;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:var(--lines,5);overflow:hidden}
+.txt .at{color:var(--acc);font-weight:700}
+.cmds{display:flex;flex-wrap:wrap;align-items:center;gap:5px 4px;padding:2px 0 1px}
+.chip{display:inline-flex;align-items:baseline;max-width:100%;font-family:var(--mono);font-size:12.5px;border-radius:7px;background:var(--bg2);border:1px solid var(--line);padding:3px 8px;min-width:0}
+.chip .c{color:var(--acc);font-weight:700;flex:0 0 auto}
+.chip .a{color:var(--txt);opacity:.86;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.cw{display:inline-flex;align-items:center;gap:4px;max-width:100%;min-width:0}.arr{color:var(--dim);font-family:var(--mono);font-size:12px;padding:0 1px}
+.ev{display:flex;justify-content:center;margin-top:8px;animation:in .4s ease both;transition:opacity .8s ease}
+.ev span{font-family:var(--mono);font-size:11.5px;color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 12px;max-width:92%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;backdrop-filter:blur(8px)}
+.ev.err span{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.ev.gone{opacity:0}
+.ann{margin-top:10px;animation:pop .45s cubic-bezier(.2,.9,.25,1.2) both;transition:opacity .8s ease}
+.ann div{background:linear-gradient(120deg,color-mix(in srgb,var(--acc) 24%,var(--bg)),color-mix(in srgb,var(--acc2) 24%,var(--bg)));border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);border-radius:var(--rad);padding:9px 14px;font-weight:700;font-size:15px;box-shadow:var(--shadow);overflow-wrap:anywhere}
+.ann small{display:block;font-family:var(--mono);font-size:10px;letter-spacing:1.6px;color:var(--acc);margin-bottom:2px}
+.ann.gone{opacity:0}
+#feed.hide{visibility:hidden}
+</style></head><body><div id="app"><div id="hud"></div><div id="feed"></div></div>
+<script>""" + _OV_SCALE_JS + r"""var Q=new URLSearchParams(location.search);
+function qp(k,d){var v=Q.get(k);return v===null||v===''?d:v;}
+var THEME=qp('theme','midnight'),SIDE=qp('side','left'),MAX=Math.max(3,Math.min(80,parseInt(qp('max','24'),10)||24)),FADE=Math.max(0,parseFloat(qp('fade','0'))||0),
+SHOWSYS=qp('system','1')!=='0',CMDS=qp('commands','show'),SHOWTIME=qp('time','0')==='1',HUD=qp('hud','1')!=='0',STATS=qp('stats','0')==='1',
+LINES=Math.max(1,Math.min(12,parseInt(qp('lines','5'),10)||5)),GROUP=qp('group','1')!=='0',ACC=qp('accent',''),ACC2=qp('accent2','');
+document.body.classList.add('t-'+THEME);if(SIDE==='right')document.body.classList.add('right');
+if(qp('avatars','1')==='0')document.body.classList.add('noavatar');if(qp('rail','1')==='0')document.body.classList.add('norail');if(qp('fit','0')==='1')document.body.classList.add('fit');
+document.documentElement.style.setProperty('--lines',LINES);
+function hexok(h){return /^[0-9a-fA-F]{3,8}$/.test(h);}
+if(ACC&&hexok(ACC))document.documentElement.style.setProperty('--acc','#'+ACC);if(ACC2&&hexok(ACC2))document.documentElement.style.setProperty('--acc2','#'+ACC2);
+var feed=document.getElementById('feed'),hud=document.getElementById('hud');
+var ICON={yt:'<svg viewBox="0 0 24 24"><path fill="#ff2a2a" d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.6 12 4.6 12 4.6s-7 0-8.9.5A3 3 0 0 0 1 7.2 31 31 0 0 0 .5 12a31 31 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 8.9.5 8.9.5s7 0 8.9-.5a3 3 0 0 0 2.1-2.1 31 31 0 0 0 .5-4.8 31 31 0 0 0-.5-4.8z"/><path fill="#fff" d="m9.7 15.1 5.8-3.1-5.8-3.1z"/></svg>',
+dc:'<svg viewBox="0 0 24 24"><path fill="#6d7cff" d="M20.3 4.4A19.6 19.6 0 0 0 15.4 3l-.6 1.3a18 18 0 0 0-5.6 0L8.6 3a19.6 19.6 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18.1a19.8 19.8 0 0 0 6 3l1.3-2.1a12.8 12.8 0 0 1-2-1l.5-.4a14 14 0 0 0 12.2 0l.5.4-2 1 1.3 2.1a19.7 19.7 0 0 0 6-3c.5-5.2-.8-9.7-3.6-13.7zM8 15.4c-1.2 0-2.1-1.1-2.1-2.4S6.8 10.6 8 10.6s2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4zm8 0c-1.2 0-2.1-1.1-2.1-2.4s.9-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4z"/></svg>',
+crown:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 7l4.5 4L12 4l4.5 7L21 7l-2 11H5L3 7zm2 13h14v2H5v-2z"/></svg>',
+shield:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.6 8 11 4.6-1.4 8-6 8-11V5l-8-3zm-1.2 14.2-3.5-3.5 1.4-1.4 2.1 2.1 4.7-4.7 1.4 1.4-6.1 6.1z"/></svg>',
+eye:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 5C6.5 5 2.7 8.8 1 12c1.7 3.2 5.5 7 11 7s9.3-3.8 11-7c-1.7-3.2-5.5-7-11-7zm0 11.5A4.5 4.5 0 1 1 12 7.5a4.5 4.5 0 0 1 0 9zm0-7a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>',
+heart:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 3 4.5 6.7 4.5c2.1 0 3.6 1.1 4.6 2.6 1-1.5 2.6-2.6 4.6-2.6 3.7 0 5.8 3.9 4.3 7.3C19.5 16.4 12 21 12 21z"/></svg>'};
+function hue(s){var h=2166136261;for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}return Math.abs(h)%360;}
+function ucol(name){var h=hue(name.toLowerCase());if(h>=45&&h<=70)h+=40;return 'hsl('+h+',78%,'+(THEME==='paper'?'42%':'66%')+')';}
+function initials(n){var p=n.replace(/[^\p{L}\p{N} _.-]/gu,'').split(/[\s_.-]+/).filter(Boolean);if(!p.length)return n.slice(0,1).toUpperCase()||'?';if(p.length===1){var w=p[0];var caps=w.match(/\p{Lu}/gu);if(caps&&caps.length>1)return (caps[0]+caps[1]).toUpperCase();return w.slice(0,2).replace(/^./,function(c){return c.toUpperCase();});}return (p[0][0]+p[1][0]).toUpperCase();}
+function unesc(s){var t=document.createElement('textarea');t.innerHTML=s;return t.value;}
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+var PREFIX='!';
+function parseCmds(raw){var t=raw.trim();if(t.indexOf(PREFIX)!==0)return null;var parts=[];t.split(/\s*\|\s*/).forEach(function(seg){seg.split(new RegExp('\\s(?='+PREFIX.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[A-Za-z])')).forEach(function(s){s=s.trim();if(s)parts.push(s);});});var out=[];for(var i=0;i<parts.length;i++){var m=parts[i].match(/^(\S+)\s*([\s\S]*)$/);if(!m||m[1].indexOf(PREFIX)!==0)return null;out.push([m[1],m[2]]);}return out.length?out:null;}
+function fmtText(raw){var s=esc(raw);s=s.replace(/(^|\s)(@[\p{L}\p{N}_.-]{2,32})/gu,'$1<span class="at">$2</span>');return s;}
+var last=null,lastId=-1,nodes=[];
+function clean(name){return name.replace(/^\[replay\]\s*/,'').replace(/^@+/,'');}
+function srcIcon(src){if(src==='Discord')return ICON.dc;if(src==='YouTube'||!src)return ICON.yt;return '';}
+function add(i){var u=unesc(i.u||''),raw=unesc(i.m||''),now=Date.now();
+ if(u==='[announcement]'){var a=document.createElement('div');a.className='ann';a.innerHTML='<div><small>ANNOUNCEMENT</small>'+fmtText(raw)+'</div>';push(a,null);return;}
+ if(u.charAt(0)==='['||u==='system'){if(!SHOWSYS)return;var e=document.createElement('div');var low=raw.toLowerCase();e.className='ev'+(/\[error|\[fail|failed|crash/.test(low)?' err':'');var tx=raw.replace(/^\[[a-z]+\]\s*/i,'');e.innerHTML='<span>'+esc(u==='[console]'?'console: '+tx:tx)+'</span>';push(e,null);return;}
+ var name=clean(unesc(i.name||u)),key=name.toLowerCase(),cmds=parseCmds(raw);
+ if(cmds&&CMDS==='hide')return;if(!cmds&&CMDS==='only')return;
+ var col=ucol(name),grouped=GROUP&&last&&last.key===key&&now-last.t<25000&&last.el.isConnected&&!last.el.classList.contains('gone');
+ var m=document.createElement('div');m.className='msg'+(grouped?' cont':'');m.style.setProperty('--uc',col);
+ var role=i.is_owner?'<span class="role own">'+ICON.crown+'OWNER</span>':(i.is_admin?'<span class="role mod">'+ICON.shield+'MOD</span>':'');
+ var tm=SHOWTIME?'<span class="tm">'+new Date((i.ts||now/1000)*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'</span>':'';
+ var body;if(cmds){body='<div class="cmds">'+cmds.map(function(c,k){return '<span class="cw">'+(k?'<span class="arr">&rsaquo;</span>':'')+'<span class="chip"><span class="c">'+esc(c[0])+'</span>'+(c[1]?'<span class="a">'+esc(c[1])+'</span>':'')+'</span></span>';}).join('')+'</div>';}else{body='<div class="txt">'+fmtText(raw)+'</div>';}
+ m.innerHTML='<div class="node">'+esc(initials(name))+'<span class="src">'+srcIcon(i.src)+'</span></div><div class="card"><div class="head"><span class="nm">'+esc(name)+'</span>'+role+tm+'</div>'+body+'</div>';
+ push(m,{key:key,t:now});}
+function push(el,meta){feed.appendChild(el);if(meta)last={key:meta.key,t:meta.t,el:el};else last=null;el._t=Date.now();
+ var all=feed.children;while(all.length>MAX)feed.removeChild(all[0]);trim();}
+function trim(){var h=feed.clientHeight,tot=0,kids=feed.children;if(!h)return;for(var k=0;k<kids.length;k++){var cs=getComputedStyle(kids[k]);tot+=kids[k].offsetHeight+parseFloat(cs.marginTop||0);}
+ while(tot>h&&kids.length>1){var f=kids[0];tot-=f.offsetHeight+parseFloat(getComputedStyle(f).marginTop||0);feed.removeChild(f);}
+ var f0=feed.firstElementChild;if(f0&&f0.classList.contains('cont'))f0.classList.remove('cont');}
+function sweep(){trim();if(!FADE)return;var cut=Date.now()-FADE*1000;Array.prototype.slice.call(feed.children).forEach(function(el){if(el._t<cut&&!el.classList.contains('gone')){el.classList.add('gone');setTimeout(function(){if(el.parentNode)el.parentNode.removeChild(el);},900);}});}
+var hudState='';
+function renderHud(d){if(!HUD){hud.innerHTML='';return;}var html='';
+ var v=d.vote||{};if(v.active){var items=(v.items&&v.items.length)?v.items:null;
+  if(items){items.forEach(function(it){var p=Math.max(0,Math.min(100,it.need?100*it.have/it.need:0));html+='<div class="strip vote"><div class="vrow"><span class="k">VOTE</span><span class="vt">'+esc(it.type)+'</span><span class="vc">'+it.have+' / '+it.need+(it.left!=null?' &middot; '+it.left+'s':'')+'</span></div><div class="bar"><i style="width:'+p.toFixed(1)+'%"></i><b></b></div></div>';});}
+  else{html+='<div class="strip"><span class="k">VOTE</span><span class="v">'+esc(String(v.text||'').replace(/^\[vote\]\s*/i,''))+'</span></div>';}}
+ if(d.running){html+='<div class="strip run"><span class="beat"></span><span class="k">RUNNING</span><span class="v">'+esc(d.running)+'</span>'+(d.queue?'<span class="n">+'+d.queue+' queued</span>':'')+'</div>';}
+ if(STATS){html+='<div class="stats"><div class="strip">'+ICON.eye+'<span class="n">'+esc(d.viewers||'0')+'</span></div><div class="strip">'+ICON.heart+'<span class="n">'+esc(d.likes||'0')+'</span></div></div>';}
+ var sig=html.replace(/style="width:[^"]*"/g,'').replace(/\d+s</g,'s<').replace(/\d+ \/ \d+/g,'');
+ if(sig!==hudState){hudState=sig;hud.innerHTML=html;}else{var bars=hud.querySelectorAll('.vote');var tmp=document.createElement('div');tmp.innerHTML=html;var nb=tmp.querySelectorAll('.vote');for(var k=0;k<bars.length&&k<nb.length;k++){bars[k].querySelector('.vc').innerHTML=nb[k].querySelector('.vc').innerHTML;bars[k].querySelector('.bar i').style.width=nb[k].querySelector('.bar i').style.width;}}}
+var busy=false,first=true;
+function poll(){if(busy)return;busy=true;fetch('/pulse_feed?after='+lastId+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){try{
+ if(d.prefix)PREFIX=d.prefix;if(typeof d.last==='number'&&d.last<lastId){lastId=-1;}
+ var items=d.items||[];if(first&&items.length>MAX)items=items.slice(-MAX);first=false;
+ items.forEach(function(i){if(i.id>lastId){lastId=i.id;try{add(i);}catch(e){}}});
+ renderHud(d);feed.classList.toggle('hide',d.chat_visible===false);}finally{busy=false;}}).catch(function(){busy=false;});}
+poll();setInterval(poll,700);setInterval(sweep,1000);
+</script></body></html>"""
+
     @obs_web_overlay_app.route('/')
     def index_page(): return render_template_string(html_index)
+    @obs_web_overlay_app.route('/pulse')
+    def pulse_overlay():
+        from flask import Response
+        return Response(html_pulse, mimetype="text/html", headers={"Cache-Control": "no-cache"})
+    @obs_web_overlay_app.route('/pulse_feed')
+    def pulse_feed():
+        from flask import request
+        try:
+            after = int(request.args.get("after", "-1"))
+        except Exception:
+            after = -1
+        with history_lock:
+            items = [m for m in web_chat_history if m.get("id", 0) > after]
+            last = global_msg_id
+        app_ = globals().get("main_gui_application")
+        running, queued, prefix = "", 0, "!"
+        if app_ is not None:
+            try:
+                running = str(getattr(app_, "_exec_current", "") or "")[:120]
+                queued = int(app_.cmd_queue.qsize())
+                prefix = str(getattr(app_, "command_prefix", "!") or "!")
+            except Exception:
+                pass
+        return jsonify({"items": items[-60:], "last": last, "vote": current_vote_info, "viewers": current_viewers,
+                        "likes": current_likes, "chat_visible": overlay_chat_visible, "status": current_status,
+                        "running": running, "queue": queued, "prefix": prefix})
     @obs_web_overlay_app.route('/clock')
     def clock_overlay():
         from flask import Response
@@ -8471,7 +8642,7 @@ if flask_available:
     FLASH_BANNER_APP = """<style>#ytpFlash{position:fixed;left:50%;top:20px;transform:translateX(-50%) translateY(-160%);z-index:2147483646;font-family:'Segoe UI',system-ui,sans-serif;font-weight:700;font-size:15px;color:#fff;padding:11px 20px;border-radius:13px;background:rgba(15,15,22,.92);border:1px solid rgba(0,229,255,.45);box-shadow:0 12px 40px rgba(0,0,0,.5);opacity:0;transition:transform .4s cubic-bezier(.2,.9,.3,1.3),opacity .4s;max-width:80vw;text-align:center}#ytpFlash.show{transform:translateX(-50%) translateY(0);opacity:1}#ytpFlash.good{border-color:rgba(16,185,129,.6)}#ytpFlash.warn{border-color:rgba(245,158,11,.6)}#ytpFlash.err{border-color:rgba(239,68,68,.6)}</style><div id=ytpFlash></div><script>(function(){var el=document.getElementById('ytpFlash'),last=-1,h=null;function p(){fetch('/flash.json?_='+Date.now()).then(function(r){return r.json();}).then(function(d){if(d&&d.n!==last&&d.text){last=d.n;el.textContent=d.text;el.className=d.kind||'info';void el.offsetWidth;el.classList.add('show');if(h)clearTimeout(h);h=setTimeout(function(){el.classList.remove('show');},(d.dur||6)*1000);}else if(d){last=Math.max(last,d.n||0);}}).catch(function(){}).finally(function(){setTimeout(p,1000);});}p();})();</script>"""
     @obs_web_overlay_app.route('/flash.json')
     def get_flash_json(): return jsonify(app_flash)
-    for _tn in ("html_ogchat", "html_template", "html_template_2", "html_template_new", "html_template_oldnew", "html_debugchat", "html_stats", "html_ultradebug"):
+    for _tn in ("html_pulse", "html_ogchat", "html_template", "html_template_2", "html_template_new", "html_template_oldnew", "html_debugchat", "html_stats", "html_ultradebug"):
         _tv = globals().get(_tn)
         if isinstance(_tv, str) and "</body>" in _tv and "ytpFlash" not in _tv:
             globals()[_tn] = _tv.replace("</body>", FLASH_BANNER_APP + "</body>", 1)
@@ -11319,6 +11490,20 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.2.0", "date": "2026-11-21",
+     "added": [
+         "Pulse chat (/pulse): YT2VM's own chat overlay, designed from scratch. Every viewer gets their own colour and an avatar on a timeline rail, with a YouTube or Discord badge and an OWNER / MOD tag.",
+         "Pulse: commands show up as chips (!combo win+r > !send mspaint > !key enter) instead of raw text, and @mentions are highlighted.",
+         "Pulse: a bar on top shows live votes with a progress bar and time left, and the command that is running right now plus how many are queued.",
+         "Pulse: announcements get their own banner, system messages are slim pills (errors in red), and messages from the same viewer in a row are grouped.",
+         "Pulse chat card on the Overlays page: 5 looks (Midnight, Glass, Solid, Paper, Mono), 6 accent colours, avatars left or right, show / hide / only commands, fade out after 30 s to 2 min, max messages, and toggles for avatars, rail, system messages, vote bar, viewers and likes, time and grouping. Copy link builds the URL for OBS.",
+         "/pulse_feed: one request gives the overlay new messages, vote progress, viewers, likes and the running command.",
+     ],
+     "changed": [
+         "Chat history entries carry a timestamp, and vote info carries how many votes each vote has, how many it needs and the time left.",
+     ],
+     "fixed": [],
+     "removed": []},
     {"version": "2.1.0", "date": "2026-11-18",
      "added": [
          "Encoding filter strikes: a blocked command is not run and the viewer gets a warning. Only the 3rd encoded command within 10 minutes blocks them from commands (1st / 2nd / 3rd / 5th, on the Discord page).",
@@ -14190,10 +14375,12 @@ class QtAppUI:
                         plog("VOTE", f"vote {vtype} expired")
                 if self.active_votes:
                     parts = []
+                    vitems = []
                     for vtype, data in self.active_votes.items():
                         left = int(max(0, (data.get("expires") or (data.get("start_time", now) + vote_timeout)) - now))
                         parts.append(f"{vtype.lower()}: {len(data['voters'])}/{data['target']} ({left}s)")
-                    current_vote_info = {"active": True, "text": "[vote] " + " | ".join(parts)}
+                        vitems.append({"type": str(vtype).lower(), "have": len(data["voters"]), "need": data["target"], "left": left})
+                    current_vote_info = {"active": True, "text": "[vote] " + " | ".join(parts), "items": vitems}
                 else: current_vote_info = {"active": False, "text": "no active votes"}
             finally:
                 self.vote_lock.release()
@@ -15273,11 +15460,12 @@ class QtAppUI:
     def build_overlays_tab(self):
         sc = self.make_scrollable(self.tab_overlays)
         c = Card("OBS overlays", f"Local server on port {flask_port}. Add these as Browser Sources in OBS.")
-        overlays = [("OG Classic", "/ogchat"), ("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
+        overlays = [("Pulse", "/pulse"), ("OG Classic", "/ogchat"), ("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
                     ("Big Stats", "/obs2"), ("Live Stats", "/stats"), ("Clock", "/clock"), ("Ultra Debug", "/ultradebug"),
                     ("Debug Chat", "/debugchat"), ("Index", "/")]
         c.add(self._grid_buttons(None, [(lbl, "#8B5CF6", lambda p=path: self._open_local(p)) for lbl, path in overlays], cols=4))
         sc.add(c)
+        self._build_pulse_card(sc)
         k = Card("Overlay controls")
         k.add(self._grid_buttons(None, [
             ("Toggle chat visible", "#27272A", self.toggle_overlay_chat),
@@ -15297,6 +15485,87 @@ class QtAppUI:
         k.add(fg)
         sc.add(k)
         sc.add("stretch")
+
+    _PULSE_DEFAULTS = {"theme": "midnight", "side": "left", "commands": "show", "fade": "0", "max": 24, "accent": "",
+                       "avatars": True, "rail": True, "system": True, "hud": True, "stats": False, "time": False, "group": True}
+    _PULSE_ACCENTS = (("", "Teal"), ("9b7bff", "Violet"), ("ff5c7a", "Red"), ("ffc13b", "Gold"), ("4da3ff", "Blue"), ("6ee26a", "Green"))
+
+    def _pulse_opts(self):
+        o = dict(self._PULSE_DEFAULTS)
+        cur = self.config.get("pulse_opts")
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k in o:
+                    o[k] = v
+        return o
+
+    def _pulse_url(self):
+        o = self._pulse_opts()
+        d = self._PULSE_DEFAULTS
+        q = []
+        for k in ("theme", "side", "commands", "fade", "max", "accent"):
+            if str(o[k]) != str(d[k]):
+                q.append(f"{k}={o[k]}")
+        for k in ("avatars", "rail", "system", "hud", "stats", "time", "group"):
+            if bool(o[k]) != bool(d[k]):
+                q.append(f"{k}={1 if o[k] else 0}")
+        return f"http://localhost:{flask_port}/pulse" + ("?" + "&".join(q) if q else "")
+
+    def _pulse_set(self, key, value):
+        o = self._pulse_opts()
+        o[key] = value
+        self.config["pulse_opts"] = o
+        self.save_settings()
+        lbl = getattr(self, "_pulse_url_lbl", None)
+        if lbl is not None:
+            lbl.setText(self._pulse_url())
+
+    def _build_pulse_card(self, sc):
+        o = self._pulse_opts()
+        c = Card("Pulse chat", "YT2VM's own chat overlay. Every viewer gets a colour and an avatar on a timeline rail, commands show up as "
+                               "chips, and a bar on top shows live votes and the command that is running right now. Pick the look here, "
+                               "then copy the link into an OBS Browser Source (a tall source like 460 x 900 works well).")
+        c.add_action(Button("Open", lambda: self._open_url(self._pulse_url()), "neutral", "sm", icon="eye"))
+        c.add_action(Button("Copy link", lambda: self._copy(self._pulse_url()), "primary", "sm", icon="copy"))
+        fg = FormGrid(label_w=130)
+
+        def seg(key, opts, cast=str):
+            cur = o[key]
+            vals = [v for v, _ in opts]
+            if cur not in vals:
+                cur = vals[0]
+            w = Segmented(opts, cur)
+            w.changed.connect(lambda v: self._pulse_set(key, cast(v)))
+            return w
+        fg.field("Look", row_widget(seg("theme", (("midnight", "Midnight"), ("glass", "Glass"), ("solid", "Solid"), ("paper", "Paper"), ("mono", "Mono"))), "stretch"))
+        fg.field("Accent", row_widget(seg("accent", self._PULSE_ACCENTS), "stretch"))
+        fg.field("Side", row_widget(seg("side", (("left", "Avatars left"), ("right", "Avatars right"))), "stretch"))
+        fg.field("Commands", row_widget(seg("commands", (("show", "Show as chips"), ("hide", "Hide"), ("only", "Only commands"))), "stretch"))
+        fg.field("Fade out after", row_widget(seg("fade", (("0", "Never"), ("30", "30 s"), ("60", "1 min"), ("120", "2 min"))), "stretch"))
+        try:
+            mx = int(o["max"])
+        except Exception:
+            mx = 24
+        fg.field("Max messages", row_widget(self._spin(max(3, min(80, mx)), 3, 80, lambda v: self._pulse_set("max", int(v))), "stretch"))
+
+        def tg(key, text):
+            t = Toggle(text, bool(o[key]))
+            t.clicked.connect(lambda *_: self._pulse_set(key, bool(t.get())))
+            return t
+        fg.field("Show", row_widget(tg("avatars", "Avatars"), 6, tg("rail", "Timeline rail"), 6, tg("system", "System messages"), "stretch"))
+        fg.field("", row_widget(tg("hud", "Vote + running bar"), 6, tg("stats", "Viewers and likes"), 6, tg("time", "Time"), 6,
+                                tg("group", "Group messages"), "stretch"))
+        c.add(fg)
+        self._pulse_url_lbl = L(self._pulse_url(), "accent", ("mono", 10), sel=True, wrap=True)
+        c.add(self._pulse_url_lbl)
+        sc.add(c)
+
+    def _open_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception as _ex:
+            _trace(_ex_where(), _ex)
 
     def _copy(self, text):
         try:

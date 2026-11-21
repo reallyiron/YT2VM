@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "2.2.0"
+version = "2.3.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -8404,7 +8404,7 @@ if flask_available:
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
 :root{--bg:rgba(13,15,22,.80);--bg2:rgba(255,255,255,.045);--line:rgba(255,255,255,.08);--txt:#e9ecf4;--dim:#8a91a6;--acc:#4de2c5;--acc2:#9b7bff;--warn:#ffb547;--bad:#ff5c7a;--rail:rgba(255,255,255,.10);--rad:14px;--font:'Sora','Segoe UI',system-ui,sans-serif;--mono:'JetBrains Mono',Consolas,monospace;--shadow:0 6px 22px rgba(0,0,0,.35)}
 body.t-glass{--bg:rgba(255,255,255,.10);--bg2:rgba(255,255,255,.08);--line:rgba(255,255,255,.18);--dim:#c3c8d6;--rail:rgba(255,255,255,.22)}
-body.t-paper{--bg:rgba(250,250,252,.94);--bg2:rgba(15,20,40,.05);--line:rgba(15,20,40,.10);--txt:#151a2b;--dim:#5b6278;--rail:rgba(15,20,40,.14);--shadow:0 6px 20px rgba(0,0,0,.18)}
+body.t-paper{--acc:#0c8f78;--acc2:#6b4dff;--bg:rgba(250,250,252,.94);--bg2:rgba(15,20,40,.05);--line:rgba(15,20,40,.10);--txt:#151a2b;--dim:#5b6278;--rail:rgba(15,20,40,.14);--shadow:0 6px 20px rgba(0,0,0,.18)}
 body.t-mono{--acc:#e9ecf4;--acc2:#e9ecf4}
 body.t-solid{--bg:#11131b;--bg2:#1a1d28}
 html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:transparent!important}
@@ -8431,13 +8431,13 @@ body.right #app{padding:14px 14px 14px 16px}
 .stats .strip{flex:1 1 0;justify-content:center}
 .stats svg{width:15px;height:15px;flex:0 0 auto}
 #feed{position:relative;flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
-#feed::before{content:"";position:absolute;top:0;bottom:6px;left:13px;width:2px;border-radius:2px;background:linear-gradient(to bottom,transparent,var(--rail) 18%,var(--rail))}
-body.right #feed::before{left:auto;right:13px}
+#feed::before{content:"";position:absolute;top:0;bottom:6px;left:16px;width:2px;border-radius:2px;background:linear-gradient(to bottom,transparent,var(--rail) 18%,var(--rail))}
+body.right #feed::before{left:auto;right:16px}
 body.norail #feed::before{display:none}
 .msg{position:relative;display:flex;gap:12px;align-items:flex-start;margin-top:8px;animation:in .42s cubic-bezier(.2,.9,.25,1.15) both;transition:opacity .8s ease,transform .8s ease,max-height .5s ease,margin .5s ease}
 body.right .msg{flex-direction:row-reverse}
 .msg.cont{margin-top:3px}
-.msg.cont .node{visibility:hidden}
+.msg.cont .av{visibility:hidden;height:0;overflow:hidden}.msg:not(.cont) .card{min-height:74px;box-sizing:border-box}body.noavatar .msg .card{min-height:0}
 .msg.cont .head{display:none}
 .msg.gone{opacity:0;transform:translateX(-14px)}
 body.right .msg.gone{transform:translateX(14px)}
@@ -8445,11 +8445,11 @@ body.right .msg.gone{transform:translateX(14px)}
 body.right .msg{animation-name:inr}
 @keyframes inr{from{opacity:0;transform:translateX(22px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes pop{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
-.node{flex:0 0 30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--uc);box-shadow:0 0 0 3px rgba(0,0,0,.35),0 0 14px color-mix(in srgb,var(--uc) 55%,transparent);font-weight:800;font-size:12px;color:#0b0d14;position:relative;z-index:1;letter-spacing:-.3px}
-.node .src{position:absolute;right:-7px;bottom:-6px;width:15px;height:15px;border-radius:50%;background:#0d0f16;display:grid;place-items:center;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
-.node .src svg{width:10px;height:10px}
-.role.own{}body.right .node .src{right:auto;left:-7px}body.t-paper .role.own{background:rgba(214,140,20,.16);color:#a76400}body.t-paper .role.mod{background:rgba(70,95,220,.13);color:#3346c9}body.noavatar .node{flex-basis:10px;height:10px;margin:9px 9px 0;font-size:0}
-body.noavatar .node .src{display:none}
+.av{flex:0 0 34px;display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;z-index:1}.node{flex:0 0 34px;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--uc);box-shadow:0 0 0 3px rgba(0,0,0,.35),0 0 14px color-mix(in srgb,var(--uc) 55%,transparent);font-weight:800;font-size:13px;color:#0b0d14;position:relative;z-index:1;letter-spacing:-.3px}.plat{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(10,12,18,.92);box-shadow:0 0 0 3px rgba(0,0,0,.35)}.plat svg{width:22px;height:22px}.plat.dc{background:#5865f2}.plat.dc svg path{fill:#fff}.plat.yt{background:#fff}body.t-paper .plat{box-shadow:0 0 0 3px rgba(15,20,40,.12)}
+
+
+.role.own{}body.t-paper .role.own{background:rgba(214,140,20,.16);color:#a76400}body.t-paper .role.mod{background:rgba(70,95,220,.13);color:#3346c9}body.noavatar .av{flex-basis:12px;gap:0}body.noavatar .node{flex-basis:12px;width:12px;height:12px;margin:10px 0 0;font-size:0}body.noavatar .plat{display:none}
+
 .card{min-width:0;flex:1 1 auto;max-width:100%;background:var(--bg);border:1px solid var(--line);border-radius:4px var(--rad) var(--rad) var(--rad);padding:7px 12px 8px;box-shadow:var(--shadow);backdrop-filter:blur(10px);position:relative;overflow:hidden}
 body.right .card{border-radius:var(--rad) 4px var(--rad) var(--rad)}
 .card::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--uc);opacity:.9}
@@ -8482,14 +8482,14 @@ body.t-paper .nm{filter:brightness(.78) saturate(1.3)}
 </style></head><body><div id="app"><div id="hud"></div><div id="feed"></div></div>
 <script>""" + _OV_SCALE_JS + r"""var Q=new URLSearchParams(location.search);
 function qp(k,d){var v=Q.get(k);return v===null||v===''?d:v;}
-var THEME=qp('theme','midnight'),SIDE=qp('side','left'),MAX=Math.max(3,Math.min(80,parseInt(qp('max','24'),10)||24)),FADE=Math.max(0,parseFloat(qp('fade','0'))||0),
+var THEMES=['glass','midnight','solid','paper','mono'],THEME=qp('theme','glass');THEMES.forEach(function(t){if(Q.has(t))THEME=t;});if(THEMES.indexOf(THEME)<0)THEME='glass';var SIDE=Q.has('right')?'right':(Q.has('left')?'left':qp('side','left')),MAX=Math.max(3,Math.min(80,parseInt(qp('max','24'),10)||24)),FADE=Math.max(0,parseFloat(qp('fade','0'))||0),
 SHOWSYS=qp('system','1')!=='0',CMDS=qp('commands','show'),SHOWTIME=qp('time','0')==='1',HUD=qp('hud','1')!=='0',STATS=qp('stats','0')==='1',
 LINES=Math.max(1,Math.min(12,parseInt(qp('lines','5'),10)||5)),GROUP=qp('group','1')!=='0',ACC=qp('accent',''),ACC2=qp('accent2','');
 document.body.classList.add('t-'+THEME);if(SIDE==='right')document.body.classList.add('right');
 if(qp('avatars','1')==='0')document.body.classList.add('noavatar');if(qp('rail','1')==='0')document.body.classList.add('norail');if(qp('fit','0')==='1')document.body.classList.add('fit');
 document.documentElement.style.setProperty('--lines',LINES);
 function hexok(h){return /^[0-9a-fA-F]{3,8}$/.test(h);}
-if(ACC&&hexok(ACC))document.documentElement.style.setProperty('--acc','#'+ACC);if(ACC2&&hexok(ACC2))document.documentElement.style.setProperty('--acc2','#'+ACC2);
+if(ACC&&hexok(ACC))document.body.style.setProperty('--acc','#'+ACC);if(ACC2&&hexok(ACC2))document.body.style.setProperty('--acc2','#'+ACC2);
 var feed=document.getElementById('feed'),hud=document.getElementById('hud');
 var ICON={yt:'<svg viewBox="0 0 24 24"><path fill="#ff2a2a" d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.6 12 4.6 12 4.6s-7 0-8.9.5A3 3 0 0 0 1 7.2 31 31 0 0 0 .5 12a31 31 0 0 0 .5 4.8 3 3 0 0 0 2.1 2.1c1.9.5 8.9.5 8.9.5s7 0 8.9-.5a3 3 0 0 0 2.1-2.1 31 31 0 0 0 .5-4.8 31 31 0 0 0-.5-4.8z"/><path fill="#fff" d="m9.7 15.1 5.8-3.1-5.8-3.1z"/></svg>',
 dc:'<svg viewBox="0 0 24 24"><path fill="#6d7cff" d="M20.3 4.4A19.6 19.6 0 0 0 15.4 3l-.6 1.3a18 18 0 0 0-5.6 0L8.6 3a19.6 19.6 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18.1a19.8 19.8 0 0 0 6 3l1.3-2.1a12.8 12.8 0 0 1-2-1l.5-.4a14 14 0 0 0 12.2 0l.5.4-2 1 1.3 2.1a19.7 19.7 0 0 0 6-3c.5-5.2-.8-9.7-3.6-13.7zM8 15.4c-1.2 0-2.1-1.1-2.1-2.4S6.8 10.6 8 10.6s2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4zm8 0c-1.2 0-2.1-1.1-2.1-2.4s.9-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4z"/></svg>',
@@ -8518,7 +8518,7 @@ function add(i){var u=unesc(i.u||''),raw=unesc(i.m||''),now=Date.now();
  var role=i.is_owner?'<span class="role own">'+ICON.crown+'OWNER</span>':(i.is_admin?'<span class="role mod">'+ICON.shield+'MOD</span>':'');
  var tm=SHOWTIME?'<span class="tm">'+new Date((i.ts||now/1000)*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'</span>':'';
  var body;if(cmds){body='<div class="cmds">'+cmds.map(function(c,k){return '<span class="cw">'+(k?'<span class="arr">&rsaquo;</span>':'')+'<span class="chip"><span class="c">'+esc(c[0])+'</span>'+(c[1]?'<span class="a">'+esc(c[1])+'</span>':'')+'</span></span>';}).join('')+'</div>';}else{body='<div class="txt">'+fmtText(raw)+'</div>';}
- m.innerHTML='<div class="node">'+esc(initials(name))+'<span class="src">'+srcIcon(i.src)+'</span></div><div class="card"><div class="head"><span class="nm">'+esc(name)+'</span>'+role+tm+'</div>'+body+'</div>';
+ m.innerHTML='<div class="av"><div class="node">'+esc(initials(name))+'</div><div class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+srcIcon(i.src)+'</div></div><div class="card"><div class="head"><span class="nm">'+esc(name)+'</span>'+role+tm+'</div>'+body+'</div>';
  push(m,{key:key,t:now});}
 function push(el,meta){feed.appendChild(el);if(meta)last={key:meta.key,t:meta.t,el:el};else last=null;el._t=Date.now();
  var all=feed.children;while(all.length>MAX)feed.removeChild(all[0]);trim();}
@@ -11490,6 +11490,17 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.3.0", "date": "2026-11-21",
+     "added": [
+         "Pulse: short links pick the look - /pulse is Glass, /pulse?paper, /pulse?midnight, /pulse?solid, /pulse?mono, and ?right / &right puts the avatars on the right.",
+     ],
+     "changed": [
+         "Pulse: Glass is the default look.",
+         "Pulse: the YouTube / Discord icon sits under the avatar at the same size as the avatar instead of a tiny corner badge.",
+         "Pulse: avatars are a bit bigger.",
+     ],
+     "fixed": [],
+     "removed": []},
     {"version": "2.2.0", "date": "2026-11-21",
      "added": [
          "Pulse chat (/pulse): YT2VM's own chat overlay, designed from scratch. Every viewer gets their own colour and an avatar on a timeline rail, with a YouTube or Discord badge and an OWNER / MOD tag.",
@@ -15486,7 +15497,7 @@ class QtAppUI:
         sc.add(k)
         sc.add("stretch")
 
-    _PULSE_DEFAULTS = {"theme": "midnight", "side": "left", "commands": "show", "fade": "0", "max": 24, "accent": "",
+    _PULSE_DEFAULTS = {"theme": "glass", "side": "left", "commands": "show", "fade": "0", "max": 24, "accent": "",
                        "avatars": True, "rail": True, "system": True, "hud": True, "stats": False, "time": False, "group": True}
     _PULSE_ACCENTS = (("", "Teal"), ("9b7bff", "Violet"), ("ff5c7a", "Red"), ("ffc13b", "Gold"), ("4da3ff", "Blue"), ("6ee26a", "Green"))
 
@@ -15503,7 +15514,11 @@ class QtAppUI:
         o = self._pulse_opts()
         d = self._PULSE_DEFAULTS
         q = []
-        for k in ("theme", "side", "commands", "fade", "max", "accent"):
+        if str(o["theme"]) != d["theme"]:
+            q.append(str(o["theme"]))
+        if str(o["side"]) == "right":
+            q.append("right")
+        for k in ("commands", "fade", "max", "accent"):
             if str(o[k]) != str(d[k]):
                 q.append(f"{k}={o[k]}")
         for k in ("avatars", "rail", "system", "hud", "stats", "time", "group"):
@@ -15524,7 +15539,8 @@ class QtAppUI:
         o = self._pulse_opts()
         c = Card("Pulse chat", "YT2VM's own chat overlay. Every viewer gets a colour and an avatar on a timeline rail, commands show up as "
                                "chips, and a bar on top shows live votes and the command that is running right now. Pick the look here, "
-                               "then copy the link into an OBS Browser Source (a tall source like 460 x 900 works well).")
+                               "then copy the link into an OBS Browser Source (a tall source like 460 x 900 works well). Short links work too: "
+                               "/pulse is Glass, /pulse?paper, /pulse?midnight, /pulse?solid, /pulse?mono, and add &right for avatars on the right.")
         c.add_action(Button("Open", lambda: self._open_url(self._pulse_url()), "neutral", "sm", icon="eye"))
         c.add_action(Button("Copy link", lambda: self._copy(self._pulse_url()), "primary", "sm", icon="copy"))
         fg = FormGrid(label_w=130)
@@ -15537,7 +15553,7 @@ class QtAppUI:
             w = Segmented(opts, cur)
             w.changed.connect(lambda v: self._pulse_set(key, cast(v)))
             return w
-        fg.field("Look", row_widget(seg("theme", (("midnight", "Midnight"), ("glass", "Glass"), ("solid", "Solid"), ("paper", "Paper"), ("mono", "Mono"))), "stretch"))
+        fg.field("Look", row_widget(seg("theme", (("glass", "Glass"), ("midnight", "Midnight"), ("solid", "Solid"), ("paper", "Paper"), ("mono", "Mono"))), "stretch"))
         fg.field("Accent", row_widget(seg("accent", self._PULSE_ACCENTS), "stretch"))
         fg.field("Side", row_widget(seg("side", (("left", "Avatars left"), ("right", "Avatars right"))), "stretch"))
         fg.field("Commands", row_widget(seg("commands", (("show", "Show as chips"), ("hide", "Hide"), ("only", "Only commands"))), "stretch"))

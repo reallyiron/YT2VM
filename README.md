@@ -39,6 +39,12 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.3.0
+
+## Pulse chat
+- Pick the look with a short link: `/pulse` is Glass (the new default), `/pulse?paper`, `/pulse?midnight`, `/pulse?solid`, `/pulse?mono`. Add `&right` (or `?right`) for avatars on the right, e.g. `/pulse?paper&right`.
+- The YouTube / Discord icon now sits under each viewer's avatar at the same size as the avatar.
+
 # Release Notes — 2.2.0
 
 ## Pulse chat (/pulse)

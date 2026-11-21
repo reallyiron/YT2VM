@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "2.4.0"
+version = "2.5.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -8246,6 +8246,28 @@ def remember_avatar(src, name, url):
         return _AVATARS.get(key, "")
 
 
+vm_status = {"n": 0, "text": "", "kind": "", "sub": "", "act": "", "t0": 0.0, "t": 0.0}
+_vm_status_lock = threading.Lock()
+
+
+def set_vm_status(text, kind, sub="", act=""):
+    now = time.time()
+    with _vm_status_lock:
+        if kind == "busy" or vm_status.get("kind") != "busy" or vm_status.get("act") != act:
+            vm_status["t0"] = now
+        vm_status.update({"n": vm_status.get("n", 0) + 1, "text": str(text or ""), "kind": kind, "sub": str(sub or ""), "act": act, "t": now})
+
+
+def vm_status_view():
+    now = time.time()
+    with _vm_status_lock:
+        d = dict(vm_status)
+    d["age"] = round(now - d.get("t", 0.0), 1)
+    d["elapsed"] = round(now - d.get("t0", 0.0), 1) if d.get("kind") == "busy" else None
+    d["took"] = round(d.get("t", 0.0) - d.get("t0", 0.0), 1) if d.get("kind") in ("ok", "err") else None
+    return d
+
+
 def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None, avatar=None):
     global global_msg_id
     label = source_label(src)
@@ -8432,7 +8454,7 @@ if flask_available:
     def add_cors_headers(response):
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/pulse"><div class="title">Pulse Chat (/pulse)</div><div class="desc">YT2VM's own chat: avatars on a timeline rail, commands as chips, live vote bar and what is running now. Themes and options on the Overlays page.</div></a><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/clock"><div class="title">Stream Clock (/clock)</div><div class="desc">Local time, date and how long you have been live. ?h12=1 for AM/PM, ?seconds=0 to hide seconds.</div></a><a href="/ogchat"><div class="title">OG Classic Chat (/ogchat)</div><div class="desc">The original: red vote text, viewers and likes on top, chat below.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
+    html_index = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Chat Controls</title><link rel="icon" href="/favicon.ico"><style>body{background:#09090b;color:#00E5FF;font-family:'Segoe UI',Consolas,monospace;text-align:center;padding:40px}h1{color:#10B981;font-size:36px;text-shadow:0 0 10px rgba(16,185,129,0.3);margin-bottom:5px}.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:800px;margin:40px auto}a{background:#18181b;border:1px solid #27272a;color:#fff;text-decoration:none;padding:20px;border-radius:12px;width:300px;transition:all 0.2s;box-shadow:0 4px 6px rgba(0,0,0,0.3);text-align:left}a:hover{transform:translateY(-5px);border-color:#00E5FF;box-shadow:0 8px 15px rgba(0,229,255,0.2)}.title{font-size:20px;font-weight:bold;margin-bottom:10px;color:#00E5FF}.desc{font-size:14px;color:#a1a1aa}</style></head><body><h1>[active] chat server active</h1><p style="color:#71717a;font-size:18px">Add one of these links to your OBS Browser Source:</p><div class="grid"><a href="/vmstatus"><div class="title">VM Status (/vmstatus)</div><div class="desc">Full-screen banner at the top: Reverting! / Reverted Successfully! / Revert Failed :( and the same for start, restart, shutdown, switch and snapshots. Works with ?glass ?midnight ?solid ?paper ?mono and &amp;accent=.</div></a><a href="/pulse"><div class="title">Pulse Chat (/pulse)</div><div class="desc">YT2VM's own chat: avatars on a timeline rail, commands as chips, live vote bar and what is running now. Themes and options on the Overlays page.</div></a><a href="/obsnew"><div class="title">Liquid Glass Chat (/obsnew)</div><div class="desc">Sleek gray bubbles with a glass background.</div></a><a href="/clock"><div class="title">Stream Clock (/clock)</div><div class="desc">Local time, date and how long you have been live. ?h12=1 for AM/PM, ?seconds=0 to hide seconds.</div></a><a href="/ogchat"><div class="title">OG Classic Chat (/ogchat)</div><div class="desc">The original: red vote text, viewers and likes on top, chat below.</div></a><a href="/oldobsnew"><div class="title">Classic Dark Chat (/oldobsnew)</div><div class="desc">The OG dark background modern chat.</div></a><a href="/ultradebug"><div class="title">Ultra Debug (/ultradebug)</div><div class="desc">Shows core system status and queues.</div></a><a href="/stats"><div class="title">Live Stats (/stats)</div><div class="desc">Viewers, Likes, and Uptime widget.</div></a><a href="/obs"><div class="title">Legacy Chat (/obs)</div><div class="desc">The original transparent overlay.</div></a></div></body></html>"""
     html_template = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;padding:10px;box-sizing:border-box;text-shadow:2px 2px 0 #000;color:#ccc;font-size:16px;justify-content:flex-end}.header{position:absolute;top:10px;right:10px;text-align:right;display:flex;flex-direction:column;align-items:flex-end;z-index:10}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:24px;color:red;text-transform:uppercase;margin-bottom:5px;text-shadow:2px 2px 0 #000;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px;display:none}.stats-container{display:flex;gap:15px;font-family:'Fira Code',monospace;font-weight:bold;font-size:20px;align-items:center;background:rgba(0,0,0,0.85);padding:5px 12px;border:1px solid #444;border-radius:4px}.stat-item{display:flex;align-items:center;gap:6px}.icon-eye{fill:#0af;width:22px;height:22px;filter:drop-shadow(0 0 2px #0af)}.icon-thumb{fill:#0f0;width:22px;height:22px;filter:drop-shadow(0 0 2px #0f0)}.stat-text{color:#fff;text-shadow:0 0 2px #fff}.chat-box{flex-grow:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;padding-bottom:10px;z-index:5}.line{font-size:18px;font-weight:500;margin-bottom:3px;color:#fff;line-height:1.3;word-wrap:break-word;overflow-wrap:break-word;display:flex;align-items:flex-start;justify-content:flex-end;width:100%;animation:slideIn 0.2s ease-out forwards}.admin-name{color:#5e84f1;font-weight:700;text-shadow:0 0 3px #5e84f1}.owner-name{color:#ffd700;font-weight:700;text-shadow:0 0 3px #ffd700}.user-name{color:#e0e0e0;font-weight:700}.sys-text{color:#f0f;font-weight:700;text-shadow:0 0 3px #f0f}.sys-msg-text{color:#0f0;font-weight:bold}.err-text{color:#f33;font-weight:bold}.msg-text{color:#fff}.separator{margin-right:8px;color:#888;font-weight:bold}.plat{font-weight:700}.plat.dc{color:#8C94FF;text-shadow:0 0 3px #5865F2}.plat.yt{color:#FF5C5C;text-shadow:0 0 3px #FF0000}""" + _OV_ICON_CSS + """</style></head><body><div class="header"><div id="vote-text">no active votes</div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(!c)return;const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let nameClass="user-name";let msgClass="msg-text";if(i.is_owner){nameClass="owner-name";}else if(i.is_admin){nameClass="admin-name";}let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'||u==='system'){u="[system]";nameClass="sys-text";msgClass=m.includes("[err]")?"err-text":"sys-msg-text";}else if(u==='[console]'||u==='[announcement]'){nameClass="admin-name";}else if(i.src){u=PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||u)+RI(i);}else{if(typeof u==='string'&&!u.startsWith('@'))u="@"+u;u+=RI(i);}const div=document.createElement('div');div.className='line';div.innerHTML=`<span class='${nameClass}'>${u}</span><span class="separator">:</span><span class='${msgClass}'>${m}</span>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>50)c.removeChild(c.firstChild);}}fetchingUpdates=!1;}).catch(e=>{fetchingUpdates=!1;});},1000);let fetchingStatus=!1;setInterval(function(){if(fetchingStatus)return;fetchingStatus=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');const chatBox=document.getElementById('chat');const headerBox=document.querySelector('.header');if(chatBox){chatBox.style.display=data.chat_visible?'flex':'none';}if(headerBox){if(data.split_mode){headerBox.style.display='none';}else{headerBox.style.display='flex';if(v&&data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}}}catch(err){}fetchingStatus=!1;}).catch(e=>{fetchingStatus=!1;});},2000);</script></body></html>"""
     html_template_2 = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;700&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100vw;height:100vh;overflow:hidden}body{font-family:'Fira Code','Consolas',monospace;display:flex;flex-direction:column;align-items:flex-end;padding:3vw;box-sizing:border-box}.header{text-align:right;display:flex;flex-direction:column;align-items:flex-end}div[id="vote-text"]{font-family:'Impact',sans-serif;font-size:10vw;color:red;text-transform:uppercase;margin-bottom:2vw;text-shadow:0.5vw 0.5vw 0 #000;display:none;line-height:1}.stats-container{display:flex;gap:5vw;font-family:'Fira Code',monospace;font-weight:bold;font-size:8vw;align-items:center}.stat-item{display:flex;align-items:center;gap:2vw}.icon-eye{fill:#0af;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.icon-thumb{fill:#0f0;width:9vw;height:9vw;filter:drop-shadow(0.4vw 0.4vw 0 #000)}.stat-text{color:#fff;text-shadow:0.4vw 0.4vw 0 #000}</style></head><body><div class="header"><div id="vote-text"></div><div class="stats-container"><div class="stat-item"><svg class="icon-eye" viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.61 11 7.61s9.27-3.22 11-7.61C21.27 7.61 17 4.5 12 4.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span id="viewers" class="stat-text">0</span></div><div class="stat-item"><svg class="icon-thumb" viewBox="0 0 24 24"><path d="M1 21h4V9H1v12zm22-11c0-1.1-.9-2-2-2h-6.31l.95-4.57.03-.32c0-.41-.17-.79-.44-1.06L14.17 1 7.59 7.59C7.22 7.95 7 8.45 7 9v10c0 1.1.9 2 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73v-1.91l-.01-.01L23 10z"/></svg><span id="likes" class="stat-text">0</span></div></div></div><script>let fetchingStatus2=!1;setInterval(function(){if(fetchingStatus2)return;fetchingStatus2=!0;fetch('/status_update?t='+Date.now()).then(r=>r.json()).then(data=>{try{const v=document.getElementById('vote-text');if(data.vote&&data.vote.active){v.innerHTML=(data.vote.text||"").replace('[vote] ','');v.style.display="block";}else if(v){v.style.display="none";}const viewEl=document.getElementById('viewers');const likeEl=document.getElementById('likes');if(viewEl)viewEl.innerText=data.viewers||"0";if(likeEl)likeEl.innerText=data.likes||"0";}catch(err){}fetchingStatus2=!1;}).catch(e=>{fetchingStatus2=!1;});},2000);</script></body></html>"""
     html_template_new = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');html,body{background-color:rgba(0,0,0,0)!important;margin:0;padding:0;width:100%;height:100%;overflow:hidden}body{font-family:'-apple-system','BlinkMacSystemFont','Inter',sans-serif;display:flex;flex-direction:column;padding:25px;justify-content:flex-end;box-sizing:border-box}.chat-box{display:flex;flex-direction:column;align-items:flex-end;gap:16px;width:100%}.msg-block{background:rgba(80,80,85,0.25);backdrop-filter:blur(25px) saturate(200%);-webkit-backdrop-filter:blur(25px) saturate(200%);padding:12px 18px;display:flex;align-items:flex-start;font-size:16px;border-radius:22px;box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4);animation:popIn 0.35s cubic-bezier(0.175,0.885,0.32,1.2) forwards;max-width:90%;word-wrap:break-word;border:1px solid rgba(255,255,255,0.15);border-bottom:1px solid rgba(255,255,255,0.05)}.msg-block.cmd-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #00E5FF}.msg-block.chat-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #10B981}.msg-block.vote-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #F59E0B}.msg-block.err-border{box-shadow:0 8px 32px rgba(0,0,0,0.15),inset 0 1px 1px rgba(255,255,255,0.4),inset 4px 0 0 #EF4444}.badge{padding:4px 10px;font-weight:800;font-size:11px;border-radius:20px;margin-right:14px;flex-shrink:0;align-self:center;color:#fff;letter-spacing:0.8px;text-transform:uppercase;box-shadow:0 4px 10px rgba(0,0,0,0.2)}.badge.cmd{background:linear-gradient(135deg,#00E5FF,#0083B0)}.badge.chat{background:linear-gradient(135deg,#10B981,#047857)}.badge.vote{background:linear-gradient(135deg,#F59E0B,#B45309)}.badge.err{background:linear-gradient(135deg,#EF4444,#991B1B)}.msg-content{display:flex;flex-direction:column;gap:2px}.username{font-weight:700;font-size:14px;letter-spacing:0.3px;text-shadow:0 1px 4px rgba(0,0,0,0.3)}.username.cmd{color:#40C4FF}.username.chat{color:#34D399}.username.vote{color:#FBBF24}.username.err{color:#FF8A8A}.message{color:#fff;font-weight:500;line-height:1.4;font-size:16px;text-shadow:0 1px 3px rgba(0,0,0,0.4)}@keyframes popIn{from{transform:translateY(20px) scale(0.95);opacity:0;filter:blur(4px)}to{transform:translateY(0) scale(1);opacity:1;filter:blur(0)}}.plat{font-weight:800}.plat.dc{color:#8C94FF}.plat.yt{color:#FF5C5C}""" + _OV_ICON_CSS + """</style></head><body><div class="chat-box" id="chat"></div><script>""" + _OV_ICON_JS + """let lastId=-1;let fetchingUpdates=!1;let hasConnected=!1;setInterval(function(){if(fetchingUpdates)return;fetchingUpdates=!0;fetch('/history?t='+Date.now()).then(r=>r.json()).then(data=>{try{if(data&&Array.isArray(data)){const c=document.getElementById('chat');if(c){if(!hasConnected){hasConnected=!0;const div=document.createElement('div');div.className='msg-block chat-border';div.innerHTML=`<div class="badge chat">SYS</div><div class="msg-content"><span class="username chat">system</span> <span class="message">ui connected successfully</span></div>`;c.appendChild(div);}const fragment=document.createDocumentFragment();let added=!1;data.forEach(i=>{if(i.id>lastId){lastId=i.id;try{let u=i.u||"Unknown";let m=i.m||"";if(u==='[system]'&&!m.includes('vote')&&!m.includes('[err]')&&!m.includes('waiting')&&!m.includes('ready')&&!m.includes('chat listener')&&!m.includes('running')&&!m.includes('[ban]')&&!m.includes('[warn]'))return;let isCmd=m.trim().startsWith('!');let badgeClass=isCmd?'cmd':'chat';let badgeText=isCmd?'CMD':'CHAT';let borderClass=isCmd?'cmd-border':'chat-border';let unameClass=isCmd?'username cmd':'username chat';let cleanU=u.replace(/^@+/,'');let displayU=i.src?(PI(i)+'<span class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+i.src+'</span> -&gt; '+(i.name||cleanU)+RI(i)):'@'+cleanU+RI(i);if(u==='[console]'){displayU='CONSOLE';badgeText='SYS';}else if(u==='[announcement]'){displayU='ANNOUNCEMENT';badgeText='INFO';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(u==='[system]'){displayU='SYSTEM';badgeText='SYS';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';if(m.includes('[vote]')){badgeText='VOTE';badgeClass='vote';borderClass='vote-border';unameClass='username vote';}else if(m.includes('[err]')||m.includes('[ban]')||m.includes('[warn]')){badgeText='ERR';badgeClass='err';borderClass='err-border';unameClass='username err';}else if(m.includes('running:')){badgeText='EXEC';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}else if(m.includes('[debug]')){badgeText='DBG';badgeClass='cmd';borderClass='cmd-border';unameClass='username cmd';}}const div=document.createElement('div');div.className=`msg-block ${borderClass}`;div.innerHTML=`<div class="badge ${badgeClass}">${badgeText}</div><div class="msg-content"><span class="${unameClass}">${displayU}</span> <span class="message">${m}</span></div>`;fragment.appendChild(div);added=!0;}catch(err){}}});if(added){c.appendChild(fragment);window.scrollTo(0,document.body.scrollHeight);while(c.children.length>15)c.removeChild(c.firstChild);}}}}finally{fetchingUpdates=!1;}}).catch(e=>{fetchingUpdates=!1;});},1000);</script></body></html>"""
@@ -8458,6 +8480,26 @@ body{font-family:var(--font);color:var(--txt);-webkit-font-smoothing:antialiased
 #app{position:absolute;inset:0;display:flex;flex-direction:column;padding:14px 16px 14px 14px;box-sizing:border-box;gap:10px}
 body.right #app{padding:14px 14px 14px 16px}
 #hud{display:flex;flex-direction:column;gap:8px;flex:0 0 auto}
+#vmstat{display:none;flex:0 0 auto;--vsc:var(--acc)}
+#vmstat.ok{--vsc:#22c55e}#vmstat.err{--vsc:#ff4d5e}
+#vmstat.on{display:flex;align-items:center;gap:13px;padding:13px 16px;border-radius:var(--rad);background:var(--bg);border:1px solid var(--line);border-left:4px solid var(--vsc);box-shadow:var(--shadow),0 0 26px color-mix(in srgb,var(--vsc) 22%,transparent);backdrop-filter:blur(12px);animation:vsin .45s cubic-bezier(.2,.9,.25,1.25) both}
+#vmstat.on.ok,#vmstat.on.err{animation:vspop .45s cubic-bezier(.2,.9,.25,1.4) both}
+#vmstat.on.out{animation:vsout .4s ease forwards}
+body.right #vmstat.on{border-left:1px solid var(--line);border-right:4px solid var(--vsc)}
+.vs-ic{flex:0 0 28px;width:28px;height:28px;display:grid;place-items:center;color:var(--vsc)}
+.vs-ic svg{width:28px;height:28px}
+.vs-spin{width:24px;height:24px;border-radius:50%;border:3px solid color-mix(in srgb,var(--vsc) 22%,transparent);border-top-color:var(--vsc);animation:vspin .8s linear infinite}
+.vs-body{min-width:0;flex:1 1 auto}
+.vs-tx{font-weight:800;font-size:18px;letter-spacing:.2px;color:var(--txt);line-height:1.15}
+.vs-sub{font-size:12px;color:var(--dim);margin-top:3px}
+.vs-time{flex:0 0 auto;font:600 12px var(--mono);color:var(--dim)}
+body.statusonly #hud,body.statusonly #feed{display:none!important}
+body.statusonly #app{align-items:center;padding-top:22px}
+body.statusonly #vmstat.on{min-width:360px;max-width:92vw}
+@keyframes vsin{from{opacity:0;transform:translateY(-16px) scale(.95)}to{opacity:1;transform:none}}
+@keyframes vspop{0%{transform:scale(.94)}60%{transform:scale(1.03)}100%{transform:none}}
+@keyframes vsout{to{opacity:0;transform:translateY(-16px) scale(.95)}}
+@keyframes vspin{to{transform:rotate(360deg)}}
 #hud:empty{display:none}
 .strip{display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:8px 12px;box-shadow:var(--shadow);backdrop-filter:blur(10px);font-size:13px;overflow:hidden;animation:pop .35s cubic-bezier(.2,.9,.25,1.2) both}
 .strip .k{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:1.4px;color:var(--dim);text-transform:uppercase;flex:0 0 auto}
@@ -8525,7 +8567,7 @@ body.t-paper .nm{filter:brightness(.78) saturate(1.3)}
 .ann small{display:block;font-family:var(--mono);font-size:10px;letter-spacing:1.6px;color:var(--acc);margin-bottom:2px}
 .ann.gone{opacity:0}
 #feed.hide{visibility:hidden}
-</style></head><body><div id="app"><div id="hud"></div><div id="feed"></div></div>
+</style></head><body><div id="app"><div id="vmstat"></div><div id="hud"></div><div id="feed"></div></div>
 <script>""" + _OV_SCALE_JS + r"""var Q=new URLSearchParams(location.search);
 function qp(k,d){var v=Q.get(k);return v===null||v===''?d:v;}
 var THEMES=['glass','midnight','solid','paper','mono'],THEME=qp('theme','glass');THEMES.forEach(function(t){if(Q.has(t))THEME=t;});if(THEMES.indexOf(THEME)<0)THEME='glass';var SIDE=Q.has('right')?'right':(Q.has('left')?'left':qp('side','left')),MAX=Math.max(3,Math.min(80,parseInt(qp('max','24'),10)||24)),FADE=Math.max(0,parseFloat(qp('fade','0'))||0),
@@ -8579,16 +8621,27 @@ function renderHud(d){if(!HUD){hud.innerHTML='';return;}var html='';
  var v=d.vote||{};if(v.active){var items=(v.items&&v.items.length)?v.items:null;
   if(items){items.forEach(function(it){var p=Math.max(0,Math.min(100,it.need?100*it.have/it.need:0));html+='<div class="strip vote"><div class="vrow"><span class="k">VOTE</span><span class="vt">'+esc(it.type)+'</span><span class="vc">'+it.have+' / '+it.need+(it.left!=null?' &middot; '+it.left+'s':'')+'</span></div><div class="bar"><i style="width:'+p.toFixed(1)+'%"></i><b></b></div></div>';});}
   else{html+='<div class="strip"><span class="k">VOTE</span><span class="v">'+esc(String(v.text||'').replace(/^\[vote\]\s*/i,''))+'</span></div>';}}
- if(d.running){html+='<div class="strip run"><span class="beat"></span><span class="k">RUNNING</span><span class="v">'+esc(d.running)+'</span>'+(d.queue?'<span class="n">+'+d.queue+' queued</span>':'')+'</div>';}
+ if(d.running&&!vmBusy(d.vmstat)){html+='<div class="strip run"><span class="beat"></span><span class="k">RUNNING</span><span class="v">'+esc(d.running)+'</span>'+(d.queue?'<span class="n">+'+d.queue+' queued</span>':'')+'</div>';}
  if(STATS){html+='<div class="stats"><div class="strip">'+ICON.eye+'<span class="n">'+esc(d.viewers||'0')+'</span></div><div class="strip">'+ICON.heart+'<span class="n">'+esc(d.likes||'0')+'</span></div></div>';}
  var sig=html.replace(/style="width:[^"]*"/g,'').replace(/\d+s</g,'s<').replace(/\d+ \/ \d+/g,'');
  if(sig!==hudState){hudState=sig;hud.innerHTML=html;}else{var bars=hud.querySelectorAll('.vote');var tmp=document.createElement('div');tmp.innerHTML=html;var nb=tmp.querySelectorAll('.vote');for(var k=0;k<bars.length&&k<nb.length;k++){bars[k].querySelector('.vc').innerHTML=nb[k].querySelector('.vc').innerHTML;bars[k].querySelector('.bar i').style.width=nb[k].querySelector('.bar i').style.width;}}}
+var VMS=qp('vmstat','1')!=='0',STATUSONLY=location.pathname.replace(/\/+$/,'')==='/vmstatus',vmsEl=document.getElementById('vmstat'),vmsKey='',vmsHide=null;
+if(STATUSONLY){document.body.classList.add('statusonly');VMS=true;}
+var VSI={ok:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M7.5 12.5l3 3 6-6.5"/></svg>',err:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M8.5 8.5l7 7M15.5 8.5l-7 7"/></svg>'};
+function vmBusy(s){return !!(s&&s.text&&s.kind==='busy'&&s.age<900);}
+function fmtSec(x){x=Math.max(0,Math.round(x||0));return x<60?x+'s':Math.floor(x/60)+'m '+(x%60)+'s';}
+function renderVm(s){if(!VMS)return;s=s||{};var show=!!s.text&&(vmBusy(s)||((s.kind==='ok'||s.kind==='err')&&s.age<6));
+ if(!show){if(vmsEl.classList.contains('on')&&!vmsEl.classList.contains('out')){vmsEl.classList.add('out');clearTimeout(vmsHide);vmsHide=setTimeout(function(){vmsEl.className='';vmsEl.innerHTML='';vmsKey='';},420);}return;}
+ var key=s.n+'|'+s.kind;
+ if(key!==vmsKey){vmsKey=key;clearTimeout(vmsHide);vmsEl.className='on '+s.kind;
+  vmsEl.innerHTML='<div class="vs-ic">'+(s.kind==='busy'?'<span class="vs-spin"></span>':VSI[s.kind])+'</div><div class="vs-body"><div class="vs-tx">'+esc(s.text)+'</div>'+(s.sub?'<div class="vs-sub">'+esc(s.sub)+'</div>':'')+'</div><div class="vs-time"></div>';}
+ var te=vmsEl.querySelector('.vs-time');if(te)te.textContent=s.kind==='busy'?fmtSec(s.elapsed):(s.took!=null&&s.took>=1?'took '+fmtSec(s.took):'');}
 var busy=false,first=true;
 function poll(){if(busy)return;busy=true;fetch('/pulse_feed?after='+lastId+'&t='+Date.now()).then(function(r){return r.json();}).then(function(d){try{
  if(d.prefix)PREFIX=d.prefix;if(typeof d.last==='number'&&d.last<lastId){lastId=-1;}
  var items=d.items||[];if(first&&items.length>MAX)items=items.slice(-MAX);first=false;
- items.forEach(function(i){if(i.id>lastId){lastId=i.id;try{add(i);}catch(e){}}});
- renderHud(d);feed.classList.toggle('hide',d.chat_visible===false);}finally{busy=false;}}).catch(function(){busy=false;});}
+ items.forEach(function(i){if(i.id>lastId){lastId=i.id;if(!STATUSONLY){try{add(i);}catch(e){}}}});
+ renderHud(d);try{renderVm(d.vmstat);}catch(e){}feed.classList.toggle('hide',d.chat_visible===false);}finally{busy=false;}}).catch(function(){busy=false;});}
 poll();setInterval(poll,700);setInterval(sweep,1000);
 </script></body></html>"""
 
@@ -8619,7 +8672,14 @@ poll();setInterval(poll,700);setInterval(sweep,1000);
                 pass
         return jsonify({"items": items[-60:], "last": last, "vote": current_vote_info, "viewers": current_viewers,
                         "likes": current_likes, "chat_visible": overlay_chat_visible, "status": current_status,
-                        "running": running, "queue": queued, "prefix": prefix})
+                        "running": running, "queue": queued, "prefix": prefix, "vmstat": vm_status_view()})
+    @obs_web_overlay_app.route('/vmstatus')
+    def vmstatus_overlay():
+        from flask import Response
+        return Response(html_pulse, mimetype="text/html", headers={"Cache-Control": "no-cache"})
+    @obs_web_overlay_app.route('/vmstatus.json')
+    def vmstatus_json():
+        return jsonify(vm_status_view())
     @obs_web_overlay_app.route('/clock')
     def clock_overlay():
         from flask import Response
@@ -11538,6 +11598,20 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.5.0", "date": "2026-11-21",
+     "added": [
+         "VM status banner at the top of Pulse: Reverting! then Reverted Successfully! or Revert Failed :( - same for Starting VM..., Restarting VM..., Shutting Down VM..., Switching VM..., fixes and snapshots. Shows who started it (vote passed, a viewer, auto recovery) and a live timer.",
+         "New /vmstatus overlay: just the status banner, centred at the top of a full-screen browser source. Takes the same theme and accent options as Pulse.",
+     ],
+     "changed": [
+         "Pulse hides the RUNNING strip while the banner shows a VM action, so it isn't shown twice.",
+         "Discord maintenance messages use the same wording as the banner.",
+     ],
+     "fixed": [
+         "VM actions now report real results: a revert whose snapshot restore failed, a VMware VM that never came up, a failed snapshot or a shutdown that didn't stop the VM no longer count as successful.",
+         "A VM action that crashed used to skip its 'failed' message; it now always reports the failure.",
+     ],
+     "removed": []},
     {"version": "2.4.0", "date": "2026-11-21",
      "added": [
          "Pulse shows every viewer's real profile picture: YouTube channel pictures from chat and Discord avatars from the bot. If a picture can't load, the initials come back by themselves.",
@@ -15528,7 +15602,7 @@ class QtAppUI:
     def build_overlays_tab(self):
         sc = self.make_scrollable(self.tab_overlays)
         c = Card("OBS overlays", f"Local server on port {flask_port}. Add these as Browser Sources in OBS.")
-        overlays = [("Pulse", "/pulse"), ("OG Classic", "/ogchat"), ("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
+        overlays = [("Pulse", "/pulse"), ("VM Status", "/vmstatus"), ("OG Classic", "/ogchat"), ("Liquid Glass", "/obsnew"), ("Classic Dark", "/oldobsnew"), ("Legacy", "/obs"),
                     ("Big Stats", "/obs2"), ("Live Stats", "/stats"), ("Clock", "/clock"), ("Ultra Debug", "/ultradebug"),
                     ("Debug Chat", "/debugchat"), ("Index", "/")]
         c.add(self._grid_buttons(None, [(lbl, "#8B5CF6", lambda p=path: self._open_local(p)) for lbl, path in overlays], cols=4))
@@ -18309,19 +18383,31 @@ class ChatPlaysApp(QtAppUI):
                 _trace(_ex_where(), _ex)
 
     _MAINT_MSGS = {
-        "revert": ("Reverting!", "Revert done!", "Revert failed."),
-        "restartvm": ("Restarting the VM!", "VM restarted!", "Restart failed."),
-        "startvm": ("Starting the VM!", "VM started!", "Couldn't start the VM."),
-        "shutdown": ("Shutting down the VM!", "VM shut down.", "Shutdown failed."),
-        "changevm": ("Switching VM!", "VM switched!", "Couldn't switch the VM."),
-        "fixvm": ("Fixing the VM!", "VM fixed!", "Fix failed."),
-        "forcefixvm": ("Force-fixing the VM!", "VM fixed!", "Fix failed."),
-        "makesnapshot": ("Taking a snapshot!", "Snapshot saved!", "Snapshot failed."),
-        "remake2": ("Rebuilding the snapshot!", "Snapshot rebuilt!", "Rebuild failed."),
+        "revert": ("Reverting!", "Reverted Successfully!", "Revert Failed :("),
+        "restartvm": ("Restarting VM...", "Restarted VM!", "Restart Failed :("),
+        "startvm": ("Starting VM...", "Started VM!", "Start VM Failed :("),
+        "shutdown": ("Shutting Down VM...", "VM Shut Down!", "Shutdown Failed :("),
+        "changevm": ("Switching VM...", "Switched VM!", "Switch VM Failed :("),
+        "fixvm": ("Fixing VM...", "Fixed VM!", "Fix VM Failed :("),
+        "forcefixvm": ("Force Fixing VM...", "Fixed VM!", "Force Fix Failed :("),
+        "makesnapshot": ("Taking Snapshot...", "Snapshot Saved!", "Snapshot Failed :("),
+        "remake2": ("Rebuilding Snapshot...", "Snapshot Rebuilt!", "Rebuild Failed :("),
     }
 
     def _maint_messages(self, base):
-        return self._MAINT_MSGS.get(base, (f"Running {base}!", f"{base} done!", f"{base} failed."))
+        return self._MAINT_MSGS.get(base, (f"Running {base}...", f"{base} Done!", f"{base} Failed :("))
+
+    def _maint_who(self, user):
+        u = str(user or "").strip()
+        if u == "vote_passed":
+            return "vote passed"
+        if u == "[watchdog]":
+            return "auto recovery"
+        if not u or u.startswith("["):
+            return ""
+        if u.startswith("dc_"):
+            u = u[3:]
+        return "by " + u.lstrip("@")
 
     def _discord_maint(self, text, shot=False):
         br = getattr(self, "discord", None)
@@ -21992,6 +22078,24 @@ class ChatPlaysApp(QtAppUI):
         return False
 
     def _do_vm_maintenance(self, action, arg, user):
+        act = str(action or "").lower()
+        if act.startswith(self.command_prefix): act = act[len(self.command_prefix):]
+        act = act.lstrip("!")
+        start_msg, done_msg, fail_msg = self._maint_messages(act)
+        sub = self._maint_who(user)
+        set_vm_status(start_msg, "busy", sub, act)
+        ok = False
+        try:
+            ok = bool(self._do_vm_maintenance_run(action, arg, user))
+        except Exception as e:
+            log_crash(f"vm maintenance {act}", e)
+            self.log("[system]", f"[error] {act} crashed: {e}", "err")
+            ok = False
+        set_vm_status(done_msg if ok else fail_msg, "ok" if ok else "err", sub, act)
+        plog("VM", f"{act} {'succeeded' if ok else 'FAILED'} ({sub or user})")
+        return ok
+
+    def _do_vm_maintenance_run(self, action, arg, user):
         global _vlk
         act = str(action or "").lower()
         if act.startswith(self.command_prefix): act = act[len(self.command_prefix):]
@@ -22117,6 +22221,7 @@ class ChatPlaysApp(QtAppUI):
             vm = self._vmware()
             self.vm_maintenance = True
             self._maint_start_t = time.time()
+            ok = True
             try:
                 if action == "startvm":
                     set_obs_scene(obs_scene_starting)
@@ -22127,6 +22232,7 @@ class ChatPlaysApp(QtAppUI):
                         set_obs_scene(obs_scene_main)
                         self.log("[system]", "vmware vm is up and ready.", "sysmsg")
                     else:
+                        ok = False
                         set_obs_scene(obs_scene_error)
                         self.log("[system]", "[error] vmware vm did not start in time.", "err")
                 elif action in ("restartvm", "fixvm", "forcefixvm"):
@@ -22138,32 +22244,47 @@ class ChatPlaysApp(QtAppUI):
                         self._vmware_wait_ready()
                         set_obs_scene(obs_scene_main)
                         self.log("[system]", "vmware vm back up.", "sysmsg")
+                    else:
+                        ok = False
+                        set_obs_scene(obs_scene_error)
+                        self.log("[system]", "[error] vmware vm did not come back after the restart.", "err")
                 elif action == "shutdown":
                     vm.stop()
-                    self._vmware_wait_running(False, 40)
-                    self.log("[system]", "vmware vm stopped.", "sysmsg")
+                    ok = self._vmware_wait_running(False, 40)
+                    if not ok:
+                        vm.stop(hard=True)
+                        ok = self._vmware_wait_running(False, 20)
+                    self.log("[system]", "vmware vm stopped." if ok else "[error] vmware vm didn't stop.", "sysmsg" if ok else "err")
                 elif action in ("revert", "remake2"):
                     set_obs_scene(obs_scene_revert)
                     self.log("[system]", "reverting vmware snapshot...", "sysmsg")
                     snaps = vm.list_snapshots()
                     tgt = self.current_snapshot if self.current_snapshot in snaps else (snaps[-1] if snaps else "")
                     if tgt:
-                        vm.revert_snapshot(tgt)
+                        r = vm.revert_snapshot(tgt)
+                        restored = r is not None and getattr(r, "returncode", 1) == 0
+                        if not restored:
+                            self.log("[system]", f"[error] vmware couldn't restore '{tgt}'.", "err")
                         time.sleep(2)
                         vm.start()
                         if self._vmware_wait_running(True, 90):
                             self._vmware_wait_ready()
                             set_obs_scene(obs_scene_main)
-                            self.log("[system]", f"reverted to '{tgt}', vm ready.", "sysmsg")
+                            ok = restored
+                            if restored:
+                                self.log("[system]", f"reverted to '{tgt}', vm ready.", "sysmsg")
                         else:
+                            ok = False
                             set_obs_scene(obs_scene_error)
                     else:
+                        ok = False
                         self.log("[system]", "[warn] no vmware snapshot to revert to.", "sysmsg")
                         set_obs_scene(obs_scene_main)
                 elif action == "makesnapshot":
                     name = arg.strip() or f"chatsnap_{int(time.time())}"
-                    vm.take_snapshot(name)
-                    self.log("[system]", f"vmware snapshot '{name}' taken.", "sysmsg")
+                    r = vm.take_snapshot(name)
+                    ok = r is not None and getattr(r, "returncode", 1) == 0
+                    self.log("[system]", f"vmware snapshot '{name}' taken." if ok else f"[error] vmware snapshot '{name}' failed.", "sysmsg" if ok else "err")
                 elif action == "changevm":
                     tgt, _sep, snap = (arg or "").partition("\x00")
                     pick = self._pick_switch(tgt or None)
@@ -22190,8 +22311,11 @@ class ChatPlaysApp(QtAppUI):
                             else:
                                 set_obs_scene(obs_scene_error)
                                 return False
-                vm.connect()
-                return True
+                        else:
+                            ok = False
+                if action != "shutdown":
+                    vm.connect()
+                return ok
             except Exception as e:
                 dbg("vmware", f"maintenance '{action}' failed", e)
                 console_log("ERROR", f"vmware maintenance '{action}' failed: {e}")
@@ -22224,7 +22348,8 @@ class ChatPlaysApp(QtAppUI):
                     time.sleep(8)
                     if self._vm_is_running():
                         run_vbox(["controlvm", vm_name, "poweroff"], timeout=20)
-                    ok = True
+                        time.sleep(2)
+                    ok = not self._vm_is_running()
                 elif action == "revert":
                     self.log("[system]", f"[debug] reverting {vm_name} to snapshot {self.current_snapshot}...", "sysmsg")
                     set_obs_scene(obs_scene_revert)
@@ -22232,16 +22357,21 @@ class ChatPlaysApp(QtAppUI):
                     if self._vm_is_running():
                         run_vbox(["controlvm", vm_name, "poweroff"], timeout=20)
                         time.sleep(2)
+                    restored = False
                     for _ in range(3):
                         if self.current_snapshot:
                             r = run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
                         else:
                             r = run_vbox(["snapshot", vm_name, "restorecurrent"], timeout=45)
-                        if r is not None and r.returncode == 0: break
+                        if r is not None and r.returncode == 0:
+                            restored = True
+                            break
                         self.log("[system]", "[warn] snapshot restore failed, retrying...", "sysmsg")
                         self._kill_vbox_tasks()
                         time.sleep(2)
-                    ok = self._start_vm_safely()
+                    if not restored:
+                        self.log("[system]", "[error] the snapshot couldn't be restored 3 times - starting the VM as it is.", "err")
+                    ok = self._start_vm_safely() and restored
                 elif action == "changevm":
                     tgt, _sep, snap = (arg or "").partition("\x00")
                     pick = self._pick_switch(tgt or None)
@@ -22269,31 +22399,36 @@ class ChatPlaysApp(QtAppUI):
                 elif action == "makesnapshot":
                     snap_name = arg.strip() or f"chatsnap_{int(time.time())}"
                     r = run_vbox(["snapshot", vm_name, "take", snap_name], timeout=45)
-                    if r is not None and r.returncode == 0:
+                    ok = r is not None and r.returncode == 0
+                    if ok:
                         self.current_snapshot = snap_name
                         try:
                             with open(snap_file, "w") as f: f.write(self.current_snapshot)
                         except Exception as _ex:
                             _trace(_ex_where(), _ex)
                         self.log("[system]", f"[debug] snapshot '{snap_name}' created.", "sysmsg")
-                    ok = True
+                    else:
+                        self.log("[system]", f"[error] snapshot '{snap_name}' failed.", "err")
                 elif action == "remake2":
                     set_obs_scene(obs_scene_revert)
                     self._kill_vbox_tasks()
                     if self._vm_is_running():
                         run_vbox(["controlvm", vm_name, "poweroff"], timeout=20)
                         time.sleep(2)
+                    restored = True
                     if self.current_snapshot:
-                        run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
-                    ok = self._start_vm_safely()
+                        r = run_vbox(["snapshot", vm_name, "restore", self.current_snapshot], timeout=45)
+                        restored = r is not None and r.returncode == 0
+                    ok = self._start_vm_safely() and restored
                 else:
                     self.log("[system]", f"[warn] unknown maintenance action: {action}", "sysmsg")
+                    ok = False
             except Exception as e:
                 ok = False
                 console_log("ERROR", f"maintenance '{action}' crashed: {e}\n{traceback.format_exc()}")
                 self.log("[system]", f"[error] maintenance {action} failed: {e}", "err")
             finally:
-                if action != "shutdown":
+                if action not in ("shutdown", "makesnapshot"):
                     if ok and self._vm_is_running():
                         set_obs_scene(obs_scene_main)
                         self.consecutive_failures = 0

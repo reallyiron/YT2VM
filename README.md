@@ -39,6 +39,17 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.5.0
+
+## VM status banner
+- Pulse shows a banner at the top while the VM is busy: **Reverting!** then **Reverted Successfully!** or **Revert Failed :(**. The same goes for Starting VM..., Restarting VM..., Shutting Down VM..., Switching VM..., fixes and snapshots.
+- It shows who started it (vote passed, the viewer's name, or auto recovery) and a live timer, then how long it took.
+- `/vmstatus` is a separate full-screen overlay with just the banner, centred at the top. Use it with the same `?glass` / `?midnight` / `?solid` / `?paper` / `?mono` and `&accent=` as Pulse.
+- Add `&vmstat=0` to a Pulse link to hide the banner there.
+
+## Fixes
+- Failed reverts, VMware starts that time out, failed snapshots and shutdowns that didn't stop the VM are now reported as failed instead of successful.
+
 # Release Notes — 2.4.0
 
 ## Pulse chat

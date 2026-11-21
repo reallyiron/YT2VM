@@ -39,6 +39,17 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.2.0
+
+## Pulse chat (/pulse)
+- YT2VM's own chat overlay, built from scratch. The OG Classic chat (/ogchat) and all the other overlays are still there.
+- Every viewer gets their own colour and an avatar with their initials on a timeline rail, a YouTube or Discord badge, and an OWNER / MOD tag.
+- Commands show up as chips (`!combo win+r` > `!send mspaint` > `!key enter`) instead of raw text. @mentions are highlighted.
+- A bar on top shows live votes with a progress bar and time left, plus the command that is running right now and how many are queued.
+- Announcements get their own banner, system messages are slim pills (errors in red), and messages from the same viewer in a row are grouped.
+- Pick the look on the Overlays page: Midnight, Glass, Solid, Paper or Mono, 6 accent colours, avatars left or right, show / hide / only commands, fade out, max messages, and toggles for avatars, rail, system messages, vote bar, viewers and likes, time and grouping. **Copy link** gives you the URL for OBS.
+- The chat size switch on the Overlays page works on Pulse too.
+
 # Release Notes — 2.1.0
 
 ## Encoding filter: no more false bans

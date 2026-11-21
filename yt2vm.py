@@ -5482,7 +5482,7 @@ for arg in sys.argv:
 
 is_multistream = instance_id > 1
 flask_port = 5000 + instance_id - 1
-version = "2.3.0"
+version = "2.4.0"
 
 suffix = f"_multi{instance_id-1}" if instance_id > 2 else ("_multi" if instance_id == 2 else "")
 
@@ -7692,8 +7692,17 @@ class DiscordBridge:
         if self.cfg("b64_filter", True) and not is_mod and _enc_scan(content, chat=not content.startswith(self.app.command_prefix or "!")):
             shown = f"[blocked by the encoding filter - {len(content)} chars hidden]"
         self.log_line(f"{display} ({name}){' [owner]' if is_owner else (' [mod]' if is_mod else '')}: {shown}")
+        av = ""
         try:
-            self.inbox.put_nowait((name, content, is_mod, is_owner, int(message.id), display))
+            da = getattr(author, "display_avatar", None) or getattr(author, "avatar", None)
+            if da is not None:
+                av = str(da.with_size(128).url if hasattr(da, "with_size") else getattr(da, "url", da))
+            elif getattr(author, "avatar_url", None):
+                av = str(author.avatar_url)
+        except Exception:
+            av = ""
+        try:
+            self.inbox.put_nowait((name, content, is_mod, is_owner, int(message.id), display, av))
         except queue.Full:
             self._warn_once("inbox", "too many Discord messages at once - some were dropped", 30)
 
@@ -7706,9 +7715,10 @@ class DiscordBridge:
                     if self.inbox.empty():
                         return
                 continue
-            name, content, is_mod, is_owner, mid, display = item
+            name, content, is_mod, is_owner, mid, display = item[:6]
+            av = item[6] if len(item) > 6 else ""
             try:
-                res = self.app._ingest_chat(name, content, is_mod, is_owner, source="discord", ref=mid, display=display)
+                res = self.app._ingest_chat(name, content, is_mod, is_owner, source="discord", ref=mid, display=display, avatar=av)
                 if res == "cmd":
                     self.stats["cmds"] += 1
             except Exception as e:
@@ -8201,7 +8211,42 @@ _OV_SCALE_JS = ("(function(){var q=new URLSearchParams(location.search),fixed=pa
 _OV_ICON_JS = _OV_ICON_JS + _OV_SCALE_JS
 
 
-def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None):
+_AVATAR_HOSTS = ("ggpht.com", "googleusercontent.com", "ytimg.com", "discordapp.com", "discordapp.net", "discord.com")
+_AVATARS = collections.OrderedDict()
+_avatar_lock = threading.Lock()
+
+
+def safe_avatar_url(url):
+    u = str(url or "").strip()
+    if u.startswith("//"):
+        u = "https:" + u
+    if not u.startswith("https://") or len(u) > 700 or re.search(r"[\s\"'<>\\`]", u):
+        return ""
+    try:
+        host = (urllib.parse.urlsplit(u).hostname or "").lower()
+    except Exception:
+        return ""
+    if not any(host == h or host.endswith("." + h) for h in _AVATAR_HOSTS):
+        return ""
+    return u
+
+
+def remember_avatar(src, name, url):
+    u = safe_avatar_url(url)
+    key = (str(src or "").lower(), str(name or "").lstrip("@").strip().lower())
+    if not key[1]:
+        return ""
+    with _avatar_lock:
+        if u:
+            _AVATARS[key] = u
+            _AVATARS.move_to_end(key)
+            while len(_AVATARS) > 5000:
+                _AVATARS.popitem(last=False)
+            return u
+        return _AVATARS.get(key, "")
+
+
+def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None, avatar=None):
     global global_msg_id
     label = source_label(src)
     name = str(user)
@@ -8210,8 +8255,9 @@ def add_to_history(user, msg, tag, is_mod=False, is_owner=False, src=None):
         shown_user = f"{label} -> {name}"
     else:
         shown_user = name
+    av = remember_avatar(label, name, avatar) if label else ""
     msg_obj = {"u": escape_html(shown_user), "m": escape_html(msg), "t": tag, "is_admin": is_mod, "is_owner": is_owner,
-               "src": label, "name": escape_html(name), "ts": round(time.time(), 1)}
+               "src": label, "name": escape_html(name), "ts": round(time.time(), 1), "av": av}
     with history_lock:
         global_msg_id += 1
         msg_obj["id"] = global_msg_id
@@ -8445,7 +8491,7 @@ body.right .msg.gone{transform:translateX(14px)}
 body.right .msg{animation-name:inr}
 @keyframes inr{from{opacity:0;transform:translateX(22px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes pop{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
-.av{flex:0 0 34px;display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;z-index:1}.node{flex:0 0 34px;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--uc);box-shadow:0 0 0 3px rgba(0,0,0,.35),0 0 14px color-mix(in srgb,var(--uc) 55%,transparent);font-weight:800;font-size:13px;color:#0b0d14;position:relative;z-index:1;letter-spacing:-.3px}.plat{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(10,12,18,.92);box-shadow:0 0 0 3px rgba(0,0,0,.35)}.plat svg{width:22px;height:22px}.plat.dc{background:#5865f2}.plat.dc svg path{fill:#fff}.plat.yt{background:#fff}body.t-paper .plat{box-shadow:0 0 0 3px rgba(15,20,40,.12)}
+.av{flex:0 0 34px;display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;z-index:1}.node img{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover;background:var(--uc)}.node{flex:0 0 34px;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:var(--uc);box-shadow:0 0 0 3px rgba(0,0,0,.35),0 0 14px color-mix(in srgb,var(--uc) 55%,transparent);font-weight:800;font-size:13px;color:#0b0d14;position:relative;z-index:1;letter-spacing:-.3px}.plat{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(10,12,18,.92);box-shadow:0 0 0 3px rgba(0,0,0,.35)}.plat svg{width:22px;height:22px}.plat.dc{background:#5865f2}.plat.dc svg path{fill:#fff}.plat.yt{background:#fff}body.t-paper .plat{box-shadow:0 0 0 3px rgba(15,20,40,.12)}
 
 
 .role.own{}body.t-paper .role.own{background:rgba(214,140,20,.16);color:#a76400}body.t-paper .role.mod{background:rgba(70,95,220,.13);color:#3346c9}body.noavatar .av{flex-basis:12px;gap:0}body.noavatar .node{flex-basis:12px;width:12px;height:12px;margin:10px 0 0;font-size:0}body.noavatar .plat{display:none}
@@ -8518,7 +8564,9 @@ function add(i){var u=unesc(i.u||''),raw=unesc(i.m||''),now=Date.now();
  var role=i.is_owner?'<span class="role own">'+ICON.crown+'OWNER</span>':(i.is_admin?'<span class="role mod">'+ICON.shield+'MOD</span>':'');
  var tm=SHOWTIME?'<span class="tm">'+new Date((i.ts||now/1000)*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'</span>':'';
  var body;if(cmds){body='<div class="cmds">'+cmds.map(function(c,k){return '<span class="cw">'+(k?'<span class="arr">&rsaquo;</span>':'')+'<span class="chip"><span class="c">'+esc(c[0])+'</span>'+(c[1]?'<span class="a">'+esc(c[1])+'</span>':'')+'</span></span>';}).join('')+'</div>';}else{body='<div class="txt">'+fmtText(raw)+'</div>';}
- m.innerHTML='<div class="av"><div class="node">'+esc(initials(name))+'</div><div class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+srcIcon(i.src)+'</div></div><div class="card"><div class="head"><span class="nm">'+esc(name)+'</span>'+role+tm+'</div>'+body+'</div>';
+ var avu=String(unesc(i.av||''));if(!/^https:\/\/[^\s"'<>`]+$/.test(avu))avu='';
+ m.innerHTML='<div class="av"><div class="node">'+esc(initials(name))+(avu?'<img alt="" referrerpolicy="no-referrer" src="'+esc(avu)+'">':'')+'</div><div class="plat '+(i.src==='Discord'?'dc':'yt')+'">'+srcIcon(i.src)+'</div></div><div class="card"><div class="head"><span class="nm">'+esc(name)+'</span>'+role+tm+'</div>'+body+'</div>';
+ var im=m.querySelector('.node img');if(im)im.onerror=function(){if(im.parentNode)im.parentNode.removeChild(im);};
  push(m,{key:key,t:now});}
 function push(el,meta){feed.appendChild(el);if(meta)last={key:meta.key,t:meta.t,el:el};else last=null;el._t=Date.now();
  var all=feed.children;while(all.length>MAX)feed.removeChild(all[0]);trim();}
@@ -11490,6 +11538,15 @@ _UPDATE_MAX_BYTES = 16 * 1024 * 1024
 _UPDATE_CACHE = {}
 
 CHANGELOG = (
+    {"version": "2.4.0", "date": "2026-11-21",
+     "added": [
+         "Pulse shows every viewer's real profile picture: YouTube channel pictures from chat and Discord avatars from the bot. If a picture can't load, the initials come back by themselves.",
+     ],
+     "changed": [
+         "Chat history entries carry the viewer's picture link. Only links from YouTube / Google and Discord picture servers are used.",
+     ],
+     "fixed": [],
+     "removed": []},
     {"version": "2.3.0", "date": "2026-11-21",
      "added": [
          "Pulse: short links pick the look - /pulse is Glass, /pulse?paper, /pulse?midnight, /pulse?solid, /pulse?mono, and ?right / &right puts the avatars on the right.",
@@ -18061,7 +18118,7 @@ class ChatPlaysApp(QtAppUI):
     def _enc_trusted(self, clean_user, is_mod=False, is_owner=False):
         return bool(is_mod or self._is_owner_name(clean_user, is_owner) or clean_user in admins)
 
-    def _ingest_chat(self, user, message, is_mod=False, is_owner=False, source="discord", ref=None, display=None):
+    def _ingest_chat(self, user, message, is_mod=False, is_owner=False, source="discord", ref=None, display=None, avatar=None):
         if not self.listening_to_chat:
             return None
         shown = display or user
@@ -18069,7 +18126,7 @@ class ChatPlaysApp(QtAppUI):
         trusted = self._enc_trusted(clean_user, is_mod, is_owner)
         text = self._display_text(message, trusted)
         hidden = text is not message
-        add_to_history(shown, text, "user", is_mod, is_owner, src=source)
+        add_to_history(shown, text, "user", is_mod, is_owner, src=source, avatar=avatar)
         if not str(shown).startswith("["):
             self._chat_pane_msg(f"{shown}", text, is_mod, is_owner, src=source)
         try:
@@ -21409,7 +21466,11 @@ class ChatPlaysApp(QtAppUI):
                                 _shown = self._display_text(c.message, self._enc_trusted(clean_name, is_mod, is_owner))
                                 _hid = _shown is not c.message
                                 _yt_src = None if str(c.author.name).startswith("[") else "youtube"
-                                add_to_history(c.author.name, _shown, "user", is_mod, is_owner, src=_yt_src)
+                                _yt_av = ""
+                                if _yt_src:
+                                    _yt_av = str(getattr(c.author, "imageUrl", "") or getattr(c.author, "image_url", "") or "")
+                                    _yt_av = re.sub(r"=s\d+-", "=s128-", _yt_av)
+                                add_to_history(c.author.name, _shown, "user", is_mod, is_owner, src=_yt_src, avatar=_yt_av)
                                 if _yt_src:
                                     self._chat_pane_msg(c.author.name, _shown, is_mod, is_owner, src=_yt_src)
                                 try: self.replay_buffer.append({"t": time.time(), "u": c.author.name, "src": _yt_src, "m": _shown, "mod": is_mod, "owner": is_owner})

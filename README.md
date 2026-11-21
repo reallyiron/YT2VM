@@ -39,6 +39,12 @@ The window is built with PyQt6. YT2VM installs any missing required package by i
 - AI player: a local vision AI (Ollama, LM Studio and more) can play the VM with chat commands and learn from chat (AI page).
 - Commands Power: set advanced commands (`!revert`, `!startvm`, `!shutdown`, `!switchsnapshot`, `!makesnapshot`, `!changevm`, `!restartvm`, `!remake2`, `!fixvm`, `!forcefixvm`, `!snapshotnow`, `!revertnow`, `!restartnow` and more) to Everyone / Admins only / Disabled, with an optional per-user countdown (Command Power tab).
 
+# Release Notes — 2.4.0
+
+## Pulse chat
+- Real profile pictures: YouTube viewers show their channel picture and Discord users their avatar. If a picture can't load, the coloured initials come back by themselves.
+- Only picture links from YouTube / Google and Discord servers are used, so nobody can sneak other links into the overlay.
+
 # Release Notes — 2.3.0
 
 ## Pulse chat
